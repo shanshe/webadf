@@ -123,3 +123,17 @@ export function writeFailureText(reason: string): string {
     default: return `Write failed (${reason}).`;
   }
 }
+
+/**
+ * The tap outcome for a mount setDesired refused. hd_unsupported goes out as
+ * 'too_long': the only boards ever refused an HD disk run firmware older than
+ * 1.4.0 (or built with WF_DRIVE_ID off), and device_client.c turns an outcome
+ * word it does not know into "no answer" -- the silent drop HD spec §4.3
+ * forbids. 'too_long' is a refusal those builds show ("Tag: tracks too
+ * long"), and its remedy is the same one: update the board's firmware.
+ */
+export function tapRefusalOutcome(
+  reason: 'not_found' | 'track_too_long' | 'hd_unsupported',
+): TapOutcome {
+  return reason === 'not_found' ? 'not_found' : 'too_long';
+}

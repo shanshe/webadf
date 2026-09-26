@@ -83,3 +83,25 @@ describe('recordStatus trackMaxBytes', () => {
     expect('trackMaxBytes' in patches[0]).toBe(false);
   });
 });
+
+// playsHd belongs to the firmware BUILD (the drive-ID responder, WF_DRIVE_ID),
+// exactly like trackMaxBytes: a report that names its firmware without it is
+// a build that cannot answer HD -- older, built with the responder off, or a
+// board that reverted a trial boot -- and must stop being sent HD disks.
+describe('recordStatus playsHd', () => {
+  it('stores what a board reports', async () => {
+    await recordStatus('dev-1', { ...base, playsHd: true });
+    expect(patches[0].playsHd).toBe(true);
+  });
+
+  it('drops to false when a report names its firmware but says nothing about HD (a rollback)', async () => {
+    await recordStatus('dev-1', { ...base });
+    expect('playsHd' in patches[0]).toBe(true);
+    expect(patches[0].playsHd).toBe(false);
+  });
+
+  it('leaves the column alone when a report names no firmware at all', async () => {
+    await recordStatus('dev-1', { mountedSha256: null });
+    expect('playsHd' in patches[0]).toBe(false);
+  });
+});

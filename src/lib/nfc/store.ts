@@ -3,7 +3,7 @@ import { getDb } from '@/db';
 import { devices } from '@/db/schema/devices';
 import { disks, games } from '@/db/schema/catalog';
 import { setDesired } from '@/lib/mount';
-import { decideTap, NFC_WRITE_TTL_MS, shouldStoreWriteResult, type TapOutcome } from '@/lib/nfc/rules';
+import { decideTap, NFC_WRITE_TTL_MS, shouldStoreWriteResult, tapRefusalOutcome, type TapOutcome } from '@/lib/nfc/rules';
 
 /**
  * One tap, end to end (spec §5.2). The org is the caller's -- the device's
@@ -26,7 +26,7 @@ export async function tapDevice(
   let outcome: TapOutcome = 'already';
   if (decision === 'mount') {
     const r = await setDesired(orgId, deviceId, diskId);
-    outcome = r.ok ? 'mounting' : r.reason === 'track_too_long' ? 'too_long' : 'not_found';
+    outcome = r.ok ? 'mounting' : tapRefusalOutcome(r.reason);
   }
   await db.update(devices).set({ lastTapAt: now, lastTapOutcome: outcome })
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)));

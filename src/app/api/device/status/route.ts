@@ -42,6 +42,10 @@ const statusBody = z.object({
   // rejected, when out of range -- the telemetry rule above -- and an absent
   // value then reads as a legacy board (13312), the safe side.
   trackMaxBytes: z.number().int().min(1024).max(65536).optional().catch(undefined),
+  // HD spec §5.5: the drive-ID responder is built in. Only ever sent as true;
+  // absent means "cannot play HD" (see recordStatus). Dropped, not rejected,
+  // when malformed -- the telemetry rule above.
+  playsHd: z.boolean().optional().catch(undefined),
   // Whether the board's Si512 reader answered its init (spec §5). Absent
   // leaves the column alone -- the same rule as every other optional field
   // here -- rather than a board that predates this field reading as either
@@ -113,6 +117,7 @@ export async function POST(request: Request) {
     psramFree: parsed.data.psramFree,
     rssi: parsed.data.rssi,
     trackMaxBytes: parsed.data.trackMaxBytes,
+    playsHd: parsed.data.playsHd,
     nfcReader: parsed.data.nfcReader,
   });
 
