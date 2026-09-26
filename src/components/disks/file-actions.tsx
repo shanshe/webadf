@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { ROOT_BLOCK } from '@/lib/adffs/constants';
 import { ejectMessage, isMountedReason } from '@/lib/mount-wording';
 import { HFE_READ_ONLY } from '@/lib/hfe/messages';
+import { HD_READ_ONLY } from '@/lib/hd-messages';
 
 /**
  * Every AmigaDOS name field this app writes is 30 bytes (`bcplString(...,
@@ -54,6 +55,7 @@ export function describeEditError(reason: string): string {
     case 'no-filesystem': return 'This disk has no filesystem to edit.';
     case 'blob_unavailable': return 'The disk image could not be read from storage.';
     case 'hfe_read_only': return HFE_READ_ONLY;
+    case 'hd_read_only': return HD_READ_ONLY;
     default: return reason;
   }
 }
