@@ -3,7 +3,8 @@ import { getDb } from '@/db';
 import { disks, entitlements } from '@/db/schema/catalog';
 import { requireDevice, deviceAuthResponse } from '@/lib/device-auth';
 import { diskStore } from '@/lib/storage';
-import { encodeDisk } from '@/lib/adfmfm';
+import { encodeDisk, writeWfad } from '@/lib/adfmfm';
+import { isHdAdf } from '@/lib/disk-format';
 import { parseHfe } from '@/lib/hfe/parse';
 import { hfeToWfmf } from '@/lib/hfe/to-wfmf';
 
@@ -49,10 +50,14 @@ export async function GET(
   // of the bytes' size (spec D2). Scoped to this device's org, like the
   // entitlement above.
   const formats = await getDb()
-    .select({ imageFormat: disks.imageFormat })
+    .select({ imageFormat: disks.imageFormat, sizeBytes: disks.sizeBytes })
     .from(disks)
     .where(and(eq(disks.orgId, device.orgId), eq(disks.sha256, sha256)));
   const isHfe = formats.some((r) => r.imageFormat === 'hfe');
+  // HD is a property of the row as well (format + size, isHdAdf), never
+  // sniffed from the bytes. An HD disk goes out as WFAD: the ADF itself, which
+  // the board encodes a track at a time on read (HD spec §4.4, §5.2).
+  const isHd = !isHfe && formats.some(isHdAdf);
 
   let stored: Uint8Array;
   try {
@@ -61,37 +66,38 @@ export async function GET(
     return Response.json({ error: 'blob_unavailable' }, { status: 503 });
   }
 
-  let wfmf: Uint8Array;
+  let body: Uint8Array;
   try {
     if (isHfe) {
       const parsed = parseHfe(stored);
       if (!parsed.ok) throw new Error(parsed.reason);
-      wfmf = hfeToWfmf(parsed.disk);
+      body = hfeToWfmf(parsed.disk);
+    } else if (isHd) {
+      body = writeWfad(stored);
     } else {
-      wfmf = encodeDisk(stored);
+      body = encodeDisk(stored);
     }
   } catch (e) {
     // A stored blob that will not encode is our bug or a corrupt object, not
     // the device's fault -- but it is also never going to start encoding on a
-    // retry. setDesired (src/lib/mount.ts) rejects mounting anything but an
-    // exact 901,120-byte image, so this path should be unreachable for a
-    // freshly mounted disk; it remains here for a disk that became desired
-    // before that guard existed. 422, not 500: this is permanent, not
-    // transient, and a device must not treat it as a server fault worth
-    // retrying. An HFE was validated at ingest, so this is equally
-    // unreachable for one.
+    // retry. setDesired (src/lib/mount.ts) mounts only what isServable
+    // accepts, so this path should be unreachable for a freshly mounted disk;
+    // it remains for a disk that became desired before that guard existed.
+    // 422, not 500: this is permanent, not transient, and a device must not
+    // treat it as a server fault worth retrying.
     return Response.json(
       { error: 'encode_failed', sha256, detail: (e as Error).message },
       { status: 422 },
     );
   }
 
-  return new Response(wfmf as unknown as BodyInit, {
+  return new Response(body as unknown as BodyInit, {
     status: 200,
     headers: {
       'content-type': 'application/octet-stream',
-      // Computed, not WFMF_BYTES: an HFE's tracks keep their own lengths.
-      'content-length': String(wfmf.byteLength),
+      // Computed, never a constant: an HFE's tracks keep their own lengths,
+      // and WFAD (1,802,256) is not WFMF (2,027,536).
+      'content-length': String(body.byteLength),
       'cache-control': 'no-store',
     },
   });
