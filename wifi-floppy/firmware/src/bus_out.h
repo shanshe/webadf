@@ -35,8 +35,9 @@ void bus_out_set(unsigned pin, bool assert);
 // ...) keeps working: the level goes to drive_id. Call once on core0, after
 // bus_out_init.
 void bus_out_drive_id_init(PIO pio);
-// Answer HD (true) or DD (false) from the next answer on -- the next reset
-// select or the 32-bit repeat, never mid-answer. Core0 only. True if it
+// Answer HD (true) or DD (false) from the next answer on -- the first
+// motor-off select after a motor-on one, or the 32-bit repeat, never
+// mid-answer. Core0 only. True if it
 // changed.
 bool bus_out_drive_id_set_hd(bool hd);
 #endif

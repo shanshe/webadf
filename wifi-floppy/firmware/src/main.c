@@ -2113,7 +2113,7 @@ int main(void) {
 
 #if WF_DRIVE_ID
     // The Amiga drive-ID answer on RDY (HD spec §5.4). pio0, beside flux_out
-    // and flux_in: 30 of its 32 instruction slots.
+    // and flux_in: 29 of its 32 instruction slots.
     bus_out_drive_id_init(pio);
     wf_logf(WF_INFO, "drive-id: answering DD 0x%08lx on DF0 motor-off selects",
             (unsigned long)DRIVE_ID_DD);
@@ -2304,8 +2304,8 @@ int main(void) {
 #if WF_DRIVE_ID
                 // Before the insert is announced, so an ID read the change
                 // prompts sees the new disk's density. Taken at the next
-                // answer -- the reset select or the 32-bit repeat -- never
-                // mid-answer (bus_out.c). Whether Kickstart re-reads the ID
+                // answer -- the first motor-off select after a motor-on one,
+                // or the 32-bit repeat -- never mid-answer (bus_out.c). Whether Kickstart re-reads the ID
                 // on a change at all is bench step 9. The same HD derivation
                 // as the WPROT rule on core1 (write_back_wprot).
                 const bool hd = psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD;

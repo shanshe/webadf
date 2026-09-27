@@ -4458,6 +4458,39 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 
 ### 3an. HD floppies, read-only -- 2026-09-26 (spec/plan 2026-09-26-hd-floppies-read-only)
 
+**FIXED AND VERIFIED ON HARDWARE 2026-09-27: firmware `1.4.1+g615026d` (registry seq 29) is on the bench board and passed
+the bench rerun on an A5000 rev 8a.1 (Kickstart 3.1): DD Workbench boots and DF0 Info shows 880K; DD->HD swap while
+running; the HD disk's 560000-byte HDCheck.txt copies exactly; `Echo >DF0:test hi` says write protected; cold power-on
+with the HD disk desired boots from it. Merged to master.** (On the A5000 the floppy ribbon was first fitted reversed:
+every input read low with SIDE floating, the Amiga said "no disk", and a staged OTA never applied because the board read
+"selected, motor on". Check the ribbon before blaming firmware; a continuity test J1 pin 10 -> pin 9 beeps when reversed.
+The NFC reader has read "absent" since the move -- a loose bench lead, not firmware.) Root cause
+of the dropped GP12 output enable below: **pico-sdk 2.3.0's `pio_encode_mov(pio_osr, src)` returns `mov pindirs, src`**
+in a release build -- with PARAM_ASSERTIONS off the `_PIO_INVALID_*` flags are 0, so `pio_osr == pio_exec` (7), which
+pio_encode_mov remaps to `pio_exec_mov` (4) `== pio_pindirs`, which it remaps again to `pio_pindirs_mov` (3). Measured on
+the board: `pio_encode_mov(pio_osr, pio_null) == 0xa063`. 1.4.0's HD load was `pio_encode_mov(pio_osr, pio_isr)`, so
+every HD reload turned RDY's output off (`pio_encode_mov_not` is not affected: DD's `0xa0eb` was right). The load words
+now come from `drive_id_load()` (drive_id.h), built from the MOV fields: HD `0xa0e2` `mov osr, y`, DD `0xa0eb`
+`mov osr, ~null`; test_drive_id_pio.c asserts the words and that their destination field is OSR, and test/run.sh fails
+on any `pio_encode_mov(pio_osr` in src/. Ported from `bench/id-probe` without its diagnostics: the ID lives in Y (nothing
+restarts the drive_id SM; ISR "reading as 0" on the bench was the same encoder bug -- the HD load never wrote OSR), MTR is tested with `jmp pin`, clkdiv 10 so `wait 0 gpio 2 [7]` gives MTR ~0.5 us, and **the
+amiga-hddlw PAL's phase: a motor-on select resets the answer and the FIRST motor-off select after it carries bit 31**
+(the host model test_drive_id.c now says so; 1.4.0's "the reset select carries no bit" was wrong). The level is put on
+RDY once per motor-on select; bus_out_set also execs `set pins, 1` on an assert while the machine waits at
+`on_selected_wait`. drive_id is 15 instructions on pio0 (29 of 32). Bench results of the DIAGNOSTIC build
+bench/id-probe `7565cea` (Kickstart 3.1), which differs from 1.4.1: drive_id on **pio2**, plus a main-loop `set pindirs`
+re-assert and a Y reseed on every HD mount. 1.4.1 runs drive_id on pio0 without either, so these results are the
+design's, not the release's:
+
+| Check | Result |
+|---|---|
+| DD disk boots, DF0 Info shows 880K | pass |
+| HD disk boots | pass |
+| A 560,000-byte file copies exactly from the HD disk | pass |
+| Saving to the HD disk | "write protected" (pass) |
+| DD <-> HD swaps while running | pass |
+| Cold power-on with the HD disk in boots | pass |
+
 **BENCH 2026-09-27: STEP 1 FAILED; HD DOES NOT WORK YET; THE BOARD RUNS `1.4.0+g864f871` = master built with
 `-DWF_DRIVE_ID=OFF` (published seq 24): DD/HFE/NFC as 1.3.1, `plays_hd=false` so the server refuses HD. Verified: Workbench
 3.1 DD boots on it.** What the bench established (diagnostic builds on branch `bench/id-probe`, worktree
@@ -4469,6 +4502,7 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
    - The PIO program's logic is right on hardware: motor-off selects take the ID path (PC past `out pins, 1`).
    - DD answers (`mov osr, ~null`) put `1` on RDY on polling selects -- the pad, funcsel (PIO0) and pindir are fine then.
    - Keeping the HD word in ISR failed (SM_RESTART clears ISR; datasheet RP2350 CTRL.SM_RESTART). Moved to Y.
+     (Corrected 2026-09-27: nothing restarts the drive_id SM; this too was the `mov pindirs` encoder bug -- see FIXED.)
    - **Decisive: pio0's output enable for GP12 (DBG_PADOE bit 12) goes to 0 at the Amiga's first motor-on select
      after a disk is mounted, and stays off during every later ID read** (`!` in the probe log), so RDY floats low
      (pad pull-down) whatever the program writes. A main-loop `set pindirs, 1` re-assert (~2 ms later) is too late

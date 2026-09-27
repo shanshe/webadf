@@ -89,6 +89,24 @@ if grep -nE 'gpio_put\(PIN_(INDEX|CHNG|WPROT|RDY|TRK0|RDATA)\b' ../src/*.c; then
   fail=1
 fi
 
+# pico-sdk 2.3.0 release builds: pio_encode_mov with dest pio_osr or pio_exec
+# is broken -- pio_osr == pio_exec (7) is remapped to pio_exec_mov (4) ==
+# pio_pindirs, then to pio_pindirs_mov (3), so both emit `mov pindirs, x`
+# (HANDOFF §3an). It switched RDY's output off on every HD drive-ID reload in
+# 1.4.0 and looked like nothing at all. pio_encode_mov_not/_reverse do not
+# remap and are correct, so they are not flagged. Every call is checked, not
+# every line; // comments (and .pio `;` comment lines) are stripped first, so
+# the comments that name the bug do not trip it.
+pio_mov_bad=$(for f in ../src/*.c ../src/*.h ../src/*.pio; do
+  sed -E -e 's#//.*##' -e 's#^[[:space:]]*;.*##' "$f" |
+    { grep -noE 'pio_encode_mov[[:space:]]*\([[:space:]]*pio_(osr|exec)\b' || true; } | sed "s#^#$f:#"
+done)   # no match is grep's exit 1: under set -e -o pipefail it would end the script
+if [ -n "$pio_mov_bad" ]; then
+  echo "$pio_mov_bad"
+  echo "FAIL: pio_encode_mov(pio_osr|pio_exec, ...) encodes mov pindirs in pico-sdk 2.3.0 (build the word from the fields, as drive_id_load does)"
+  fail=1
+fi
+
 # M3 (spec 2026-09-22-firmware-update-device-design.md): once the board boots
 # from a partition, the boot ROM's address translation maps only the booted
 # slot at XIP_BASE. Reading anything else through XIP_BASE -- the config and

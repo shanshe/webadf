@@ -21,17 +21,15 @@ void drive_id_model_set_id(drive_id_model_t *m, uint32_t id) {
 
 void drive_id_model_select(drive_id_model_t *m, bool mtr_on) {
     m->selected = true;
-    if (mtr_on) {                         // jmp !y, on_selected
+    if (mtr_on) {                         // jmp pin falls through (MTR low): on_selected
         m->motor_on = true;
         m->rdy = m->level;                // mov pins, x
         return;
     }
-    if (m->motor_on) {                    // reset_load: mov osr, <the ID>
+    if (m->motor_on) {                    // jmp pin, reset_load: mov osr, <the ID>
         m->motor_on = false;
         m->shifter = m->id;
-        m->bits_left = 32;
-        m->rdy = false;                   // jmp bit_done: no bit, RDY stays released
-        return;
+        m->bits_left = 32;                // ...and falls straight into id_bit
     }
     m->rdy = (m->shifter >> 31) != 0;     // id_bit: out pins, 1
     m->shifter <<= 1;
@@ -49,7 +47,10 @@ void drive_id_model_deselect(drive_id_model_t *m) {
 
 void drive_id_model_level(drive_id_model_t *m, bool assert) {
     m->level = assert;                    // exec'd `set x, level` (bus_out.c)
-    if (m->selected && m->motor_on) m->rdy = assert;   // on_selected: mov pins, x
+    // An assert while selected with the motor on also execs `set pins, 1`
+    // (bus_out.c, at on_selected_wait); a release waits for the deselect's
+    // `mov pins, null`.
+    if (assert && m->selected && m->motor_on) m->rdy = true;
 }
 
 bool drive_id_model_rdy_gpio(const drive_id_model_t *m) {

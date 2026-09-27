@@ -125,8 +125,9 @@ endif ()
 # ON for every release. OFF is the kill switch: no responder -- RDY released
 # through the ID read, as before 1.4.0 -- and the board stops reporting
 # playsHd, so the server refuses HD mounts cleanly. src/drive_id.c is NOT in
-# this build: it is the host-tested model of the PIO program, and the one
-# helper the device uses (drive_id_for) is inline in drive_id.h.
+# this build: it is the host-tested model of the PIO program, and the
+# helpers the device uses (drive_id_for, drive_id_load) are inline in
+# drive_id.h.
 option(WF_DRIVE_ID "Answer the Amiga drive-ID read on RDY (needed for HD disks)" ON)
 if (WF_DRIVE_ID)
   target_compile_definitions(wifi_floppy PRIVATE WF_DRIVE_ID=1)
@@ -162,7 +163,7 @@ endif ()
 # configure whenever this file changes. `-DFIRMWARE_SEMVER=` still overrides,
 # for a one-off build, because -D defines it before this point.
 if (NOT DEFINED FIRMWARE_SEMVER)
-  set(FIRMWARE_SEMVER "1.4.0")
+  set(FIRMWARE_SEMVER "1.4.1")
 endif ()
 
 set(WF_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/wifi_floppy_version.h")
