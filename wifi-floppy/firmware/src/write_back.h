@@ -18,10 +18,10 @@ typedef enum {
     WB_REJECT_NO_DISK,          // nothing mounted now
     WB_REJECT_DISK_CHANGED,     // a swap/eject landed between WGATE and now
     WB_REJECT_OVERFLOW,         // the capture ran out of room: its end is missing
-    WB_REJECT_PARTIAL,          // fewer than all 11 sectors verified
+    WB_REJECT_PARTIAL,          // fewer than all the disk's 11 or 22 sectors verified
     WB_REJECT_INCONSISTENT,     // sector headers disagree about the track
     WB_REJECT_WRONG_TRACK,      // a valid track, for a cylinder the head is not on
-    WB_REJECT_READ_ONLY,        // an HD disk: read-only on the board (HD spec §5.3)
+    WB_REJECT_DENSITY,          // good sectors numbered past the disk's count: the other density's track
 } wb_verdict_t;
 
 // `head_track` is the track (cyl*2+side) sampled when WGATE asserted;
@@ -30,8 +30,16 @@ wb_verdict_t write_back_verdict(const mfm_decode_result_t *d, int head_track,
                                 bool overflowed, int32_t token_at_wgate,
                                 int32_t token_now);
 
-// Short, log-line sized.
-const char *write_back_reason(wb_verdict_t v);
+// The mounted disk's sectors a track: 22 for an ADF_HD slot, 11 otherwise
+// (HD writes spec §4.2). What main.c decodes a capture with, and what the
+// verdict counts against -- both from the same token, so they cannot differ.
+unsigned write_back_sectors(int32_t token);
+
+// All `nsec` sectors found: 0x7ff DD, 0x3fffff HD.
+uint32_t write_back_mask(unsigned nsec);
+
+// Short, log-line sized. `nsec` names the count (spec §4.2).
+const char *write_back_reason(wb_verdict_t v, unsigned nsec);
 
 // Encode `adf_track` (MFM_TRACK_DATA_BYTES) as a standard track and store it
 // in `slot` as DIRTY. True if it landed.

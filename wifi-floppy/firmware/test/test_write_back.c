@@ -4,6 +4,7 @@
 #include "../src/flux_bits.h"
 #include "../src/psram_image.h"
 #include "../src/track_cache.h"
+#include "hd_fixture.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -67,22 +68,63 @@ static void verdict_rejects_a_write_that_outlived_its_disk(void) {
 }
 
 static void every_verdict_has_a_reason(void) {
-    for (int v = WB_APPLY; v <= WB_REJECT_READ_ONLY; v++)
-        CHECK(write_back_reason((wb_verdict_t)v)[0] != '\0', "a log line needs a reason");
+    for (int v = WB_APPLY; v <= WB_REJECT_DENSITY; v++) {
+        CHECK(write_back_reason((wb_verdict_t)v, MFM_SECTORS)[0] != '\0', "a log line needs a reason");
+        CHECK(write_back_reason((wb_verdict_t)v, MFM_HD_SECTORS)[0] != '\0', "on HD too");
+    }
+    CHECK(strstr(write_back_reason(WB_REJECT_PARTIAL, MFM_SECTORS), "11") != NULL, "DD names its count");
+    CHECK(strstr(write_back_reason(WB_REJECT_PARTIAL, MFM_HD_SECTORS), "22") != NULL, "HD names its count");
 }
 
-// HD spec §5.3: an HD disk takes no writes on the board, however clean the
-// capture. The verdict refuses it, and the store refuses it again below that.
-static void an_hd_disk_takes_no_writes(void) {
+// HD writes spec §4.2: the mounted disk's count decides. An HD disk wants all
+// 22 sectors; a DD disk refuses any good sector numbered past 10.
+static void an_hd_disk_wants_all_22_sectors(void) {
     psram_image_reset_slot(0);
     psram_image_set_slot_kind(0, SLOT_KIND_ADF_HD);
     int32_t tok = mounted_token();
+    CHECK_EQ_INT(write_back_sectors(tok), MFM_HD_SECTORS);
+    CHECK_EQ_INT(write_back_mask(MFM_HD_SECTORS), 0x3fffff);
+    mfm_decode_result_t d = whole(80);            /* 0x7ff: 11 of 22 */
+    CHECK_EQ_INT(write_back_verdict(&d, 80, false, tok, tok), WB_REJECT_PARTIAL);
+    d.found = 0x3fffffu;
+    CHECK_EQ_INT(write_back_verdict(&d, 80, false, tok, tok), WB_APPLY);
+    psram_image_reset_slot(0);     /* back to MFM, for anything that runs after */
+}
+
+static void a_dd_disk_refuses_sectors_past_10(void) {
+    psram_image_reset_slot(0);
+    int32_t tok = mounted_token();
+    CHECK_EQ_INT(write_back_sectors(tok), MFM_SECTORS);
     mfm_decode_result_t d = whole(80);
-    CHECK_EQ_INT(write_back_verdict(&d, 80, false, tok, tok), WB_REJECT_READ_ONLY);
-    static uint8_t adf[MFM_TRACK_DATA_BYTES];
-    CHECK(!write_back_apply(0, 80, adf), "an HD slot never stores a write");
-    CHECK_EQ_INT(psram_image_dirty_count(0), 0);
-    psram_image_reset_slot(0);     // back to MFM, for anything that runs after
+    d.foreign_sectors = 11;                        /* ids 11..21 of an HD track */
+    CHECK_EQ_INT(write_back_verdict(&d, 80, false, tok, tok), WB_REJECT_DENSITY);
+    CHECK_EQ_INT(write_back_verdict(&d, 80, true, tok, tok), WB_REJECT_OVERFLOW);   /* order: overflow first */
+}
+
+// Real tracks, not hand-set bitmaps: Greaseweazle's HD track on a DD disk,
+// and our DD encoder's track on an HD disk (spec §7, firmware host). The
+// fixture reader is hd_fixture.h's.
+static void a_dd_disk_refuses_a_real_hd_track(void) {
+    static uint8_t mfm[HD_MFM_BYTES], got[MFM_HD_TRACK_DATA_BYTES];
+    CHECK(read_hd_fixture(80, mfm), "fixtures/adf_mfm_hd/prng-t080.mfm");
+    psram_image_reset_slot(0);                     /* MFM: a DD disk */
+    int32_t tok = mounted_token();
+    mfm_decode_result_t d;
+    mfm_decode_track_n(mfm, HD_MFM_BYTES, got, &d, write_back_sectors(tok));
+    CHECK_EQ_INT(write_back_verdict(&d, 80, false, tok, tok), WB_REJECT_DENSITY);
+}
+
+static void an_hd_disk_refuses_a_real_dd_track(void) {
+    static uint8_t data[MFM_TRACK_DATA_BYTES], mfm[MFM_TRACK_BYTES], got[MFM_HD_TRACK_DATA_BYTES];
+    memset(data, 0x42, sizeof data);
+    mfm_encode_track(data, 80, mfm);
+    psram_image_reset_slot(0);
+    psram_image_set_slot_kind(0, SLOT_KIND_ADF_HD);
+    int32_t tok = mounted_token();
+    mfm_decode_result_t d;
+    mfm_decode_track_n(mfm, sizeof mfm, got, &d, write_back_sectors(tok));
+    CHECK_EQ_INT(write_back_verdict(&d, 80, false, tok, tok), WB_REJECT_PARTIAL);
+    psram_image_reset_slot(0);
 }
 
 // The four gates on WPROT, one function so the HD one is tested (main.c's
@@ -187,7 +229,10 @@ int main(void) {
     RUN(every_verdict_has_a_reason);
     RUN(apply_stores_dirty_and_the_new_bytes_are_served);
     RUN(capture_shaped_write_applies_and_reads_back);
-    RUN(an_hd_disk_takes_no_writes);
+    RUN(an_hd_disk_wants_all_22_sectors);
+    RUN(a_dd_disk_refuses_sectors_past_10);
+    RUN(a_dd_disk_refuses_a_real_hd_track);
+    RUN(an_hd_disk_refuses_a_real_dd_track);
     RUN(wprot_is_forced_for_an_hd_disk);
     free(mem);
     return REPORT();

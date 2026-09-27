@@ -2462,17 +2462,22 @@ int main(void) {
                 // wt/wtok, never write_track/write_token directly.
                 const int     wt   = write_track;
                 const int32_t wtok = write_token;
-                static uint8_t decoded[MFM_TRACK_DATA_BYTES];
+                // HD writes spec §4.2: the mounted disk's sector count -- the
+                // disk WGATE wrote to (wtok), never what the data looks like.
+                const unsigned nsec = write_back_sectors(wtok);
+                const uint32_t want = write_back_mask(nsec);
+                static uint8_t decoded[MFM_HD_TRACK_DATA_BYTES];
                 mfm_decode_result_t d;
                 memset(decoded, 0, sizeof decoded);
-                mfm_decode_track(cap.mfm, cap.mfm_bytes, decoded, &d);
+                mfm_decode_track_n(cap.mfm, cap.mfm_bytes, decoded, &d, nsec);
                 wf_logf(WF_INFO,
-                        "write: trk %d %u iv %u B sec 0x%03x%s bad %u rng %u%s",
+                        "write: trk %d %u iv %u B sec 0x%06lx/%u%s bad %u foreign %u rng %u%s",
                         wt,
                         (unsigned)cap.intervals, (unsigned)cap.mfm_bytes,
-                        (unsigned)d.found,
-                        d.found == 0x7ff ? " ALL" : " PART",
-                        (unsigned)d.bad_checksums, (unsigned)cap.out_of_range,
+                        (unsigned long)d.found, nsec,
+                        d.found == want ? " ALL" : " PART",
+                        (unsigned)d.bad_checksums, (unsigned)d.foreign_sectors,
+                        (unsigned)cap.out_of_range,
                         cap.overflowed ? " OVERFLOWED" : "");
                 wf_logf(WF_INFO, "write: first id %u sync@%lu, last id %u end@%lu, of %lu bits",
                         (unsigned)d.first_id, (unsigned long)d.first_sync_bit,
@@ -2498,7 +2503,7 @@ int main(void) {
                                                               wtok, now_tok);
                     if (v != WB_APPLY) {
                         wf_logf(WF_WARN, "write: trk %d rejected: %s",
-                                wt, write_back_reason(v));
+                                wt, write_back_reason(v, nsec));
                     } else if (write_back_apply(psram_token_slot(now_tok), wt, decoded)) {
                         // The SRAM copy is keyed on (track, token) and a write
                         // changes neither: drop it, and if the head is still on

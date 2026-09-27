@@ -1,5 +1,6 @@
 #include "harness.h"
 #include "../src/mfm.h"
+#include "hd_fixture.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -468,6 +469,56 @@ static void test_decodes_through_separate_scratch_do_not_share_state(void) {
     free(adf);
 }
 
+/* ---- HD (HD writes spec §4.2): Greaseweazle's AmigaDOS_HD fixtures ------ */
+/* The fixture reader and the 'prng' generator are hd_fixture.h's. */
+
+static void test_an_hd_track_decodes_all_22_sectors(void) {
+    static uint8_t mfm[HD_MFM_BYTES], got[MFM_HD_TRACK_DATA_BYTES], want[MFM_HD_TRACK_DATA_BYTES];
+    static const int tracks[] = { 0, 1, 80, 159 };
+    for (unsigned i = 0; i < 4; i++) {
+        const int t = tracks[i];
+        CHECK(read_hd_fixture(t, mfm), "fixtures/adf_mfm_hd (scripts/adf-mfm-hd-fixtures.py)");
+        hd_prng_track((unsigned)t, want);
+        memset(got, 0, sizeof got);
+        mfm_decode_result_t r;
+        mfm_decode_track_n(mfm, sizeof mfm, got, &r, MFM_HD_SECTORS);
+        CHECK_EQ_INT(r.found, 0x3fffff);
+        CHECK_EQ_INT(r.track_no, t);
+        CHECK_EQ_INT(r.bad_checksums, 0);
+        CHECK_EQ_INT(r.foreign_sectors, 0);
+        CHECK(memcmp(got, want, sizeof want) == 0, "the ADF bytes Greaseweazle encoded");
+    }
+}
+
+static void test_a_dd_read_of_an_hd_track_counts_its_foreign_sectors(void) {
+    static uint8_t mfm[HD_MFM_BYTES], got[MFM_HD_TRACK_DATA_BYTES];
+    CHECK(read_hd_fixture(80, mfm), "fixture");
+    mfm_decode_result_t r;
+    mfm_decode_track_n(mfm, sizeof mfm, got, &r, MFM_SECTORS);
+    CHECK_EQ_INT(r.found, 0x7ff);            /* complete by the DD mask alone... */
+    CHECK_EQ_INT(r.foreign_sectors, 11);     /* ...which is why ids 11..21 are counted */
+}
+
+static void test_an_hd_read_of_a_dd_track_is_partial(void) {
+    static uint8_t data[MFM_TRACK_DATA_BYTES], mfm[MFM_TRACK_BYTES], got[MFM_HD_TRACK_DATA_BYTES];
+    for (size_t i = 0; i < sizeof data; i++) data[i] = (uint8_t)(i * 13u);
+    mfm_encode_track(data, 80, mfm);
+    mfm_decode_result_t r;
+    mfm_decode_track_n(mfm, sizeof mfm, got, &r, MFM_HD_SECTORS);
+    CHECK_EQ_INT(r.found, 0x7ff);            /* 11 of 22 */
+    CHECK_EQ_INT(r.foreign_sectors, 0);
+}
+
+static void test_an_impossible_sector_count_finds_nothing(void) {
+    static uint8_t mfm[HD_MFM_BYTES], got[MFM_HD_TRACK_DATA_BYTES];
+    CHECK(read_hd_fixture(80, mfm), "fixture");
+    mfm_decode_result_t r;
+    mfm_decode_track_n(mfm, sizeof mfm, got, &r, 0);
+    CHECK_EQ_INT(r.found, 0);
+    mfm_decode_track_n(mfm, sizeof mfm, got, &r, MFM_MAX_SECTORS + 1);
+    CHECK_EQ_INT(r.found, 0);
+}
+
 int main(void) {
     RUN(test_round_trips_every_golden_track);
     RUN(test_a_capture_starting_mid_track_still_decodes);
@@ -483,5 +534,9 @@ int main(void) {
     RUN(test_encoder_matches_every_golden_track);
     RUN(test_encode_then_decode_round_trips);
     RUN(test_decodes_through_separate_scratch_do_not_share_state);
+    RUN(test_an_hd_track_decodes_all_22_sectors);
+    RUN(test_a_dd_read_of_an_hd_track_counts_its_foreign_sectors);
+    RUN(test_an_hd_read_of_a_dd_track_is_partial);
+    RUN(test_an_impossible_sector_count_finds_nothing);
     return REPORT();
 }

@@ -1,5 +1,15 @@
 #include "write_back.h"
 #include "psram_image.h"
+#include <stdbool.h>
+
+unsigned write_back_sectors(int32_t token) {
+    return psram_image_slot_kind(psram_token_slot(token)) == SLOT_KIND_ADF_HD
+        ? MFM_HD_SECTORS : MFM_SECTORS;
+}
+
+uint32_t write_back_mask(unsigned nsec) {
+    return nsec >= 32u ? 0xffffffffu : (1u << nsec) - 1u;
+}
 
 wb_verdict_t write_back_verdict(const mfm_decode_result_t *d, int head_track,
                                 bool overflowed, int32_t token_at_wgate,
@@ -8,13 +18,13 @@ wb_verdict_t write_back_verdict(const mfm_decode_result_t *d, int head_track,
     // WGATE asserted, and to no other -- however good its sectors are.
     if (psram_token_slot(token_now) == SLOT_NONE) return WB_REJECT_NO_DISK;
     if (token_now != token_at_wgate)              return WB_REJECT_DISK_CHANGED;
-    // HD is read-only in this release (spec §5.3). WPROT is asserted for it,
-    // so a write here means the Amiga ignored that: discarded -- never
-    // stored, so never uploaded -- however clean its sectors are.
-    if (psram_image_slot_kind(psram_token_slot(token_now)) == SLOT_KIND_ADF_HD)
-        return WB_REJECT_READ_ONLY;
     if (overflowed)                               return WB_REJECT_OVERFLOW;
-    if (d->found != 0x7ffu)                       return WB_REJECT_PARTIAL;
+    // HD writes spec §4.2: the mounted disk's count decides, never the data's.
+    // A DD disk given an HD track decodes sectors 0..10 cleanly -- complete by
+    // the mask alone -- so its good sectors 11..21 are what give it away.
+    if (d->foreign_sectors)                       return WB_REJECT_DENSITY;
+    if (d->found != write_back_mask(write_back_sectors(token_now)))
+                                                  return WB_REJECT_PARTIAL;
     if (!d->track_no_consistent)                  return WB_REJECT_INCONSISTENT;
     // The one corruption a checksum cannot see: a valid track for a cylinder
     // the head is not on.
@@ -22,16 +32,18 @@ wb_verdict_t write_back_verdict(const mfm_decode_result_t *d, int head_track,
     return WB_APPLY;
 }
 
-const char *write_back_reason(wb_verdict_t v) {
+const char *write_back_reason(wb_verdict_t v, unsigned nsec) {
+    const bool hd = nsec == MFM_HD_SECTORS;
     switch (v) {
     case WB_APPLY:               return "applied";
     case WB_REJECT_NO_DISK:      return "no disk mounted";
     case WB_REJECT_DISK_CHANGED: return "disk changed during the write";
     case WB_REJECT_OVERFLOW:     return "capture overflowed";
-    case WB_REJECT_PARTIAL:      return "not all 11 sectors verified";
+    case WB_REJECT_PARTIAL:      return hd ? "not all 22 sectors verified" : "not all 11 sectors verified";
     case WB_REJECT_INCONSISTENT: return "sector headers disagree about the track";
     case WB_REJECT_WRONG_TRACK:  return "sectors name another track";
-    case WB_REJECT_READ_ONLY:    return "HD disk is read-only";
+    case WB_REJECT_DENSITY:      return hd ? "sectors numbered past 22"
+                                           : "sectors numbered past 11: an HD track on a DD disk";
     }
     return "unknown";
 }

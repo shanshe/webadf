@@ -63,10 +63,13 @@ static void realign(const uint8_t *m, size_t bit, uint8_t *dst, size_t n) {
 // (2026-09-15).
 #define SEC_BODY_BYTES (MFM_SECTOR_MFM_BYTES - 8)
 
-void mfm_decode_track_r(const uint8_t *mfm, size_t len, uint8_t *adf_out,
-                        mfm_decode_result_t *out, uint8_t *scratch) {
+void mfm_decode_track_rn(const uint8_t *mfm, size_t len, uint8_t *adf_out,
+                         mfm_decode_result_t *out, uint8_t *scratch, unsigned nsec) {
     memset(out, 0, sizeof *out);
     out->track_no_consistent = true;
+    // HD writes spec §4.2: a count this decoder cannot represent finds
+    // nothing, rather than shifting past `found`'s 32 bits.
+    if (nsec == 0 || nsec > MFM_MAX_SECTORS) return;
     bool have_track_no = false;
 
     // Review (final), Critical C1: EVERY large working buffer lives in the
@@ -121,11 +124,19 @@ void mfm_decode_track_r(const uint8_t *mfm, size_t len, uint8_t *adf_out,
                && mfm_checksum(data, MFM_SECTOR_DATA_BYTES) == be32(datsum_raw);
 
         uint8_t sector_id = header[2];
-        if (!ok || sector_id >= MFM_SECTORS) {
+        if (!ok) {
             // Advance by ONE BIT, not by a sector: a false sync inside data
             // would otherwise skip 1088 bytes and step over the real sector
             // that follows it. Only a sector that verifies earns the long stride.
             out->bad_checksums++;
+            continue;
+        }
+        if (sector_id >= nsec) {
+            // A good sector the mounted disk has no room for: the Amiga wrote
+            // a track of the other density (an HD track on a DD disk has ids
+            // 11..21). Counted, never stored -- the verdict refuses the whole
+            // track (write_back.c, WB_REJECT_DENSITY).
+            out->foreign_sectors++;
             continue;
         }
 
@@ -146,7 +157,7 @@ void mfm_decode_track_r(const uint8_t *mfm, size_t len, uint8_t *adf_out,
         // first keeps this independent of where the capture happened to
         // start.
         if (!(out->found & (1u << sector_id))) {
-            out->found |= (uint16_t)(1u << sector_id);
+            out->found |= 1u << sector_id;
             memcpy(adf_out + (size_t)sector_id * MFM_SECTOR_DATA_BYTES,
                    data, MFM_SECTOR_DATA_BYTES);
         }
@@ -155,14 +166,25 @@ void mfm_decode_track_r(const uint8_t *mfm, size_t len, uint8_t *adf_out,
     }
 }
 
+// The DD decoder through caller scratch: core1's uploader (uploader.c).
+void mfm_decode_track_r(const uint8_t *mfm, size_t len, uint8_t *adf_out,
+                        mfm_decode_result_t *out, uint8_t *scratch) {
+    mfm_decode_track_rn(mfm, len, adf_out, out, scratch, MFM_SECTORS);
+}
+
 // core0's decoder: the capture decode and the verify re-decode, both on
 // core0's service loop, one at a time -- never core1, which calls
 // mfm_decode_track_r with scratch of its own (uploader.c). This static is
 // core0's alone for exactly that reason; see mfm.h.
+void mfm_decode_track_n(const uint8_t *mfm, size_t len, uint8_t *adf_out,
+                        mfm_decode_result_t *out, unsigned nsec) {
+    static uint8_t core0_scratch[MFM_DECODE_SCRATCH_BYTES];
+    mfm_decode_track_rn(mfm, len, adf_out, out, core0_scratch, nsec);
+}
+
 void mfm_decode_track(const uint8_t *mfm, size_t len, uint8_t *adf_out,
                       mfm_decode_result_t *out) {
-    static uint8_t core0_scratch[MFM_DECODE_SCRATCH_BYTES];
-    mfm_decode_track_r(mfm, len, adf_out, out, core0_scratch);
+    mfm_decode_track_n(mfm, len, adf_out, out, MFM_SECTORS);
 }
 
 /* ---- the read direction's encoder, ported from src/lib/adfmfm ---------- */
