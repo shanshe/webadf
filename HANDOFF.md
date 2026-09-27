@@ -4455,8 +4455,13 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 
 ### 3an. HD floppies, read-only -- 2026-09-26 (spec/plan 2026-09-26-hd-floppies-read-only)
 
-**FIXED 2026-09-27 (branch `fix/drive-id-release`, firmware 1.4.1; not yet merged, published or flashed; 1.4.1 ITSELF
-HAS NOT RUN ON HARDWARE -- bench rerun owed).** Root cause
+**FIXED AND VERIFIED ON HARDWARE 2026-09-27: firmware `1.4.1+g615026d` (registry seq 29) is on the bench board and passed
+the bench rerun on an A5000 rev 8a.1 (Kickstart 3.1): DD Workbench boots and DF0 Info shows 880K; DD->HD swap while
+running; the HD disk's 560000-byte HDCheck.txt copies exactly; `Echo >DF0:test hi` says write protected; cold power-on
+with the HD disk desired boots from it. Merged to master.** (On the A5000 the floppy ribbon was first fitted reversed:
+every input read low with SIDE floating, the Amiga said "no disk", and a staged OTA never applied because the board read
+"selected, motor on". Check the ribbon before blaming firmware; a continuity test J1 pin 10 -> pin 9 beeps when reversed.
+The NFC reader has read "absent" since the move -- a loose bench lead, not firmware.) Root cause
 of the dropped GP12 output enable below: **pico-sdk 2.3.0's `pio_encode_mov(pio_osr, src)` returns `mov pindirs, src`**
 in a release build -- with PARAM_ASSERTIONS off the `_PIO_INVALID_*` flags are 0, so `pio_osr == pio_exec` (7), which
 pio_encode_mov remaps to `pio_exec_mov` (4) `== pio_pindirs`, which it remaps again to `pio_pindirs_mov` (3). Measured on

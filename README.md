@@ -117,7 +117,7 @@ deltas.
 | Writing on a real Amiga, saves reach the library | verified on hardware |
 | Second drive (DF1) alongside the board | verified on hardware |
 | HFE, including long-track (Turrican) | verified on hardware; weak-bit titles not yet tested |
-| HD disks, read-only (Kickstart 3.0+) | verified on hardware on a bench build; release 1.4.1 bench rerun owed |
+| HD disks, read-only (Kickstart 3.0+) | verified on hardware (firmware 1.4.1, Kickstart 3.1) |
 | Firmware updates from the web app | verified on hardware (current: 1.3.1; 1.4.0 built, not yet published) |
 | NFC: tap to mount, write tags from the web | verified on hardware |
 | Rev B board | in design (Shanshe) |
