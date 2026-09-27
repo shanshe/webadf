@@ -92,8 +92,13 @@ function putBcpl(buf: Uint8Array, lengthOffset: number, value: string, max: numb
 /**
  * A freshly formatted, empty volume: 880 KB, or 1.76 MB for `density: 'hd'`.
  *
- * Byte-identical to `xdftool create + format` except for the two timestamps
- * -- proven in format.test.ts for DD, and by `pnpm adffs:verify` for both.
+ * Byte-identical to `xdftool create + format` except for the root checksum,
+ * the date triples and four reserved bytes at root+496 -- proven for HD by
+ * the byte-diff in `pnpm adffs:verify`'s "our blank disks" section (masking
+ * exactly those bytes and requiring equality otherwise); DD's blank format
+ * is exercised by the same script's write-based cross-checks (xdftool must
+ * accept the block layout enough to allocate into it) and by
+ * format.test.ts's own determinism check, not a byte-diff against xdftool.
  */
 export function formatVolume(opts: FormatOptions): Uint8Array {
   const g = geometryFor(opts.density ?? 'dd');
