@@ -105,7 +105,7 @@ export async function signUpFresh(page: Page) {
  * disk made. Keeping the two-step in one place is what stops that being
  * rediscovered per spec.
  */
-export async function createAdf(page: Page, filesystem: 'FFS' | 'OFS' = 'FFS') {
+export async function createAdf(page: Page, filesystem: 'FFS' | 'OFS' = 'FFS', density: 'dd' | 'hd' = 'dd') {
   await page.getByTestId('create-adf').click();
-  await page.getByTestId(`create-adf-${filesystem.toLowerCase()}`).click();
+  await page.getByTestId(`create-adf-${density === 'hd' ? 'hd-' : ''}${filesystem.toLowerCase()}`).click();
 }

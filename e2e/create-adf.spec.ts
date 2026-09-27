@@ -66,6 +66,34 @@ test('OFS is selectable, and it really is OFS on the disk', async ({ page }) => 
   expect(v.volume.filesystem).toBe('OFS');
 });
 
+test('an HD disk is 1.76 MB with its root at block 1760, and DD stays the default', async ({ page }) => {
+  const u = await signUpFresh(page);
+  await page.goto('/library');
+
+  await createAdf(page, 'FFS', 'hd');
+  await expect(page.getByTestId('game-card')).toHaveCount(1);
+  const [game] = await getDb().select().from(games)
+    .where(and(eq(games.orgId, u.orgId), eq(games.authored, true)));
+  const [disk] = await getDb().select().from(disks).where(eq(disks.gameId, game.id));
+  expect(disk.sizeBytes).toBe(1_802_240);
+
+  const adf = await page.request.get(`/api/disks/${disk.id}/adf`);
+  expect(adf.status()).toBe(200);
+  const v = readVolume(new Uint8Array(await adf.body()));
+  if (!v.ok) throw new Error(`expected a volume, got ${v.reason}`);
+  expect(v.rootBlock).toBe(1760);
+  expect(v.volume.filesystem).toBe('FFS');
+  expect(v.root).toEqual([]);
+
+  // The API's default is still DD.
+  const res = await page.request.post('/api/disks/create', { data: {} });
+  expect(res.status()).toBe(200);
+  const body = await res.json();
+  expect(body.density).toBe('dd');
+  const [dd] = await getDb().select().from(disks).where(eq(disks.id, body.diskId));
+  expect(dd.sizeBytes).toBe(901_120);
+});
+
 test('renaming on the card rewrites the disk under a new digest', async ({ page }) => {
   const run = runTag();
   const u = await signUpFresh(page);

@@ -1,14 +1,14 @@
 import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import { createHash, randomUUID } from 'node:crypto';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { getDb } from '@/db';
-import { disks } from '@/db/schema/catalog';
+import { disks, games } from '@/db/schema/catalog';
 import { diskVersions, diskWriteTracks } from '@/db/schema/disk-history';
 import { diskStore } from '@/lib/storage';
 import { formatVolume } from '@/lib/adffs/format';
 import { readVolume } from '@/lib/adffs';
 import { HD_TRACK_DATA_BYTES } from '@/lib/adfmfm';
-import { signUpFresh, runTag } from './helpers';
+import { signUpFresh, runTag, createAdf } from './helpers';
 import { seedDisk, cleanupSeeded, pairDevice, authHeader } from './device-helpers';
 
 test.afterAll(cleanupSeeded);
@@ -280,4 +280,59 @@ test('an NFC tap of an HD disk on a board without playsHd is refused, not droppe
   expect(res.status()).toBe(200);
   // 'too_long': the one refusal a pre-1.4.0 board shows (src/lib/nfc/rules.ts tapRefusalOutcome).
   expect((await res.json()).outcome).toBe('too_long');
+});
+
+test('a blank HD disk is made, edited in the browser, and its history lists and restores the changes', async ({ page }) => {
+  // A create, an upload, a rename and a restore -- each its own edit round
+  // trip over a 1.76 MB image, plus two full-image GETs -- against the live
+  // database. The DD equivalent (time-machine.spec.ts's restore test) needs
+  // the same 120 s budget for fewer, smaller round trips; the default 30 s
+  // this test hit twice was the test's own budget, not a stuck restore.
+  test.setTimeout(120_000);
+  const u = await signUpFresh(page);
+  await page.goto('/library');
+  await createAdf(page, 'FFS', 'hd');
+  await expect(page.getByTestId('game-card')).toHaveCount(1);
+  const [game] = await getDb().select().from(games).where(and(eq(games.orgId, u.orgId), eq(games.authored, true)));
+  const [disk] = await getDb().select().from(disks).where(eq(disks.gameId, game.id));
+  expect(disk.sizeBytes).toBe(HD_BYTES);
+
+  const AFTER_EDIT = { timeout: 15_000 };
+  await page.goto(`/disks/${disk.id}/files`);
+  await expect(page.getByTestId('file-toolbar')).toBeVisible();
+  await expect(page.getByTestId('file-edit-disabled')).toHaveCount(0);
+
+  // Through the toolbar: it must post the HD root, 1760.
+  await page.getByTestId('upload-input').setInputFiles({
+    name: 'HELLO.TXT', mimeType: 'application/octet-stream', buffer: Buffer.from('hello hd'),
+  });
+  await expect(page.getByTestId('upload-name')).toHaveValue('HELLO.TXT');
+  await page.getByTestId('upload-submit').click();
+  const row = page.locator('[data-testid="fs-entry"][data-name="HELLO.TXT"]');
+  await expect(row).toBeVisible(AFTER_EDIT);
+
+  const v = readVolume(new Uint8Array(await (await page.request.get(`/api/disks/${disk.id}/adf`)).body()));
+  if (!v.ok) throw new Error(`expected a volume, got ${v.reason}`);
+  const block = v.root.find((e) => e.name === 'HELLO.TXT')!.block;
+  await page.getByTestId(`fs-rename-${block}`).click();
+  await page.getByTestId(`fs-rename-name-${block}`).fill('NEWNAME.TXT');
+  await page.getByTestId(`fs-rename-submit-${block}`).click();
+  await expect(page.locator('[data-testid="fs-entry"][data-name="NEWNAME.TXT"]')).toBeVisible(AFTER_EDIT);
+
+  // History: file-level changes, newest first (HD writes spec §5.2).
+  const panel = page.getByTestId('history-panel');
+  await expect(panel.locator('[data-testid^="version-"]')).toHaveCount(3);
+  await expect(page.getByTestId('version-2')).toHaveAttribute('data-head', 'true');
+  await expect(page.getByTestId('changes-2')).toContainText('NEWNAME.TXT');
+  await expect(page.getByTestId('changes-1')).toContainText('HELLO.TXT');
+
+  // Restore version 1 from the panel: HELLO.TXT is back under its first name.
+  await page.getByTestId('restore-1').click();
+  await expect(page.getByTestId('restore-dialog')).toBeVisible();
+  await page.getByTestId('restore-confirm').click();
+  await expect(page.getByTestId('restore-dialog')).toHaveCount(0, AFTER_EDIT);
+  await expect(page.locator('[data-testid="fs-entry"][data-name="HELLO.TXT"]')).toBeVisible(AFTER_EDIT);
+  const back = readVolume(new Uint8Array(await (await page.request.get(`/api/disks/${disk.id}/adf`)).body()));
+  if (!back.ok) throw new Error(`expected a volume, got ${back.reason}`);
+  expect(back.root.map((e) => e.name)).toEqual(['HELLO.TXT']);
 });
