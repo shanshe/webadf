@@ -688,7 +688,10 @@ static void dc_take_nfc_write(device_client_t *c, char *json) {
     id[0] = '\0';
     if (!json_str(obj, "diskId", id, sizeof id) || !nfc_disk_id_valid(id)) id[0] = '\0';
     c->nfc_write_seq = seq;
-    snprintf(c->nfc_write_disk_id, sizeof c->nfc_write_disk_id, "%s", id);
+    // id is valid (36 chars) or empty here; the precision only tells gcc so
+    // (its -Wformat-truncation cannot see nfc_disk_id_valid, and CI's -Werror stops on it).
+    snprintf(c->nfc_write_disk_id, sizeof c->nfc_write_disk_id, "%.*s",
+             (int)(sizeof c->nfc_write_disk_id - 1), id);
     c->nfc_write_title[0] = '\0';
     if (id[0]) json_str(obj, "title", c->nfc_write_title, sizeof c->nfc_write_title);
     c->nfc_write_new = true;
