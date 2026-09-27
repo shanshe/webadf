@@ -9,7 +9,8 @@ import {
   splitBatches, MAX_HFE_PER_BATCH, type UploadOutcome,
 } from '@/lib/blob-upload';
 import { inspectHfe, describeInspection } from '@/lib/hfe/inspect';
-import { isHfeFilename } from '@/lib/disk-format';
+import { adfDensity, isHfeFilename } from '@/lib/disk-format';
+import { HdTag } from '@/components/disks/hd-tag';
 
 type RowState = 'hashing' | 'deduped' | 'uploading' | 'done' | 'failed';
 
@@ -483,8 +484,9 @@ export function Dropzone() {
                       </span>
                     )}
                   </span>
-                  <span className="text-right" style={{ color: 'var(--muted-2)' }}>
+                  <span className="flex items-center justify-end gap-1 text-right" style={{ color: 'var(--muted-2)' }}>
                     {Math.round(r.sizeBytes / 1024)} KB
+                    {!isHfeFilename(r.filename) && adfDensity(r.sizeBytes) === 'hd' && <HdTag testId="ingest-hd-tag" />}
                   </span>
                   <span className="text-right text-[10px]" style={{ color: 'var(--faint)' }}>
                     {r.sha256.slice(0, 8)}…

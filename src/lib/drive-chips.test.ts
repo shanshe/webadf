@@ -20,7 +20,8 @@ const loaded: LiveStateRow = {
   updateProtocol: null, firmwareUpdateError: null,
   lastError: null, lastErrorAt: null,
   mountedGameId: 'gam-1', mountedGameTitle: 'Turrican', mountedDiskNo: 1,
-  mountedDiskCount: 2, mountedImageFormat: 'adf', desiredGameTitle: 'Turrican',
+  mountedDiskCount: 2, mountedImageFormat: 'adf', mountedSizeBytes: 901_120,
+  desiredGameTitle: 'Turrican',
   macAddress: 'AA:BB:CC:DD:EE:FF',
 };
 
@@ -30,7 +31,8 @@ const empty: LiveStateRow = {
   mountedDiskId: null, mountedSha256: null, mountedVersion: null,
   diskSha256: null, diskWriteProtected: null, mountedDiskWriteProtected: null,
   mountedGameId: null, mountedGameTitle: null, mountedDiskNo: null,
-  mountedDiskCount: null, mountedImageFormat: null, desiredGameTitle: null,
+  mountedDiskCount: null, mountedImageFormat: null, mountedSizeBytes: null,
+  desiredGameTitle: null,
 };
 
 const chip = (r: LiveStateRow, now = NOW) => toDriveChip(r, now);
@@ -66,6 +68,18 @@ describe('toDriveChip', () => {
     expect(protectTag(c)).toBe('WP');
     expect(c.canToggleProtect).toBe(false);
     expect(c.canGoTo).toBe(true);
+  });
+
+  it('an HD disk reads WP, says why, and cannot be toggled (HD spec §4.3)', () => {
+    const c = chip({ ...loaded, mountedSizeBytes: 1_802_240, mountedDiskWriteProtected: false });
+    expect(c.disk?.readOnly).toBe('HD');
+    expect(protectTag(c)).toBe('WP');
+    expect(c.canToggleProtect).toBe(false);
+  });
+
+  it('an HFE says HFE', () => {
+    expect(chip({ ...loaded, mountedImageFormat: 'hfe' }).disk?.readOnly).toBe('HFE');
+    expect(chip(loaded).disk?.readOnly).toBeNull();
   });
 
   it('a mount in flight reads "loading…", names what was asked for, and never the OLD disk', () => {

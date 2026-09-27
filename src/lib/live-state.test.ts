@@ -15,7 +15,8 @@ const base: LiveStateRow = {
   updateProtocol: null, firmwareUpdateError: null,
   lastError: null, lastErrorAt: null,
   mountedGameId: 'gam-1', mountedGameTitle: 'Turrican', mountedDiskNo: 1,
-  mountedDiskCount: 2, mountedImageFormat: 'adf', desiredGameTitle: 'Turrican',
+  mountedDiskCount: 2, mountedImageFormat: 'adf', mountedSizeBytes: 901_120,
+  desiredGameTitle: 'Turrican',
   macAddress: 'AA:BB:CC:DD:EE:FF',
 };
 const other: LiveStateRow = { ...base, id: 'dev-b', name: 'Second' };
@@ -51,6 +52,7 @@ describe('liveFingerprint', () => {
     ['the mounted disk number', { mountedDiskNo: 2 }],
     ['the mounted game\'s disk count', { mountedDiskCount: 3 }],
     ['the mounted disk\'s image format', { mountedImageFormat: 'hfe' }],
+    ['the mounted disk\'s size (DD or HD)', { mountedSizeBytes: 1_802_240 }],
     ['the desired game\'s title', { desiredGameTitle: 'Other' }],
   ] as const)('changes when the %s changes', (_what, patch) => {
     expect(fp([{ ...base, ...patch }])).not.toBe(fp([base]));
