@@ -53,8 +53,8 @@ the firmware just plays bits. Suggested next step for the webservice.
 `src/dskchg.c` re-implements FlashFloppy's Amiga-interface behaviour
 (chgrst=step semantics, motor-edge drive-ID shifter, spin-up delay).
 It's a from-scratch implementation of the observable behaviour, not a
-code port — if you later paste actual FlashFloppy code in, note its
-licensing and credit Keir Fraser.
+code port. FlashFloppy is Keir Fraser's (https://github.com/keirf/flashfloppy,
+Unlicense) and is credited in ../THIRD-PARTY-NOTICES.md.
 
 ## Firmware build requirements
 

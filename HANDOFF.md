@@ -2152,6 +2152,11 @@ separately.
     requirement of the feature, not a blocker. The UI should say so where an HD disk is
     created or mounted, since a 1.3 machine would simply fail to read it.
 
+- **Licences (2026-09-27):** software is MIT (`LICENSE`); hardware is intended CERN-OHL-P-2.0 but NOT yet applied --
+  waiting for Shanshe's written grant for the rev B layout (asked on PR #3). When it arrives: add
+  `wifi-floppy/hardware/LICENSE` (CERN-OHL-P-2.0 text), record the grant, and update the README Licence section.
+  Also: move the firmware to cyw43-driver v2.0.0 (MIT) once a pico-sdk release bundles it, then drop the RP-only
+  note in THIRD-PARTY-NOTICES.md.
 - **Redesign the create-ADF menu** (operator, 2026-09-27): choose OFS/FFS and 880 KB (DD) / 1.76 MB (HD) in a
   UX-friendly way that works on mobile. Today `src/components/library/create-adf.tsx` offers FFS/OFS only; blank HD
   disks also need the adffs geometry work (spec 2026-09-26 §9 item 1).

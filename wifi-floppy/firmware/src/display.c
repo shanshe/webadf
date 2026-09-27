@@ -3,6 +3,8 @@
 #include <stdio.h>
 
 // ---------------------------------------------------------------- font
+// The classic 5x7 ASCII table (as in the Nokia 5110 / Adafruit GFX example
+// fonts; see THIRD-PARTY-NOTICES.md).
 // 5x7, one byte per column, bit 0 = top row. ASCII 0x20..0x7E; anything
 // outside that range renders as '?' rather than reading past the table.
 #define FONT_FIRST 0x20
