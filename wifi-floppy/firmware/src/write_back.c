@@ -8,6 +8,11 @@ wb_verdict_t write_back_verdict(const mfm_decode_result_t *d, int head_track,
     // WGATE asserted, and to no other -- however good its sectors are.
     if (psram_token_slot(token_now) == SLOT_NONE) return WB_REJECT_NO_DISK;
     if (token_now != token_at_wgate)              return WB_REJECT_DISK_CHANGED;
+    // HD is read-only in this release (spec §5.3). WPROT is asserted for it,
+    // so a write here means the Amiga ignored that: discarded -- never
+    // stored, so never uploaded -- however clean its sectors are.
+    if (psram_image_slot_kind(psram_token_slot(token_now)) == SLOT_KIND_ADF_HD)
+        return WB_REJECT_READ_ONLY;
     if (overflowed)                               return WB_REJECT_OVERFLOW;
     if (d->found != 0x7ffu)                       return WB_REJECT_PARTIAL;
     if (!d->track_no_consistent)                  return WB_REJECT_INCONSISTENT;
@@ -26,6 +31,7 @@ const char *write_back_reason(wb_verdict_t v) {
     case WB_REJECT_PARTIAL:      return "not all 11 sectors verified";
     case WB_REJECT_INCONSISTENT: return "sector headers disagree about the track";
     case WB_REJECT_WRONG_TRACK:  return "sectors name another track";
+    case WB_REJECT_READ_ONLY:    return "HD disk is read-only";
     }
     return "unknown";
 }
@@ -37,4 +43,9 @@ bool write_back_apply(int slot, int track, const uint8_t *adf_track) {
     const uint32_t bits = mfm_encode_track(adf_track, (uint8_t)track, mfm);
     psram_image_mark_dirty(slot, track, mfm, bits);
     return psram_image_state(slot, track) == TRK_DIRTY;
+}
+
+bool write_back_wprot(bool mounted, bool server_protected, bool uploader_forced,
+                      bool read_only_image) {
+    return !mounted || server_protected || uploader_forced || read_only_image;
 }
