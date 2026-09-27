@@ -3,9 +3,11 @@
 // taking them from the format documentation. Do not "tidy" any of them.
 
 export const BLOCK_BYTES = 512;
-/** 880 KB / 512. A non-standard image is out of scope; assertAdf rejects it. */
+/** A DD disk's block count. An image's own geometry comes from geometryOf
+ *  (geometry.ts); this stays for the DD fixtures and tests that name it. */
 export const BLOCK_COUNT = 1760;
-/** The midpoint of the disk. Fixed, not derived: see spec section 3.1. */
+/** A DD disk's root block (spec section 3.1). An HD disk's is 1,760: ask
+ *  geometryOf, never this, when reading an image. */
 export const ROOT_BLOCK = 880;
 export const HASH_TABLE_SIZE = 72;
 

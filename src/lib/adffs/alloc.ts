@@ -10,17 +10,25 @@
 // step, which deliberately inverts setBit and confirms the free-count
 // assertions fail -- that is the test this file exists to pass.
 //
-// The bitmap covers blocks 2..1759 (BITMAP_FIRST_BLOCK..BLOCK_COUNT-1). The
-// two boot blocks (0, 1) are outside it entirely and are never touched here.
-// Block 880 (root) and the bitmap's own block are inside the bitmap's range
-// but are always marked used and must never be handed out or freed.
+// The bitmap covers blocks 2..blockCount-1 (1759 DD, 3519 HD). The two boot
+// blocks (0, 1) are outside it entirely and are never touched here. The root
+// block (880 DD, 1760 HD) and the bitmap's own block are inside the bitmap's
+// range but are always marked used and must never be handed out or freed.
 
-import { BLOCK_BYTES, BLOCK_COUNT, ROOT_BLOCK } from './constants';
+import { BLOCK_BYTES } from './constants';
+import { geometryOf, BITMAP_FIRST_BLOCK, type Geometry } from './geometry';
 import { be32 } from './blocks';
 import { putBe32 } from './write-blocks';
 import { readUsage } from './usage';
 
-const BITMAP_FIRST_BLOCK = 2;
+/**
+ * The geometry of an image `bitmapPage()` has already accepted. readUsage
+ * (its trust test) returns null for any length geometryOf does not know, so
+ * past a non-null page this is never null.
+ */
+function trustedGeometry(adf: Uint8Array): Geometry {
+  return geometryOf(adf)!;
+}
 
 /**
  * The trusted bitmap block, or null.
@@ -32,7 +40,7 @@ const BITMAP_FIRST_BLOCK = 2;
  */
 export function bitmapPage(adf: Uint8Array): number | null {
   if (readUsage(adf) === null) return null;
-  return be32(adf, ROOT_BLOCK * BLOCK_BYTES + 316);
+  return be32(adf, trustedGeometry(adf).rootBlock * BLOCK_BYTES + 316);
 }
 
 /**
@@ -81,7 +89,8 @@ function isFreeAt(adf: Uint8Array, page: number, block: number): boolean {
 export function isFree(adf: Uint8Array, block: number): boolean {
   const page = bitmapPage(adf);
   if (page === null) return false;
-  if (block === ROOT_BLOCK || block === page || block < BITMAP_FIRST_BLOCK || block >= BLOCK_COUNT) return false;
+  const g = trustedGeometry(adf);
+  if (block === g.rootBlock || block === page || block < BITMAP_FIRST_BLOCK || block >= g.blockCount) return false;
   return isFreeAt(adf, page, block);
 }
 
@@ -127,9 +136,10 @@ function rechecksum(adf: Uint8Array, page: number): void {
 export function allocate(adf: Uint8Array, n: number): number[] | null {
   const page = bitmapPage(adf);
   if (page === null) return null;
+  const g = trustedGeometry(adf);
   const out: number[] = [];
-  for (let b = BITMAP_FIRST_BLOCK; b < BLOCK_COUNT && out.length < n; b++) {
-    if (b === ROOT_BLOCK || b === page) continue;
+  for (let b = BITMAP_FIRST_BLOCK; b < g.blockCount && out.length < n; b++) {
+    if (b === g.rootBlock || b === page) continue;
     if (isFreeAt(adf, page, b)) out.push(b);
   }
   if (out.length < n) return null;
@@ -149,17 +159,19 @@ export function allocate(adf: Uint8Array, n: number): number[] | null {
  * D-W-5 reasoning as `isFree`): when the bitmap cannot be trusted, `free`
  * does nothing at all -- no bit is touched and no checksum is written.
  * Reading the pointer raw had a concrete failure mode: if bm_pages[0] were
- * corrupted to equal ROOT_BLOCK (880), the old `b === page` guard degraded
- * to "skip anything equal to 880" and `rechecksum(adf, 880)` would have
- * written a checksum at offset 0 of the ROOT block itself, corrupting it.
- * `bitmapPage()` cannot return 880 -- `readUsage` already refuses a bitmap
- * pointer equal to ROOT_BLOCK -- so that path is now unreachable.
+ * corrupted to equal the root block (880 DD, 1,760 HD), the old `b === page`
+ * guard degraded to "skip anything equal to the root" and
+ * `rechecksum(adf, <root>)` would have written a checksum at offset 0 of the
+ * ROOT block itself, corrupting it. `bitmapPage()` cannot return the root
+ * block -- `readUsage` already refuses a bitmap pointer equal to it -- so
+ * that path is now unreachable.
  */
 export function free(adf: Uint8Array, blocks: number[]): void {
   const page = bitmapPage(adf);
   if (page === null) return;
+  const g = trustedGeometry(adf);
   for (const b of blocks) {
-    if (b === ROOT_BLOCK || b === page || b < BITMAP_FIRST_BLOCK || b >= BLOCK_COUNT) continue;
+    if (b === g.rootBlock || b === page || b < BITMAP_FIRST_BLOCK || b >= g.blockCount) continue;
     setBit(adf, page, b, true);
   }
   rechecksum(adf, page);

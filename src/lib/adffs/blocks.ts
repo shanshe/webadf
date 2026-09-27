@@ -5,6 +5,7 @@
 // Reference: http://lclevy.free.fr/adflib/adf_info.html
 
 import { BLOCK_BYTES, BLOCK_COUNT } from './constants';
+import { geometryOf } from './geometry';
 
 /**
  * The 512 bytes of one block, or null when that block cannot be read.
@@ -16,7 +17,11 @@ import { BLOCK_BYTES, BLOCK_COUNT } from './constants';
  * valid empty block and silently corrupt a traversal.
  */
 export function blockAt(adf: Uint8Array, block: number): Uint8Array | null {
-  if (!Number.isInteger(block) || block < 0 || block >= BLOCK_COUNT) return null;
+  // The disk's own block count (HD writes spec §6.1): 3,520 on an HD disk.
+  // An image of any other length keeps the DD bound it always had, and the
+  // length check below still applies to it.
+  const count = geometryOf(adf)?.blockCount ?? BLOCK_COUNT;
+  if (!Number.isInteger(block) || block < 0 || block >= count) return null;
   const start = block * BLOCK_BYTES;
   if (start + BLOCK_BYTES > adf.length) return null;
   return adf.subarray(start, start + BLOCK_BYTES);
