@@ -54,3 +54,18 @@ export const FIRMWARE_SAFE_TRACK_BITS = FIRMWARE_ACCEPT_TRACK_BITS;
 // any cache keyed on an ADF's SHA-256 alone must also key on ENCODER_VERSION,
 // or a stale cached blob will be served forever after such a change.
 export const ENCODER_VERSION = 1;
+
+// --- HD (spec 2026-09-26-hd-floppies) ---------------------------------------
+// An HD ADF: 22 sectors a track instead of 11, same 160 tracks. The board, not
+// the server, encodes these to MFM (a track at a time, on read), so no HD
+// TRACK_BITS lives here; the firmware's adf_mfm.h owns 202,688.
+export const HD_SECTORS = 22;
+export const HD_TRACK_DATA_BYTES = HD_SECTORS * SECTOR_DATA_BYTES; // 11264
+export const ADF_HD_BYTES = TRACKS * HD_TRACK_DATA_BYTES;          // 1802240
+
+// WFAD: what GET /api/device/image sends for an HD disk (spec §4.4). A 16-byte
+// header, then the ADF itself. image_loader.c parses it (WFAD_* there).
+export const WFAD_MAGIC = 0x44414657; // 'WFAD' little-endian
+export const WFAD_VERSION = 1;
+export const WFAD_HEADER_BYTES = 16;
+export const WFAD_BYTES = WFAD_HEADER_BYTES + ADF_HD_BYTES;        // 1802256

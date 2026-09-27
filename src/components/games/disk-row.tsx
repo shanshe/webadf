@@ -9,6 +9,9 @@ import { DeleteDiskDialog } from '@/components/library/delete-disk-dialog';
 import { libraryHref } from '@/lib/trail';
 import { fromQuery } from '@/lib/trail';
 import { FobButton, type FobDevice } from '@/components/nfc/fob-button';
+import { HdTag } from '@/components/disks/hd-tag';
+import { isHdAdf } from '@/lib/disk-format';
+import { HD_READ_ONLY } from '@/lib/hd-messages';
 
 export function DiskRow({ disk, choices, from, fobDevices = [] }: {
   disk: GameDetailDisk;
@@ -28,6 +31,7 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
   // device than the button did whenever two disk rows shared one digest.
   const held = holderText(choices);
   const isHfe = disk.imageFormat === 'hfe';
+  const isHd = isHdAdf(disk);
 
   return (
     <div
@@ -72,8 +76,10 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
             {disk.tosecName ? 'uploaded as ' : ''}{disk.sourceFilename}
           </span>
         )}
-        <span className="truncate font-mono text-[11px]" style={{ color: 'var(--muted)' }}>
-          {(disk.sizeBytes / 1024).toFixed(0)} KB · {disk.sha256.slice(0, 12)}
+        <span className="flex min-w-0 items-center gap-1.5 truncate font-mono text-[11px]" style={{ color: 'var(--muted)' }}>
+          {(disk.sizeBytes / 1024).toFixed(0)} KB
+          {isHd && <HdTag testId={`hd-tag-${disk.id}`} />}
+          <span>· {disk.sha256.slice(0, 12)}</span>
         </span>
         {isHfe && (
           <span className="text-[11.5px]" style={{ color: 'var(--muted)' }} data-testid={`hfe-notice-${disk.id}`}>
@@ -138,7 +144,8 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
                 title="HFE disks are preserved originals: extract as ADF to change files"
                 data-testid={`hfe-readonly-${disk.id}`}>Read-only (HFE)</span>
         ) : (
-          <WriteProtectToggle diskId={disk.id} writeProtected={disk.writeProtected} />
+          <WriteProtectToggle diskId={disk.id} writeProtected={disk.writeProtected}
+                              locked={isHd ? HD_READ_ONLY : undefined} />
         )}
         <MountAction diskId={disk.id} choices={choices} />
         {/* Write this disk onto an NFC tag, so tapping it mounts this disk.

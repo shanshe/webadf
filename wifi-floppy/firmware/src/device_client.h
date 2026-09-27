@@ -284,6 +284,8 @@ typedef struct {
     void    *_poll_intr_ctx;
     // "present" / "absent" / "" (= omit the key); see dc_set_nfc_reader.
     char     _nfc_reader[8];
+    // dc_set_plays_hd: "playsHd":true in every status report.
+    bool     _plays_hd;
 } device_client_t;
 
 void dc_init(device_client_t *c, transport_t *t, clock_ms_fn now,
@@ -476,6 +478,12 @@ bool dc_tap_write_report(device_client_t *c, uint32_t seq, bool ok, const char *
 // column alone). Anything else is also treated as NULL: the server accepts
 // only those two words, and a third would be dropped there anyway.
 void dc_set_nfc_reader(device_client_t *c, const char *state);
+
+// Whether dc_report_status says "playsHd":true (HD spec §4.3, §5.5). main.c
+// sets it once from WF_DRIVE_ID: the drive-ID responder is what lets the
+// Amiga read an HD disk as HD. False (dc_init's zero) omits the key -- the
+// shape older firmware sends, which the server reads as "cannot play HD".
+void dc_set_plays_hd(device_client_t *c, bool on);
 
 // GET /api/device/firmware/<version>. Body bytes go to `sink`. Returns the HTTP status of a
 // COMPLETE response, or -1 (transport, framing, incomplete). 401 halts, as everywhere.

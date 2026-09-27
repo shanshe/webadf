@@ -305,4 +305,17 @@ describe('applyDiskEdit', () => {
     expect(diskStorePut).not.toHaveBeenCalled();
     expect(updateCalls).toHaveLength(0);
   });
+
+  it('refuses an HD disk by name before reading a byte (HD spec §4.2)', async () => {
+    selectResults = [[{ ...DISK_ROW, imageFormat: 'adf', sizeBytes: 1_802_240 }]];
+    const edit = vi.fn();
+    const { applyDiskEdit } = await import('@/lib/disk-write');
+
+    const result = await applyDiskEdit(ORG_ID, DISK_ID, edit);
+
+    expect(result).toEqual({ ok: false, status: 409, reason: 'hd_read_only' });
+    expect(edit).not.toHaveBeenCalled();
+    expect(diskStoreRead).not.toHaveBeenCalled();
+    expect(recordVersion).not.toHaveBeenCalled();
+  });
 });

@@ -251,7 +251,7 @@ function DriveEntry({ chip }: { chip: DriveChip }) {
   // row and flips on its own page, and on every other board holding it, too.
   const protectLabel =
     !disk || chip.phase !== 'loaded' ? 'Write protection'
-    : disk.readOnly ? 'Disk is read-only (HFE)'
+    : disk.readOnly ? `Disk is read-only (${disk.readOnly})`
     : disk.writeProtected ? 'Disk is Protected'
     : 'Disk is Writable';
   const protectHint =
@@ -309,7 +309,7 @@ function DriveEntry({ chip }: { chip: DriveChip }) {
       <DropdownMenuItem
         data-testid={`drive-protect-${chip.id}`}
         data-protected={disk && chip.phase === 'loaded' && disk.writeProtected !== null
-          ? String(disk.readOnly || disk.writeProtected) : undefined}
+          ? String(disk.readOnly !== null || disk.writeProtected) : undefined}
         disabled={!chip.canToggleProtect}
         className={ITEM_CLASS}
         onClick={async () => {

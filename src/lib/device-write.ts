@@ -4,6 +4,7 @@ import { getDb } from '@/db';
 import { disks, entitlements } from '@/db/schema/catalog';
 import { devices } from '@/db/schema/devices';
 import { diskWriteSessions, diskWriteTracks } from '@/db/schema/disk-history';
+import { isHdAdf } from '@/lib/disk-format';
 import { diskStore } from '@/lib/storage';
 import { recordVersion, StaleHeadError, type Recorded } from '@/lib/disk-history/store';
 import { overlayTracks, isTrackUpload } from '@/lib/disk-history/version';
@@ -20,8 +21,9 @@ export const SESSION_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
 /**
  * What a route answers, verbatim. stageTrack: 200 { staged } | 200 { duplicate }
  * | 400 invalid_body | 404 not_found | 409 not_mounted | 409 { not_mounted,
- * reason: 'behind' } | 409 write_protected (these two only when opening a
- * session). closeSession: 200 { sha256 } | 200 { sha256,
+ * reason: 'behind' } | 409 write_protected (with an open session only for an
+ * HD disk, as { write_protected, reason: 'hd_read_only' }; otherwise only
+ * when opening one). closeSession: 200 { sha256 } | 200 { sha256,
  * unchanged } | 404 not_found | 409 not_mounted | 409 { mismatch, sha256 }
  * | 409 incomplete (seq is not the session's last; kept) | 409 conflict (the
  * disk moved on; the session is kept for a retry).
@@ -79,9 +81,18 @@ export async function stageTrack(
   if (!held) return { status: 409, body: { error: 'not_mounted' } };
 
   const db = getDb();
-  const disk = (await db.select({ wp: disks.writeProtected, sha256: disks.sha256, imageFormat: disks.imageFormat }).from(disks)
+  const disk = (await db.select({
+    wp: disks.writeProtected, sha256: disks.sha256, imageFormat: disks.imageFormat, sizeBytes: disks.sizeBytes,
+  }).from(disks)
     .where(and(eq(disks.id, q.diskId), eq(disks.orgId, device.orgId))).limit(1))[0];
   if (!disk) return { status: 404, body: { error: 'not_found' } };
+
+  // HD spec §4.3: read-only on the Amiga in this release. The board asserts
+  // WPROT and discards any capture itself; this is the server's half, and it
+  // holds for an already-open session too. `error` stays write_protected --
+  // the one refusal uploader.c acts on (it parks and forces WPROT); any other
+  // word it treats as transient and retries forever.
+  if (isHdAdf(disk)) return { status: 409, body: { error: 'write_protected', reason: 'hd_read_only' } };
 
   const atMount = and(eq(diskWriteSessions.deviceId, device.deviceId), eq(diskWriteSessions.mount, q.mount));
   let session = (await db.select({ lastSeq: diskWriteSessions.lastSeq, token: diskWriteSessions.token })

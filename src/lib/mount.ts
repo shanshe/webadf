@@ -5,7 +5,7 @@ import { getDb } from '@/db';
 import { devices } from '@/db/schema/devices';
 import { firmwareReleases } from '@/db/schema/firmware';
 import { disks, games } from '@/db/schema/catalog';
-import { isServable } from '@/lib/disk-format';
+import { isHdAdf, isServable } from '@/lib/disk-format';
 import { LEGACY_BOARD_TRACK_MAX_BYTES } from '@/lib/adfmfm';
 
 export interface DesiredDisk {
@@ -32,14 +32,16 @@ export type SetDesiredOutcome =
   | { ok: true; version: number }
   // not_found covers an unknown device, an unknown or unservable disk, and
   // either belonging to another org -- deliberately indistinguishable.
-  // track_too_long is only ever reported for a device AND disk this org owns.
-  | { ok: false; reason: 'not_found' | 'track_too_long' };
+  // track_too_long and hd_unsupported are only ever reported for a device
+  // AND disk this org owns.
+  | { ok: false; reason: 'not_found' | 'track_too_long' | 'hd_unsupported' };
 
 /**
  * Point a device at a disk. Returns the new version; not_found when either
  * the device or the disk is outside `orgId`, or the image route cannot serve
  * the disk (isServable); track_too_long when both are this org's but the
- * disk's longest track exceeds what the board's firmware holds.
+ * disk's longest track exceeds what the board's firmware holds; hd_unsupported
+ * when the disk is HD and the board has not reported playsHd.
  *
  * not_found rather than a thrown error on purpose: a caller cannot tell a
  * device that belongs to someone else from one that does not exist -- and
@@ -77,6 +79,12 @@ export async function setDesired(
   const fits = disk.maxTrackBits === null
     ? sql`true`
     : sql`coalesce(${devices.trackMaxBytes}, ${LEGACY_BOARD_TRACK_MAX_BYTES}) * 8 >= ${disk.maxTrackBits}`;
+  // An HD disk goes only to a board whose firmware answers the drive-ID read
+  // as HD (HD spec §4.3); anywhere else the Amiga reads it with DD geometry.
+  // In the UPDATE's WHERE, like `fits`, so a status report landing between a
+  // read and the write cannot slip past.
+  const hd = isHdAdf(disk);
+  const playsHd = hd ? eq(devices.playsHd, true) : sql`true`;
 
   // The version bump is in the same UPDATE as the state it describes, so a
   // poller can never observe a new version beside the old disk, or the reverse.
@@ -89,16 +97,17 @@ export async function setDesired(
       desiredSetAt: new Date(),
       desiredVersion: sql`${devices.desiredVersion} + 1`,
     })
-    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId), fits))
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId), fits, playsHd))
     .returning({ version: devices.desiredVersion });
 
   if (updated[0]) return { ok: true, version: updated[0].version };
-  if (disk.maxTrackBits === null) return { ok: false, reason: 'not_found' };
+  if (disk.maxTrackBits === null && !hd) return { ok: false, reason: 'not_found' };
   // Nothing updated: tell a board of this org that is too old apart from a
   // device that is not this org's at all (still 404 for the latter).
   const owned = await db.select({ id: devices.id }).from(devices)
     .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).limit(1);
-  return { ok: false, reason: owned.length > 0 ? 'track_too_long' : 'not_found' };
+  if (owned.length === 0) return { ok: false, reason: 'not_found' };
+  return { ok: false, reason: hd ? 'hd_unsupported' : 'track_too_long' };
 }
 
 /** Eject: no disk is desired. Returns the new version, or null if out of org. */
@@ -170,6 +179,8 @@ export async function readDesired(deviceId: string): Promise<DesiredState | null
       title: games.title,
       label: disks.label,
       writeProtected: disks.writeProtected,
+      imageFormat: disks.imageFormat,
+      sizeBytes: disks.sizeBytes,
       // Derived, not stored — games has no disk_count column. Matches how
       // src/lib/queries.ts:17 counts it for the library grid.
       diskCount: sql<number>`(
@@ -219,7 +230,11 @@ export async function readDesired(deviceId: string): Promise<DesiredState | null
       diskCount: Math.max(r.diskCount ?? 1, 1),
       label: (r.label ?? `Disk ${r.diskNo}`).slice(0, DC_LABEL_MAX),
       // A disk row that has gone missing is not a licence to allow writes.
-      writeProtected: r.writeProtected ?? true,
+      // And HD is read-only on the Amiga in this release (HD spec §4.3): the
+      // board never gets a writable HD disk, whatever the row says.
+      writeProtected: (r.writeProtected ?? true) ||
+        (r.imageFormat !== null && r.sizeBytes !== null &&
+          isHdAdf({ imageFormat: r.imageFormat, sizeBytes: r.sizeBytes })),
     },
   };
 }
@@ -257,6 +272,8 @@ export async function recordStatus(
     rssi?: number | null;
     /** TRACK_MAX_BYTES of the firmware the board runs. Absent from builds before 2026-09-24. */
     trackMaxBytes?: number;
+    /** The drive-ID responder is built in (HD spec §5.5). Absent from builds before 1.4.0. */
+    playsHd?: boolean;
     /** Whether the Si512 reader answered its init on the board's last check (spec §5). */
     nfcReader?: 'present' | 'absent';
   },
@@ -289,6 +306,12 @@ export async function recordStatus(
   // keep the newer build's claim and be sent tracks it would reject.
   if (s.trackMaxBytes !== undefined) patch.trackMaxBytes = s.trackMaxBytes;
   else if (s.firmwareVersion !== undefined) patch.trackMaxBytes = null;
+  // The same build-bound rule as trackMaxBytes: a report that names its
+  // firmware but says nothing about HD comes from a build without the
+  // responder (older, WF_DRIVE_ID=OFF, or a reverted trial boot), and must
+  // stop being sent HD disks.
+  if (s.playsHd !== undefined) patch.playsHd = s.playsHd;
+  else if (s.firmwareVersion !== undefined) patch.playsHd = false;
   // Plain absent-leaves-it-alone, unlike trackMaxBytes above: the reader's
   // presence is not tied to the firmware build, so there is no "drop to a
   // legacy default" case here -- a report that omits it simply has nothing

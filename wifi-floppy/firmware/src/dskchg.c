@@ -13,13 +13,13 @@
 //  * /RDY asserted while motor is on and an image is inserted (spin-up
 //    delay emulated), deasserted otherwise.
 //
-// NO AMIGA DRIVE-ID ANSWER, deliberately. This file used to clock
-// ID_3_5_DD out on /RDY from the SEL0 interrupt, on the assumption that DF0's
-// ID is ignored. Measured 2026-09-15 (HANDOFF §4d): Kickstart reads DF0's ID
-// at power-on -- 33 selects in ~141 us, each held 1-4 us -- the interrupt
-// caught 0 of them, and the Amiga then never selected DF0 again. With no ID
-// answer, /RDY released through the read, it boots, reads and writes. Answering
-// it would need something as fast as the select; nothing measured needs it.
+// NO AMIGA DRIVE-ID ANSWER HERE. This file used to clock ID_3_5_DD out on
+// /RDY from the SEL0 interrupt. Measured 2026-09-15 (HANDOFF §4d): Kickstart
+// reads DF0's ID at power-on -- 33 selects in ~141 us, each held 1-4 us --
+// and the interrupt caught 0 of them. The answer now comes from PIO
+// (floppy.pio drive_id, drive_id.h; HD spec §5.4), when built with
+// WF_DRIVE_ID. This file is unchanged by that: its RDY level still goes
+// through bus_out_set(), which forwards it to drive_id.
 // ---------------------------------------------------------------------------
 #include "dskchg.h"
 #include "bus_out.h"

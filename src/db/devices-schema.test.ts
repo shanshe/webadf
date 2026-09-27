@@ -142,3 +142,11 @@ describe('firmware update columns', () => {
     expect(col('firmware_update_error')).toBeDefined();
   });
 });
+
+describe('devices.playsHd (HD spec §4.3)', () => {
+  it('is a non-null boolean defaulting to false, so every existing board reads as unable to play HD', () => {
+    expect(devices.playsHd.notNull).toBe(true);
+    expect(devices.playsHd.hasDefault).toBe(true);
+    expect(devices.playsHd.default).toBe(false);
+  });
+});

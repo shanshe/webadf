@@ -8,6 +8,7 @@ import {
   readVolume, readFile, deleteEntry, renameEntry, replaceFile, moveEntry,
   type AdfEntry, type WriteResult,
 } from '@/lib/adffs';
+import { isHdAdf } from '@/lib/disk-format';
 import { ROOT_BLOCK } from '@/lib/adffs/constants';
 import { downloadFilename, contentDisposition } from '@/lib/download-name';
 import { applyDiskEdit } from '@/lib/disk-write';
@@ -68,7 +69,7 @@ export async function GET(
 
   // The same entitlement boundary as /api/disks/[id]/adf. 404, never 403.
   const rows = await getDb()
-    .select({ sha256: disks.sha256 })
+    .select({ sha256: disks.sha256, imageFormat: disks.imageFormat, sizeBytes: disks.sizeBytes })
     .from(disks)
     .innerJoin(entitlements, and(
       eq(entitlements.sha256, disks.sha256),
@@ -79,6 +80,10 @@ export async function GET(
 
   const disk = rows[0];
   if (!disk) return Response.json({ error: 'not_found' }, { status: 404 });
+
+  // HD spec §4.2: "HD disks can't be browsed in the browser yet" -- said as
+  // its own reason, not as a missing filesystem.
+  if (isHdAdf(disk)) return Response.json({ error: 'hd_not_browsable' }, { status: 409 });
 
   let adf: Uint8Array;
   try {

@@ -25,6 +25,7 @@ import { and, eq } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { disks, entitlements } from '@/db/schema/catalog';
 import { findHolder, mountedReason, repointLateMounts } from '@/lib/disk-holder';
+import { isHdAdf } from '@/lib/disk-format';
 import { diskStore } from '@/lib/storage';
 import { recordVersion, StaleHeadError, type Recorded } from '@/lib/disk-history/store';
 import type { WriteResult } from '@/lib/adffs';
@@ -64,6 +65,7 @@ export async function applyDiskEdit(
       tosecName: disks.tosecName,
       sourceFilename: entitlements.sourceFilename,
       imageFormat: disks.imageFormat,
+      sizeBytes: disks.sizeBytes,
     })
     .from(disks)
     .innerJoin(entitlements, and(
@@ -79,6 +81,11 @@ export async function applyDiskEdit(
   // Spec D2: an HFE is a preserved original. Refused before the holder
   // check and before any read -- nothing about it can be edited, mounted or not.
   if (disk.imageFormat === 'hfe') return { ok: false, status: 409, reason: 'hfe_read_only' };
+
+  // HD spec §4.2: no browser editing of an HD disk in this release (adffs
+  // reads one geometry). Refused by name before anything is read, rather than
+  // left to fail as "no filesystem" further down.
+  if (isHdAdf(disk)) return { ok: false, status: 409, reason: 'hd_read_only' };
 
   // D-W-4: refuse before anything is read or written. The holder lookup and
   // the rule behind it live in findHolder (src/lib/disk-holder.ts), shared

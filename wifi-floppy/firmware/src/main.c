@@ -16,7 +16,9 @@
 #include "dskchg.h"
 #include "bus_gate.h"
 #include "bus_out.h"
+#include "drive_id.h"
 #include "track_cache.h"
+#include "adf_mfm.h"
 #include "psram_image.h"
 #include "image_loader.h"
 #include "transport.h"
@@ -54,6 +56,7 @@
 #include "pico/rand.h"
 #include "hardware/sync.h"   // __dmb(), for the display seqlock below
 #include <string.h>
+#include <stddef.h>          // ptrdiff_t, for __wrap__sbrk() below
 
 // transport_tls.c is device-only (no host test exercises it, unlike every
 // other file this task wires in), so it has no shared header of its own --
@@ -312,7 +315,9 @@ static volatile int  cur_side  = 0;
 static volatile int  want_track = -1;      // core0 -> core1 request
 static volatile bool track_live = false;
 
-static uint32_t track_words[(TRACK_MAX_BYTES + 3) / 4];
+// Sized for the longest track track_cache_get() can return -- an encoded HD
+// track (TRACK_BUF_BYTES, track_cache.h) -- not the PSRAM stride.
+static uint32_t track_words[TRACK_BUF_BYTES / 4];
 static uint32_t track_word_count;
 
 // ---------------------------------------------------------------- DMA feed
@@ -585,6 +590,47 @@ static uint32_t wb_last_write_ms(void) { return g_write_last_ms; }
 
 static uint32_t clock_ms(void) {
     return to_ms_since_boot(get_absolute_time());
+}
+
+// Free heap, conservatively: only the never-claimed space between the break
+// and __StackLimit, the ceiling the SDK's _sbrk refuses to grow past
+// (pico_clib_interface/newlib_interface.c; 0x20080000 in this build's map,
+// with the stacks above it in scratch RAM). Chunks malloc holds free below
+// the break are NOT counted, so the real figure is at least this.
+// HD spec §7 bench step 10: HD grew the SRAM buffers by ~33 KB, and this is
+// the number that says what that left.
+//
+// How the break is learned matters more than the arithmetic. Core0 must
+// never call sbrk()/_sbrk() itself, not even sbrk(0): the SDK's _sbrk is a
+// read-modify-write of its static heap_end that stores it back even for an
+// increment of 0, and a call from here runs outside malloc's lock while
+// core1 (mbedTLS, lwIP) may be growing the heap -- a lost update there
+// corrupts the heap. mallinfo() is out for the same reason (it walks the
+// heap unlocked). Instead CMakeLists.txt links with -Wl,--wrap=_sbrk, so
+// every heap growth malloc makes -- under its own lock, on whichever core --
+// passes through __wrap__sbrk, which records the new break in one aligned
+// word. heap_free_bytes() only LOADS that word.
+extern char __StackLimit;
+extern char end;                       // linker: first byte of the heap (= __end__)
+void *__real__sbrk(ptrdiff_t incr);
+static volatile uintptr_t g_heap_break;    // 0 = no growth yet: the break is `end`
+
+void *__wrap__sbrk(ptrdiff_t incr) {
+    char *prev = __real__sbrk(incr);
+    if (prev != (char *)-1) {
+        // PICO_USE_OPTIMISTIC_SBRK may hand out less than asked, clamped to
+        // __StackLimit; the break is never past it.
+        uintptr_t brk = (uintptr_t)prev + (uintptr_t)incr;
+        if (incr > 0 && brk > (uintptr_t)&__StackLimit) brk = (uintptr_t)&__StackLimit;
+        g_heap_break = brk;
+    }
+    return prev;
+}
+
+static uint32_t heap_free_bytes(void) {
+    uintptr_t brk = g_heap_break;
+    if (brk == 0) brk = (uintptr_t)&end;
+    return (uint32_t)((uintptr_t)&__StackLimit - brk);
 }
 
 // ---------------------------------------------------------------- NFC tap
@@ -1306,6 +1352,9 @@ static void core1_main(void) {
         dc_init(&c, tls_transport(), clock_ms, WEBADF_HOST, token);
         // AFTER dc_init, which zeroes the struct (device_client.h).
         dc_set_observer(&c, ui_observe, NULL);
+        // HD spec §5.5: this build can play HD only if the drive-ID responder
+        // is in it. After dc_init, which zeroes the struct.
+        dc_set_plays_hd(&c, WF_DRIVE_ID != 0);
         // HANDOFF 4g rule 1: a token chosen per boot, so a rebooted board's seq 1
         // is never mistaken for the previous boot's seq 1.
         static char session[20];
@@ -1693,7 +1742,11 @@ static void core1_main(void) {
             // boot-time default); this is now the only place that updates it
             // afterward.
             bool up_forced = up_forces_wprot(&up);
-            bool wprot = !mounted || c.mounted_write_protected || up_forced;
+            // HD spec §5.3: an HD disk is read-only here, and not only because
+            // the server sends writeProtected: the board holds the line itself.
+            bool hd_mounted = mounted &&
+                psram_image_slot_kind(psram_active_slot()) == SLOT_KIND_ADF_HD;
+            bool wprot = write_back_wprot(mounted, c.mounted_write_protected, up_forced, hd_mounted);
             bus_out_set(PIN_WPROT, wprot);
             // The pin is set first, THEN the change is announced: the Amiga
             // must read the new state when it looks.
@@ -1707,21 +1760,22 @@ static void core1_main(void) {
              *
              * Added after a write test that produced nothing: WGATE never
              * fired, and working out why meant inferring the pin's state from
-             * the absence of an event. THREE separate gates force WPROT --
-             * no disk, the server's flag, and the uploader (up_forces_wprot:
-             * after a refused write, or while parked) -- and none folds into
-             * another, so each is its own field below. Without them the
-             * reasons were indistinguishable from the log. A gate nobody can
-             * observe is a gate nobody can debug.
+             * the absence of an event. FOUR separate gates force WPROT --
+             * no disk, the server's flag, the uploader (up_forces_wprot:
+             * after a refused write, or while parked) and an HD image --
+             * and none folds into another, so each is its own field below.
+             * Without them the reasons were indistinguishable from the log.
+             * A gate nobody can observe is a gate nobody can debug.
              */
             static int last_wprot = -1;
             if ((int)wprot != last_wprot) {
                 last_wprot = (int)wprot;
-                wf_logf(WF_INFO, "wprot: %s (mounted=%s server=%s uploader=%s)",
+                wf_logf(WF_INFO, "wprot: %s (mounted=%s server=%s uploader=%s hd=%s)",
                         wprot ? "ASSERTED -- the Amiga cannot write" : "RELEASED -- the Amiga may write",
                         mounted ? "yes" : "no",
                         mounted ? (c.mounted_write_protected ? "protected" : "writable") : "n/a",
-                        up_forced ? "forced" : "ok");
+                        up_forced ? "forced" : "ok",
+                        hd_mounted ? "read-only" : "no");
             }
             // The panel's pencil, from the same value and at the same moment
             // -- lit exactly when the Amiga may actually write, which now
@@ -2057,6 +2111,14 @@ int main(void) {
     irq_set_enabled(pio_get_irq_num(bus_pio, 0), true);
     pio_sm_set_enabled(bus_pio, mtr_sm, true);
 
+#if WF_DRIVE_ID
+    // The Amiga drive-ID answer on RDY (HD spec §5.4). pio0, beside flux_out
+    // and flux_in: 30 of its 32 instruction slots.
+    bus_out_drive_id_init(pio);
+    wf_logf(WF_INFO, "drive-id: answering DD 0x%08lx on DF0 motor-off selects",
+            (unsigned long)DRIVE_ID_DD);
+#endif
+
 #if WF_BUS_SNIFF
     uint off_sniff = pio_add_program(bus_pio, &bus_sniff_program);
     sniff_sm = pio_claim_unused_sm(bus_pio, true);
@@ -2220,14 +2282,45 @@ int main(void) {
             g_reinsert_req = false;   // the mount/eject below announces this
             loaded = -1;
             disk_mounted = now_mounted;
+            // One slot, computed once, for both HD decisions below: the
+            // WF_VERIFY_TRACKS skip and the drive-ID choice used to read
+            // psram_token_slot(last_active_token) and psram_active_slot()
+            // respectively -- two different reads of what should be the
+            // same slot at this instant (final-fix F6). (void) in case
+            // neither consumer below is compiled in (WF_VERIFY_TRACKS=0 and
+            // WF_DRIVE_ID=OFF together).
+            const int slot = psram_active_slot();
+            (void)slot;
 #if WF_VERIFY_TRACKS
-            verify_next = now_mounted ? 0 : NUM_TRACKS;   // sweep on mount only
+            // Sweep on mount only, and not an HD disk: its slot holds ADF,
+            // which psram_image_read refuses; its encode is host-tested
+            // against Greaseweazle (test_track_cache_hd.c).
+            verify_next = now_mounted &&
+                psram_image_slot_kind(slot) != SLOT_KIND_ADF_HD
+                ? 0 : NUM_TRACKS;
             verify_bad = 0;
 #endif
             if (now_mounted) {
+#if WF_DRIVE_ID
+                // Before the insert is announced, so an ID read the change
+                // prompts sees the new disk's density. Taken at the next
+                // answer -- the reset select or the 32-bit repeat -- never
+                // mid-answer (bus_out.c). Whether Kickstart re-reads the ID
+                // on a change at all is bench step 9. The same HD derivation
+                // as the WPROT rule on core1 (write_back_wprot).
+                const bool hd = psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD;
+                if (bus_out_drive_id_set_hd(hd))
+                    wf_logf(WF_INFO, "drive-id: now answering %s 0x%08lx",
+                            hd ? "HD" : "DD", (unsigned long)drive_id_for(hd));
+#endif
                 dskchg_image_inserted();
                 wf_trace(WF_EV_MOUNT, (uint32_t)last_active_token, 0);
             } else {
+#if WF_DRIVE_ID
+                if (bus_out_drive_id_set_hd(false))
+                    wf_logf(WF_INFO, "drive-id: now answering DD 0x%08lx (no disk)",
+                            (unsigned long)DRIVE_ID_DD);
+#endif
                 dskchg_image_ejected();
                 track_live = false;
                 dma_channel_abort(dma_ch);
@@ -2259,13 +2352,29 @@ int main(void) {
         int want = want_track;
         if (want >= 0 && want != loaded) {
             uint32_t bits;
+            const uint64_t get_t0 = time_us_64();
             const uint8_t *mfm = track_cache_get(want, &bits);
+            // Taken before start_streaming so it times only the get: for an
+            // HD track that is the encode (track_cache.c), or a double-buffer
+            // hit, which is only faster. The previous track keeps streaming
+            // for all of it (start_streaming only aborts it once the new
+            // track is in hand).
+            const uint32_t get_us = (uint32_t)(time_us_64() - get_t0);
             if (mfm) {
                 track_live = false;
                 start_streaming(mfm, bits);
                 loaded = want;
                 wf_trace(WF_EV_TRACK_SERVED, (uint32_t)want, bits);
                 led_blip();
+                // Logged AFTER start_streaming, so the logging cost is never
+                // on the path to the new stream: say so when an HD get takes
+                // longer than any before. The spike's worst was 4.9 ms
+                // against a ~15 ms settle budget.
+                static uint32_t hd_encode_max_us;
+                if (bits == ADF_MFM_HD_TRACK_BITS && get_us > hd_encode_max_us) {
+                    hd_encode_max_us = get_us;
+                    wf_logf(WF_INFO, "hd: track %d encoded in %lu us (new max)", want, (unsigned long)get_us);
+                }
             } else {
                 // Not a cache miss to retry -- psram_image.h is explicit
                 // that a track absent from PSRAM is a fault. Worth a record
@@ -2292,6 +2401,21 @@ int main(void) {
                 // track that only arrives later is re-attempted then.
                 loaded = want;
                 wf_trace(WF_EV_TRACK_MISS, (uint32_t)want, 0);
+            }
+        }
+
+        // HD spec §7 step 10: the free-heap low-water mark, logged each time
+        // it drops (sampled every 5 s, so a transient dip can be missed --
+        // it is a floor for the bench, not a guarantee).
+        {
+            static uint32_t heap_low = UINT32_MAX, heap_checked_ms;
+            if (clock_ms() - heap_checked_ms >= 5000u) {
+                heap_checked_ms = clock_ms();
+                const uint32_t f = heap_free_bytes();
+                if (f < heap_low) {
+                    heap_low = f;
+                    wf_logf(WF_INFO, "heap: free low-water %lu bytes", (unsigned long)f);
+                }
             }
         }
 
@@ -2397,6 +2521,15 @@ int main(void) {
         }
 
 #if WF_VERIFY_TRACKS
+        // An ADF_HD slot holds sector data, not MFM: psram_image_read
+        // refuses it, and its tracks are encoded on read (track_cache.c),
+        // so there is nothing stored to decode. Say so once rather than
+        // report 160 unreadable tracks.
+        if (verify_next < NUM_TRACKS &&
+            psram_image_slot_kind(psram_active_slot()) == SLOT_KIND_ADF_HD) {
+            verify_next = NUM_TRACKS;
+            wf_logf(WF_INFO, "verify: HD slot: verify skipped, tracks are encoded on read");
+        }
         if (verify_next < NUM_TRACKS) {
             static uint8_t vmfm[TRACK_MAX_BYTES];
             static uint8_t vdec[MFM_TRACK_DATA_BYTES];
