@@ -158,15 +158,18 @@ static void an_assert_mid_select_shows_at_once_a_release_waits(void) {
     CHECK(drive_id_model_rdy_gpio(&m), "release mid-select: waits for the deselect");
     drive_id_model_deselect(&m);
     CHECK(!drive_id_model_rdy_gpio(&m), "released on deselect");
-    // Never during a motor-off (ID) select.
+    // Never during a motor-off (ID) select: HD's bit 30 is 0, so an assert
+    // that leaked through would show.
+    drive_id_model_set_id(&m, DRIVE_ID_HD);
     drive_id_model_select(&m, true);  drive_id_model_deselect(&m);
-    drive_id_model_select(&m, false);
+    drive_id_model_select(&m, false);                                  // bit 31 (1)
     drive_id_model_deselect(&m);
-    drive_id_model_select(&m, false);
+    drive_id_model_select(&m, false);                                  // bit 30 (0)
+    CHECK(!drive_id_model_rdy_gpio(&m), "ID select: HD's bit 30 released");
     drive_id_model_level(&m, true);
-    drive_id_model_level(&m, false);
-    CHECK(drive_id_model_rdy_gpio(&m), "ID select: DD's bit, whatever the CPU does");
+    CHECK(!drive_id_model_rdy_gpio(&m), "ID select: a CPU assert does not reach RDY");
     drive_id_model_deselect(&m);
+    drive_id_model_level(&m, false);
 }
 
 static void an_id_change_waits_for_the_next_answer(void) {

@@ -114,6 +114,16 @@ input size.
 - A write captured while an HD disk is mounted is discarded and never uploaded.
 
 ### 5.4 Drive ID
+**Updated 2026-09-27 (firmware 1.4.1; supersedes the Phase bullet and the clkdiv below):** the phase is
+the amiga-hddlw PAL's (github.com/schlae/amiga-hddlw, pal/amiga-hddlw.pld): a motor-ON select resets
+the answer, and the FIRST motor-off select after it carries bit 31, asserted = 1 = GPIO high (/RDY low);
+the Amiga samples 32 motor-off selects from that one and reads `0xAAAAAAAA` (HD) / `0xFFFFFFFF` (DD).
+1.4.0's HD answer never reached the wire because pico-sdk 2.3.0's `pio_encode_mov(pio_osr, src)`
+encodes `mov pindirs, src` in release builds, switching RDY's output off on every HD reload; the load
+words are now built from the MOV fields (`drive_id_load`, HD `0xa0e2` `mov osr, y`, DD `0xa0eb`
+`mov osr, ~null`). The HD word lives in Y (seeded at init), MTR is tested with `jmp pin` (jmp_pin =
+MTR), and the program runs at clkdiv 10 so MTR has ~0.5 us to settle after SEL0 falls. HANDOFF §3an.
+
 - The spike's PIO `drive_id` program (pio0, clkdiv 1) becomes permanent, gated on SEL0 only,
   so a real drive on DF1 is untouched.
 - **Phase:** the select that resets the ID (first motor-off select after the motor was on)

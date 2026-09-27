@@ -89,13 +89,21 @@ if grep -nE 'gpio_put\(PIN_(INDEX|CHNG|WPROT|RDY|TRK0|RDATA)\b' ../src/*.c; then
   fail=1
 fi
 
-# pico-sdk 2.3.0 release builds: pio_encode_mov(pio_osr, x) returns
-# `mov pindirs, x` (pio_osr == pio_exec, remapped twice; HANDOFF §3an). It
-# switched RDY's output off on every HD drive-ID reload in 1.4.0 and looked
-# like nothing at all. Build such words from the fields (drive_id_load).
-# Code only: a line with // or ; before the call is a comment naming the bug.
-if grep -nE '^[^/;]*pio_encode_mov(_reverse)?\([[:space:]]*pio_osr\b' ../src/*.c ../src/*.h ../src/*.pio; then
-  echo "FAIL: pio_encode_mov(pio_osr, ...) encodes mov pindirs in pico-sdk 2.3.0 (use drive_id_load or encode the fields)"
+# pico-sdk 2.3.0 release builds: pio_encode_mov with dest pio_osr or pio_exec
+# is broken -- pio_osr == pio_exec (7) is remapped to pio_exec_mov (4) ==
+# pio_pindirs, then to pio_pindirs_mov (3), so both emit `mov pindirs, x`
+# (HANDOFF §3an). It switched RDY's output off on every HD drive-ID reload in
+# 1.4.0 and looked like nothing at all. pio_encode_mov_not/_reverse do not
+# remap and are correct, so they are not flagged. Every call is checked, not
+# every line; // comments (and .pio `;` comment lines) are stripped first, so
+# the comments that name the bug do not trip it.
+pio_mov_bad=$(for f in ../src/*.c ../src/*.h ../src/*.pio; do
+  sed -E -e 's#//.*##' -e 's#^[[:space:]]*;.*##' "$f" |
+    { grep -noE 'pio_encode_mov[[:space:]]*\([[:space:]]*pio_(osr|exec)\b' || true; } | sed "s#^#$f:#"
+done)   # no match is grep's exit 1: under set -e -o pipefail it would end the script
+if [ -n "$pio_mov_bad" ]; then
+  echo "$pio_mov_bad"
+  echo "FAIL: pio_encode_mov(pio_osr|pio_exec, ...) encodes mov pindirs in pico-sdk 2.3.0 (build the word from the fields, as drive_id_load does)"
   fail=1
 fi
 

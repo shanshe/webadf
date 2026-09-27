@@ -210,7 +210,7 @@ changed:
 ; on the pad once per motor-on select (`mov pins, x`); bus_out.c also execs
 ; `set pins, 1` when RDY is asserted while the machine sits at
 ; on_selected_wait, so an assert shows at once and a release at the deselect.
-; Y = DRIVE_ID_HD, loaded once at init (an SM restart clears ISR, not Y).
+; Y = DRIVE_ID_HD, loaded once at init.
 ; reset_load and repeat_load are REWRITTEN by bus_out_drive_id_set_hd() with
 ; drive_id_load() (drive_id.h): `mov osr, y` (HD) or `mov osr, ~null` (DD,
 ; all ones). A new word takes effect at the next load -- the first motor-off

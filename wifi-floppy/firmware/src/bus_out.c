@@ -68,9 +68,15 @@ void __not_in_flash_func(bus_out_set)(unsigned pin, bool assert) {
         // on the pad once per motor-on select, so an assert that arrives
         // while it sits at on_selected_wait (selected, motor on) is also put
         // there at once; a release waits for the deselect's `mov pins, null`.
-        // If SEL0 rises between the PC read and the exec, the `set pins, 1`
-        // lands on the way out and on_released's `mov pins, null` clears it a
-        // few cycles later.
+        // Race: if SEL0 rises between the PC read and the exec, the exec lands
+        // on the way out. Within 3 PIO cycles of the rise, on_released's
+        // `mov pins, null` still follows and clears it. Landing 3 or more
+        // cycles after the rise (the machine then stalls on on_released's
+        // `wait 0 gpio 2`) leaves RDY ASSERTED WHILE DESELECTED until the
+        // next SEL0 select -- breaking SEL0 gating, which a real DF1 on the
+        // same bus depends on. Practically unreachable: the PC read -> exec
+        // path is ~7 instructions with IRQs off under the spinlock (~50 ns at
+        // 150 MHz), against 3 PIO cycles (~200 ns at clkdiv 10).
         if (id_sm >= 0 && ((next ^ was) & (1u << PIN_RDY))) {
             const bool on = (next >> PIN_RDY) & 1u;
             pio_sm_exec(id_pio, (uint)id_sm, pio_encode_set(pio_x, on));
