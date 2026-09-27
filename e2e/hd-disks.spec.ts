@@ -1,9 +1,13 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type APIRequestContext } from '@playwright/test';
 import { createHash, randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { disks } from '@/db/schema/catalog';
-import { signUpFresh } from './helpers';
+import { diskVersions, diskWriteTracks } from '@/db/schema/disk-history';
+import { diskStore } from '@/lib/storage';
+import { formatVolume } from '@/lib/adffs/format';
+import { HD_TRACK_DATA_BYTES } from '@/lib/adfmfm';
+import { signUpFresh, runTag } from './helpers';
 import { seedDisk, cleanupSeeded, pairDevice, authHeader } from './device-helpers';
 
 test.afterAll(cleanupSeeded);
@@ -152,23 +156,63 @@ test('every write path refuses an HD disk by name, before reading a byte', async
   expect((await file.json()).error).toBe('hd_not_browsable');
 });
 
-test('the board is refused a write to an HD disk, in the words its uploader acts on', async ({ page, request }) => {
+const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
+
+function upload(request: APIRequestContext, token: string,
+                q: { diskId: string; mount: number; track: number; seq: number }, data: Uint8Array) {
+  return request.post(
+    `/api/device/write?disk=${q.diskId}&mount=${q.mount}&track=${q.track}&session=boot-1&seq=${q.seq}`,
+    { headers: { ...authHeader(token), 'content-type': 'application/octet-stream' }, data: Buffer.from(data) });
+}
+
+test('a board writes an HD disk: 11,264-byte tracks, a close, a version with 22 sectors changed', async ({ page, request }) => {
   const { orgId } = await signUpFresh(page);
   const { deviceId, token } = await pairDevice(page, request);
-  const sha256 = fakeSha();
-  const { diskId } = await seedDisk(orgId, { title: 'HD W', diskNo: 1, sha256, sizeBytes: HD_BYTES, writeProtected: false });
+  const adf = formatVolume({ filesystem: 'FFS', volumeName: `HDW${runTag().slice(0, 8)}`, density: 'hd' });
+  const original = sha(adf);
+  await diskStore.put(original, adf);
+  const { diskId } = await seedDisk(orgId, {
+    title: `HD Write ${runTag()}`, diskNo: 1, sha256: original, sizeBytes: HD_BYTES, writeProtected: false,
+  });
   expect((await request.post('/api/device/status', { headers: authHeader(token),
     data: { mountedSha256: null, playsHd: true } })).status()).toBe(204);
-  const { version } = await (await page.request.post(`/api/devices/${deviceId}/mount`, { data: { diskId } })).json();
+  const { version: mount } = await (await page.request.post(`/api/devices/${deviceId}/mount`, { data: { diskId } })).json();
   expect((await request.post('/api/device/status', { headers: authHeader(token),
-    data: { mountedSha256: sha256, mountedDiskId: diskId, version } })).status()).toBe(204);
+    data: { mountedSha256: original, mountedDiskId: diskId, version: mount } })).status()).toBe(204);
 
-  // 5,632 bytes: a whole DD track, so the refusal is the HD rule and not the
-  // body-shape check that runs before it.
-  const res = await request.post(`/api/device/write?disk=${diskId}&mount=${version}&track=0&session=boot-1&seq=1`,
-    { headers: { ...authHeader(token), 'content-type': 'application/octet-stream' }, data: Buffer.alloc(5_632) });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({ error: 'write_protected', reason: 'hd_read_only' });
+  // Review Focus 1: a DD track's 5,632 bytes on an HD disk would overlay at
+  // the wrong offset. Refused, and nothing staged.
+  const dd = await upload(request, token, { diskId, mount, track: 0, seq: 1 }, new Uint8Array(5_632));
+  expect(dd.status()).toBe(400);
+  expect((await dd.json()).error).toBe('invalid_body');
+  expect(await getDb().select().from(diskWriteTracks).where(eq(diskWriteTracks.deviceId, deviceId))).toEqual([]);
+
+  // The last track: its bytes are the last 11,264 of the image (Review Focus 4).
+  const written = new Uint8Array(HD_TRACK_DATA_BYTES).fill(0x5a);
+  const up = await upload(request, token, { diskId, mount, track: 159, seq: 2 }, written);
+  expect(up.status()).toBe(200);
+
+  const expected = adf.slice();
+  expected.set(written, 159 * HD_TRACK_DATA_BYTES);
+  const want = sha(expected);
+  const close = await request.post(
+    `/api/device/write/close?disk=${diskId}&mount=${mount}&session=boot-1&seq=2&sha256=${want}`,
+    { headers: authHeader(token) });
+  expect(close.status()).toBe(200);
+  expect((await close.json()).sha256).toBe(want);
+
+  const rows = await getDb().select().from(diskVersions)
+    .where(eq(diskVersions.diskId, diskId)).orderBy(asc(diskVersions.seq));
+  expect(rows.map((r) => [r.seq, r.source])).toEqual([[0, 'original'], [1, 'amiga']]);
+  expect(rows[1].sectorCount).toBe(22);
+  const [disk] = await getDb().select().from(disks).where(eq(disks.id, diskId));
+  expect(disk.sha256).toBe(want);
+  expect(disk.sizeBytes).toBe(HD_BYTES);
+
+  // The new head goes back to the board as WFAD, like any HD disk.
+  const img = await request.get(`/api/device/image/${want}`, { headers: authHeader(token) });
+  expect(img.status()).toBe(200);
+  expect(img.headers()['content-length']).toBe('1802256');
 });
 
 test('an NFC tap of an HD disk on a board without playsHd is refused, not dropped', async ({ page, request }) => {
