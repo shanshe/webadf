@@ -4462,7 +4462,13 @@ from the library's Workbench 3.1; HDCheck.txt sha256 21ea2d28...1183). The board
 mounted, ready for step 1. Firmware CI was red since the NFC merge (gcc -Wformat-truncation at
 device_client.c:691); fixed in `864f871`, green again. Parked for later: the live PIO golden check skips in CI
 (host tests run before the build); a rolled-back board re-installed by USB with HD desired can block the HD
-digest until reboot; HANDOFF step numbers here differ from spec §7's (a cold-boot step was inserted). Spec `docs/superpowers/specs/2026-09-26-hd-floppies-read-only-design.md`,
+digest until reboot; HANDOFF step numbers here differ from spec §7's (a cold-boot step was inserted).
+RP2350 datasheet (RP-008373-DS-2, §11.5, read 2026-09-27) on the drive-ID responder's exec'd `set x`: an instruction
+written to SMx_INSTR runs instead of the one that would have been fetched and the PC does not advance, so a
+`set x` landing on a stalled `wait` runs once and the wait resumes -- safe. `set` never stalls, which satisfies
+"instructions written to INSTR must not stall". Undocumented: an exec landing inside the `[7]` delay after a
+satisfied `wait` (whether the delay pauses or is cut short); worst case MTR is sampled a few cycles early, and
+RDY-level changes during motor-off ID selects are near-impossible. Accepted. Spec `docs/superpowers/specs/2026-09-26-hd-floppies-read-only-design.md`,
 plan `docs/superpowers/plans/2026-09-26-hd-floppies-read-only.md`.
 
 What it does:
