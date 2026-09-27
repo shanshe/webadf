@@ -4449,8 +4449,20 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 
 ### 3an. HD floppies, read-only -- 2026-09-26 (spec/plan 2026-09-26-hd-floppies-read-only)
 
-**STATUS: built on `feat/hd-floppies`; web e2e green; firmware 1.4.0 built and host-tested; NOT merged,
-NOT published, bench checklist below owed.** Spec `docs/superpowers/specs/2026-09-26-hd-floppies-read-only-design.md`,
+**STATUS 2026-09-27 05:55: MERGED to master (`fc23a26`) and deployed; migration 0026 applied; firmware
+`1.4.0+g40c8614` INSTALLED ON THE BENCH BOARD BY USB (trial confirmed) but NOT PUBLISHED to the registry --
+bench prep 3 says publish only after checklist step 1 (DD boots and DF0 reads as DD). Bench checklist below owed.**
+Overnight, with the Amiga OFF (board-side only): the DB shows `firmware_version 1.4.0+g40c8614, plays_hd true`;
+boot logs `drive-id: answering DD 0xffffffff`; heap low-water 139,264 bytes before WiFi, 69,632 after TLS came up.
+Mounting the HD bench disk fetched and verified 1,802,256 bytes in 2.7 s, logged `drive-id: now answering HD
+0xaaaaaaaa`, served track 0 at 202,688 bits, first encode 5,969 us (cold). Remounting Workbench 3.1 DD logged
+`now answering DD 0xffffffff` and 101,344-bit tracks. The HD bench disk is in the library as
+"HD Bench (Workbench 3.1 on HD)" (disk `d8f054fd-fcee-590d-a4b7-2efd22d7c3a5`, built by `scripts/hd-test-disk.sh`
+from the library's Workbench 3.1; HDCheck.txt sha256 21ea2d28...1183). The board is left with Workbench 3.1 DD
+mounted, ready for step 1. Firmware CI was red since the NFC merge (gcc -Wformat-truncation at
+device_client.c:691); fixed in `864f871`, green again. Parked for later: the live PIO golden check skips in CI
+(host tests run before the build); a rolled-back board re-installed by USB with HD desired can block the HD
+digest until reboot; HANDOFF step numbers here differ from spec §7's (a cold-boot step was inserted). Spec `docs/superpowers/specs/2026-09-26-hd-floppies-read-only-design.md`,
 plan `docs/superpowers/plans/2026-09-26-hd-floppies-read-only.md`.
 
 What it does:
