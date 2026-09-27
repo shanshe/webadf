@@ -62,19 +62,21 @@ describe('setDesired and HD (spec §4.3)', () => {
   });
 });
 
-describe('readDesired and HD (spec §4.3)', () => {
+describe('readDesired and HD (HD writes spec §5.3)', () => {
   const row = {
     version: 5, sha256: 'a'.repeat(64), diskId: 'disk-hd', gameId: 'g1', diskNo: 1,
     title: 'T', label: 'L', diskCount: 1,
   };
 
-  it('always sends an HD disk write-protected, whatever the library row says', async () => {
-    selects = [[{ ...row, writeProtected: false, imageFormat: 'adf', sizeBytes: 1_802_240 }]];
+  it("sends an HD disk's flag as the library has it", async () => {
+    selects = [[{ ...row, writeProtected: false }]];
+    expect((await readDesired('dev-1'))?.desired?.writeProtected).toBe(false);
+    selects = [[{ ...row, writeProtected: true }]];
     expect((await readDesired('dev-1'))?.desired?.writeProtected).toBe(true);
   });
 
-  it("leaves a DD disk's flag as the library has it", async () => {
-    selects = [[{ ...row, writeProtected: false, imageFormat: 'adf', sizeBytes: 901_120 }]];
-    expect((await readDesired('dev-1'))?.desired?.writeProtected).toBe(false);
+  it('still sends a disk whose row has gone missing as protected', async () => {
+    selects = [[{ ...row, writeProtected: null }]];
+    expect((await readDesired('dev-1'))?.desired?.writeProtected).toBe(true);
   });
 });

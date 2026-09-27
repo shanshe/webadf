@@ -9,7 +9,6 @@ import {
   type CostItem, type BatchOp,
 } from '@/lib/adffs';
 import { applyDiskEdit } from '@/lib/disk-write';
-import { isHdAdf } from '@/lib/disk-format';
 
 export const maxDuration = 60;
 
@@ -129,7 +128,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   // The same entitlement boundary every disk route uses: 404, never 403,
   // so the response cannot confirm the id is real for another org.
   const rows = await getDb()
-    .select({ sha256: disks.sha256, imageFormat: disks.imageFormat, sizeBytes: disks.sizeBytes })
+    .select({ sha256: disks.sha256 })
     .from(disks)
     .innerJoin(entitlements, and(
       eq(entitlements.sha256, disks.sha256),
@@ -140,10 +139,6 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
   const disk = rows[0];
   if (!disk) return Response.json({ error: 'not_found' }, { status: 404 });
-
-  // HD spec §4.2: refused by name BEFORE the 1.8 MB read, not reported as
-  // "no filesystem" by the adffs read below.
-  if (isHdAdf(disk)) return Response.json({ error: 'hd_read_only' }, { status: 409 });
 
   let adf: Uint8Array;
   try {

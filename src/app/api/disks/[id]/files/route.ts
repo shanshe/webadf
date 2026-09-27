@@ -1,6 +1,5 @@
 import { requireOrg } from '@/lib/session';
 import { readVolume, addFile, makeDirectory, type AdfEntry, type WriteResult } from '@/lib/adffs';
-import { ROOT_BLOCK } from '@/lib/adffs/constants';
 import { applyDiskEdit } from '@/lib/disk-write';
 
 export const maxDuration = 60;
@@ -68,9 +67,11 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const edit = (adf: Uint8Array): WriteResult => {
     const volume = readVolume(adf);
     if (!volume.ok) return { ok: false, reason: 'no-filesystem' };
-    // ROOT_BLOCK itself is never an entry in `volume.root` -- it IS that
-    // array -- so it is accepted without walking for it.
-    if (parentBlock !== ROOT_BLOCK && !isDirectory(volume.root, parentBlock)) {
+    // The root itself (880 DD, 1,760 HD -- volume.rootBlock) is never an entry
+    // in `volume.root`: it IS that array, so it is accepted without walking
+    // for it. Any other number, including a DD root sent to an HD disk
+    // (Review Focus 2), must be a directory found in the parsed tree.
+    if (parentBlock !== volume.rootBlock && !isDirectory(volume.root, parentBlock)) {
       return { ok: false, reason: 'not-a-directory' };
     }
     return bytes

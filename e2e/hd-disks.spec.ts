@@ -6,6 +6,7 @@ import { disks } from '@/db/schema/catalog';
 import { diskVersions, diskWriteTracks } from '@/db/schema/disk-history';
 import { diskStore } from '@/lib/storage';
 import { formatVolume } from '@/lib/adffs/format';
+import { readVolume } from '@/lib/adffs';
 import { HD_TRACK_DATA_BYTES } from '@/lib/adfmfm';
 import { signUpFresh, runTag } from './helpers';
 import { seedDisk, cleanupSeeded, pairDevice, authHeader } from './device-helpers';
@@ -75,13 +76,12 @@ test('an uploaded HD ADF is tagged HD everywhere its size shows, cannot be made 
   await expect(page.getByTestId('hd-not-browsable')).toHaveText("HD disks can't be browsed in the browser yet");
 });
 
-test('an HD disk mounts only on a board reporting playsHd, always goes write-protected, and is served as WFAD', async ({ page, request }) => {
+test('an HD disk mounts only on a board reporting playsHd, follows the library\'s write-protect flag, and is served as WFAD', async ({ page, request }) => {
   const { orgId } = await signUpFresh(page);
   const { deviceId, token } = await pairDevice(page, request);
   const sha256 = await uploadViaApi(page, hdAdf(), 'HD Mount (1994)(Webadf).adf');
   const [d] = await getDb().select({ id: disks.id, gameId: disks.gameId }).from(disks).where(eq(disks.orgId, orgId));
-  // A writable row -- which the PATCH would refuse -- set directly: the board
-  // must be sent write-protect anyway (spec §4.3).
+  // The row is writable: the board is told so (HD writes spec §5.3).
   await getDb().update(disks).set({ writeProtected: false }).where(eq(disks.id, d.id));
 
   const report = (extra: Record<string, unknown>) => request.post('/api/device/status', {
@@ -104,7 +104,7 @@ test('an HD disk mounts only on a board reporting playsHd, always goes write-pro
   expect(res.status()).toBe(200);
 
   const poll = await (await request.get('/api/device/poll?since=0', { headers: authHeader(token) })).json();
-  expect(poll.desired).toMatchObject({ sha256, diskId: d.id, writeProtected: true });
+  expect(poll.desired).toMatchObject({ sha256, diskId: d.id, writeProtected: false });
 
   const img = await request.get(`/api/device/image/${sha256}`, { headers: authHeader(token) });
   expect(img.status()).toBe(200);
@@ -129,31 +129,68 @@ test('an HD disk mounts only on a board reporting playsHd, always goes write-pro
   expect(await rolledBack.json()).toEqual({ error: 'hd_unsupported', reason: UNSUPPORTED });
 });
 
-test('every write path refuses an HD disk by name, before reading a byte', async ({ page }) => {
+test('every browser write path works on an HD disk, whose root is block 1760', async ({ page }) => {
+  // A dozen-plus round trips against the live database, each one an
+  // applyDiskEdit over a 1.76 MB image (twice hfe-disks.spec.ts:201's DD
+  // ones) plus a full-image GET or two: measured at ~53 s against the
+  // default 30 s test timeout, same reason that test sets its own.
+  test.setTimeout(120_000);
   const { orgId } = await signUpFresh(page);
-  // A digest with no blob behind it: a route that tried to read the bytes would answer 503, not 409.
-  const { diskId } = await seedDisk(orgId, { title: 'HD RO', diskNo: 1, sha256: fakeSha(), sizeBytes: HD_BYTES });
+  // A fixed timestamp: the same bytes every run, so the blob store dedupes it.
+  const bytes = Buffer.from(formatVolume({
+    filesystem: 'FFS', volumeName: 'HDEdit', density: 'hd', now: new Date(Date.UTC(2026, 8, 27)),
+  }));
+  await uploadViaApi(page, bytes, 'HD Edit (2026)(Webadf).adf');
+  const [d] = await getDb().select({ id: disks.id, sha256: disks.sha256 }).from(disks).where(eq(disks.orgId, orgId));
 
-  const off = await page.request.patch(`/api/disks/${diskId}`, { data: { writeProtected: false } });
-  expect(off.status()).toBe(409);
-  expect((await off.json()).error).toBe('hd_read_only');
-  expect((await page.request.patch(`/api/disks/${diskId}`, { data: { writeProtected: true } })).status()).toBe(200);
+  const off = await page.request.patch(`/api/disks/${d.id}`, { data: { writeProtected: false } });
+  expect(off.status()).toBe(200);
+  expect((await off.json()).writeProtected).toBe(false);
 
-  const mkdir = await page.request.post(`/api/disks/${diskId}/files`, { multipart: { parentBlock: '1760', name: 'x' } });
-  expect(mkdir.status()).toBe(409);
-  expect(await mkdir.json()).toMatchObject({ error: 'edit_failed', reason: 'hd_read_only' });
+  // Review Focus 2: a page that still says 880 is not naming a directory here.
+  const stale = await page.request.post(`/api/disks/${d.id}/files`, { multipart: { parentBlock: '880', name: 'X' } });
+  expect(stale.status()).toBe(400);
+  expect(await stale.json()).toMatchObject({ error: 'edit_failed', reason: 'not-a-directory' });
+  expect((await getDb().select({ sha256: disks.sha256 }).from(disks).where(eq(disks.id, d.id)))[0].sha256).toBe(d.sha256);
 
-  const rename = await page.request.patch(`/api/disks/${diskId}/volume-name`, { data: { volumeName: 'X' } });
-  expect(rename.status()).toBe(409);
-  expect((await rename.json()).error).toBe('hd_read_only');
+  expect((await page.request.post(`/api/disks/${d.id}/files`, {
+    multipart: { parentBlock: '1760', name: 'DIR' },
+  })).status()).toBe(200);
+  expect((await page.request.post(`/api/disks/${d.id}/files`, {
+    multipart: {
+      parentBlock: '1760', name: 'HELLO.TXT',
+      file: { name: 'HELLO.TXT', mimeType: 'application/octet-stream', buffer: Buffer.from('hello hd') },
+    },
+  })).status()).toBe(200);
 
-  const restore = await page.request.post(`/api/disks/${diskId}/restore`, { data: { seq: 0 } });
-  expect(restore.status()).toBe(409);
-  expect((await restore.json()).error).toBe('hd_read_only');
+  const adf = new Uint8Array(await (await page.request.get(`/api/disks/${d.id}/adf`)).body());
+  expect(adf.length).toBe(HD_BYTES);
+  const v = readVolume(adf);
+  if (!v.ok) throw new Error(`expected a volume, got ${v.reason}`);
+  expect(v.rootBlock).toBe(1760);
+  const hello = v.root.find((e) => e.name === 'HELLO.TXT')!;
+  const dir = v.root.find((e) => e.name === 'DIR')!;
 
-  const file = await page.request.get(`/api/disks/${diskId}/files/1760`);
-  expect(file.status()).toBe(409);
-  expect((await file.json()).error).toBe('hd_not_browsable');
+  const got = await page.request.get(`/api/disks/${d.id}/files/${hello.block}`);
+  expect(got.status()).toBe(200);
+  expect((await got.body()).toString()).toBe('hello hd');
+
+  // A stale DD root as a move target is not found here either.
+  const staleMove = await page.request.patch(`/api/disks/${d.id}/files/${hello.block}`, { data: { toParent: 880 } });
+  expect(staleMove.status()).toBe(400);
+
+  expect((await page.request.patch(`/api/disks/${d.id}/files/${hello.block}`, { data: { name: 'RENAMED.TXT' } })).status()).toBe(200);
+  expect((await page.request.patch(`/api/disks/${d.id}/files/${hello.block}`, { data: { toParent: dir.block } })).status()).toBe(200);
+  expect((await page.request.patch(`/api/disks/${d.id}/files/${hello.block}`, { data: { toParent: 1760 } })).status()).toBe(200);
+  expect((await page.request.patch(`/api/disks/${d.id}/volume-name`, { data: { volumeName: 'HDRenamed' } })).status()).toBe(200);
+  expect((await page.request.delete(`/api/disks/${d.id}/files/${dir.block}`)).status()).toBe(200);
+
+  // Version 1 is the disk right after DIR was made: DIR, and no HELLO.TXT.
+  const restore = await page.request.post(`/api/disks/${d.id}/restore`, { data: { seq: 1 } });
+  expect(restore.status()).toBe(200);
+  const back = readVolume(new Uint8Array(await (await page.request.get(`/api/disks/${d.id}/adf`)).body()));
+  if (!back.ok) throw new Error(`expected a volume, got ${back.reason}`);
+  expect(back.root.map((e) => e.name)).toEqual(['DIR']);
 });
 
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');

@@ -343,4 +343,29 @@ describe('restoreVersion', () => {
     expect(result.status).toBe(500);
     expect(diskVersionRows).toHaveLength(rowCountBefore); // nothing recorded
   });
+
+  it('restores an HD version like a DD one (HD writes spec §5.2)', async () => {
+    const { recordVersion } = await import('./store');
+    let head = formatVolume({ filesystem: 'FFS', volumeName: 'HDChain', density: 'hd' });
+    blobBytes.set(sha256Of(head), head);
+    const images = [head];
+    for (const name of ['A', 'B']) {
+      const r = addFile(head, 1760, name, new TextEncoder().encode(name));
+      if (!r.ok) throw new Error(`fixture: ${r.reason}`);
+      await recordVersion({
+        orgId: ORG, diskId: DISK, headSha: sha256Of(head), head, next: r.adf,
+        source: 'browser', userId: 'user-1', sourceFilename: 'HDChain.adf',
+      });
+      head = r.adf;
+      images.push(head);
+    }
+    diskLookupResult = [{
+      sha256: sha256Of(images[2]), tosecName: 'HDChain.adf', sourceFilename: 'HDChain.adf',
+      imageFormat: 'adf', sizeBytes: 1_802_240,
+    }];
+
+    const { restoreVersion } = await import('./restore');
+    expect(await restoreVersion(ORG, DISK, 1, 'user-2'))
+      .toEqual({ ok: true, sha256: sha256Of(images[1]), seq: 3, recorded: true });
+  });
 });

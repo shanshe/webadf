@@ -4,7 +4,6 @@ import { and, eq } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { games, disks, entitlements } from '@/db/schema/catalog';
 import { findHolder, mountedReason, repointLateMounts } from '@/lib/disk-holder';
-import { isHdAdf } from '@/lib/disk-format';
 import { requireOrg } from '@/lib/session';
 import { diskStore } from '@/lib/storage';
 import { setVolumeName, MAX_VOLUME_NAME } from '@/lib/adffs/format';
@@ -60,7 +59,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
   const rows = await db
     .select({
       sha256: disks.sha256, gameId: disks.gameId, diskNo: disks.diskNo,
-      imageFormat: disks.imageFormat, sizeBytes: disks.sizeBytes,
+      imageFormat: disks.imageFormat,
     })
     .from(disks)
     .innerJoin(entitlements, and(
@@ -75,12 +74,6 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
 
   if (disk.imageFormat === 'hfe') {
     return Response.json({ error: 'hfe_read_only' }, { status: 409 });
-  }
-
-  // HD spec §4.2: a rename rewrites the volume through adffs, which reads
-  // one geometry today.
-  if (isHdAdf(disk)) {
-    return Response.json({ error: 'hd_read_only' }, { status: 409 });
   }
 
   // Before the bytes are even read: a board that holds (or is polling toward)

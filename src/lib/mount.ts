@@ -179,8 +179,6 @@ export async function readDesired(deviceId: string): Promise<DesiredState | null
       title: games.title,
       label: disks.label,
       writeProtected: disks.writeProtected,
-      imageFormat: disks.imageFormat,
-      sizeBytes: disks.sizeBytes,
       // Derived, not stored — games has no disk_count column. Matches how
       // src/lib/queries.ts:17 counts it for the library grid.
       diskCount: sql<number>`(
@@ -230,11 +228,9 @@ export async function readDesired(deviceId: string): Promise<DesiredState | null
       diskCount: Math.max(r.diskCount ?? 1, 1),
       label: (r.label ?? `Disk ${r.diskNo}`).slice(0, DC_LABEL_MAX),
       // A disk row that has gone missing is not a licence to allow writes.
-      // And HD is read-only on the Amiga in this release (HD spec §4.3): the
-      // board never gets a writable HD disk, whatever the row says.
-      writeProtected: (r.writeProtected ?? true) ||
-        (r.imageFormat !== null && r.sizeBytes !== null &&
-          isHdAdf({ imageFormat: r.imageFormat, sizeBytes: r.sizeBytes })),
+      // HD follows the row like DD (HD writes spec §5.3); a board on 1.4.1
+      // still holds WPROT for HD itself until it updates (§5.4).
+      writeProtected: r.writeProtected ?? true,
     },
   };
 }
