@@ -2152,6 +2152,12 @@ separately.
     requirement of the feature, not a blocker. The UI should say so where an HD disk is
     created or mounted, since a 1.3 machine would simply fail to read it.
 
+- **An NFC card for swapping disks within the mounted game or utility** (operator, 2026-09-27): a dedicated tag
+  that, when tapped, advances the drive to the next disk of the title that is mounted (rather than naming one disk).
+  Relates to the multi-disk item below.
+- **Review Shanshe's updated PR #3** (operator, 2026-09-27): the buzzer footprint must be 6.5 mm pitch for the
+  SEA-1295Y (comment posted 2026-09-27); run `pnpm hw:verify` on the PR's OWN files (the script checks the files
+  next to it) and check BZ1's pad pitch.
 - **Multi-disk games while playing: a smart way to advance to the next disk.** Requested by the operator
   2026-09-26. Nothing designed yet. What the board already has to build on:
   - it knows the set: every mount carries diskNo/diskCount ("disk 1 of 2" on the OLED);
@@ -4448,6 +4454,34 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 - **Cron drift:** the daily 01:30 cron against a 7-day gate can drift a refetch to 8 days.
 
 ### 3an. HD floppies, read-only -- 2026-09-26 (spec/plan 2026-09-26-hd-floppies-read-only)
+
+**BENCH 2026-09-27: STEP 1 FAILED; HD DOES NOT WORK YET; THE BOARD RUNS `1.4.0+g864f871` = master built with
+`-DWF_DRIVE_ID=OFF` (published seq 24): DD/HFE/NFC as 1.3.1, `plays_hd=false` so the server refuses HD. Verified: Workbench
+3.1 DD boots on it.** What the bench established (diagnostic builds on branch `bench/id-probe`, worktree
+`.claude/worktrees/id-probe`, published as seq 12-23 "BENCH DIAGNOSTIC ONLY" -- never target a real board at them):
+1. `1.4.0+g40c8614` (the merged design): DD disk -> black screen, DF0 never read (step 1 failed, so 1.4.0-with-ID
+   was not published). A variant whose DD answer never asserts RDY boots DD and DF0 Info shows 880K.
+2. **The ID never reached the wire.** A probe (pio2 state machine + chained DMA, `WF_ID_PROBE`) logs, per SEL0 select,
+   MTR, our RDY level, drive_id's PC and pio0's output enable for GP12. Findings, in order:
+   - The PIO program's logic is right on hardware: motor-off selects take the ID path (PC past `out pins, 1`).
+   - DD answers (`mov osr, ~null`) put `1` on RDY on polling selects -- the pad, funcsel (PIO0) and pindir are fine then.
+   - Keeping the HD word in ISR failed (SM_RESTART clears ISR; datasheet RP2350 CTRL.SM_RESTART). Moved to Y.
+   - **Decisive: pio0's output enable for GP12 (DBG_PADOE bit 12) goes to 0 at the Amiga's first motor-on select
+     after a disk is mounted, and stays off during every later ID read** (`!` in the probe log), so RDY floats low
+     (pad pull-down) whatever the program writes. A main-loop `set pindirs, 1` re-assert (~2 ms later) is too late
+     for a microsecond ID read and gave a black screen. Nothing in src/ writes pindirs at runtime and no pio0
+     program has a pindir/side-set-pindir write (side-set touches GP11 only, datasheet 11.5.6); ROOT CAUSE NOT FOUND.
+3. Also learned: the amiga-hddlw PAL (github.com/schlae/amiga-hddlw, pal/amiga-hddlw.pld) is ground truth for a real
+   drive: a motor-ON select resets the ID; RDY is asserted on the FIRST motor-off select (DD: every motor-off select;
+   HD: asserted/released alternately, starting asserted) -- i.e. the reset select carries bit 31, asserted = 1.
+   1.4.0's "reset select carries no bit" was wrong. The spike's A/B results predate the probe and are unreliable.
+4. drive_id sampling MTR 53 ns after SEL0 falls is marginal; clkdiv 10 (~0.5 us) worked (PC shows the ID path).
+5. OTA works with no one at the board, but a staged update applies only when idle: nothing mounted, motor off --
+   **with the Amiga OFF the lines float low and read as "selected, motor on", so the update waits until the Amiga is on.**
+   BOOTSEL by hand was unreliable (four failed attempts; the board is also powered from the floppy connector).
+Next: find what clears pio0's GP12 pindir (candidates: an SM on pio0 other than drive_id -- try moving drive_id to its
+own PIO block, e.g. pio2 without the probe, or move flux_in/flux_out off pio0 and see if the drop stops); then re-test
+with the PAL phase. Web side of HD is live and harmless (HD mounts refused while `plays_hd` is false).
 
 **STATUS 2026-09-27 05:55: MERGED to master (`fc23a26`) and deployed; migration 0026 applied; firmware
 `1.4.0+g40c8614` INSTALLED ON THE BENCH BOARD BY USB (trial confirmed) but NOT PUBLISHED to the registry --
