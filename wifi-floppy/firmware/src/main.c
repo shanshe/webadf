@@ -2282,12 +2282,21 @@ int main(void) {
             g_reinsert_req = false;   // the mount/eject below announces this
             loaded = -1;
             disk_mounted = now_mounted;
+            // One slot, computed once, for both HD decisions below: the
+            // WF_VERIFY_TRACKS skip and the drive-ID choice used to read
+            // psram_token_slot(last_active_token) and psram_active_slot()
+            // respectively -- two different reads of what should be the
+            // same slot at this instant (final-fix F6). (void) in case
+            // neither consumer below is compiled in (WF_VERIFY_TRACKS=0 and
+            // WF_DRIVE_ID=OFF together).
+            const int slot = psram_active_slot();
+            (void)slot;
 #if WF_VERIFY_TRACKS
             // Sweep on mount only, and not an HD disk: its slot holds ADF,
             // which psram_image_read refuses; its encode is host-tested
             // against Greaseweazle (test_track_cache_hd.c).
             verify_next = now_mounted &&
-                psram_image_slot_kind(psram_token_slot(last_active_token)) != SLOT_KIND_ADF_HD
+                psram_image_slot_kind(slot) != SLOT_KIND_ADF_HD
                 ? 0 : NUM_TRACKS;
             verify_bad = 0;
 #endif
@@ -2299,7 +2308,7 @@ int main(void) {
                 // mid-answer (bus_out.c). Whether Kickstart re-reads the ID
                 // on a change at all is bench step 9. The same HD derivation
                 // as the WPROT rule on core1 (write_back_wprot).
-                const bool hd = psram_image_slot_kind(psram_active_slot()) == SLOT_KIND_ADF_HD;
+                const bool hd = psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD;
                 if (bus_out_drive_id_set_hd(hd))
                     wf_logf(WF_INFO, "drive-id: now answering %s 0x%08lx",
                             hd ? "HD" : "DD", (unsigned long)drive_id_for(hd));

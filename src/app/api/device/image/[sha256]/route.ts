@@ -1,10 +1,12 @@
 import { and, eq } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { disks, entitlements } from '@/db/schema/catalog';
+import { devices } from '@/db/schema/devices';
 import { requireDevice, deviceAuthResponse } from '@/lib/device-auth';
 import { diskStore } from '@/lib/storage';
 import { encodeDisk, writeWfad } from '@/lib/adfmfm';
 import { isHdAdf } from '@/lib/disk-format';
+import { HD_UNSUPPORTED } from '@/lib/hd-messages';
 import { parseHfe } from '@/lib/hfe/parse';
 import { hfeToWfmf } from '@/lib/hfe/to-wfmf';
 
@@ -58,6 +60,22 @@ export async function GET(
   // sniffed from the bytes. An HD disk goes out as WFAD: the ADF itself, which
   // the board encodes a track at a time on read (HD spec §4.4, §5.2).
   const isHd = !isHfe && formats.some(isHdAdf);
+
+  // A board built WF_DRIVE_ID=OFF, or one that rolled back from 1.4.0, must
+  // never receive HD bytes even if desiredSha256 still names an HD disk (the
+  // mount that set it may predate the rollback, or a caller may fetch this
+  // route directly). Same device-auth lookup as above, just the one column
+  // this route needs -- not a second auth path (final-fix F4).
+  if (isHd) {
+    const [dev] = await getDb()
+      .select({ playsHd: devices.playsHd })
+      .from(devices)
+      .where(and(eq(devices.id, device.deviceId), eq(devices.orgId, device.orgId)))
+      .limit(1);
+    if (!dev?.playsHd) {
+      return Response.json({ error: 'hd_unsupported', reason: HD_UNSUPPORTED }, { status: 422 });
+    }
+  }
 
   let stored: Uint8Array;
   try {

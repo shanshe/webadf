@@ -116,6 +116,13 @@ test('an HD disk mounts only on a board reporting playsHd, always goes write-pro
   res = await mount();
   expect(res.status()).toBe(409);
   expect((await res.json()).error).toBe('hd_unsupported');
+
+  // Same board, same still-entitled sha256, fetched directly (not through
+  // mount): the image route must refuse HD bytes to a board that cannot play
+  // them, even though desiredSha256 was set before the rollback (F4).
+  const rolledBack = await request.get(`/api/device/image/${sha256}`, { headers: authHeader(token) });
+  expect(rolledBack.status()).toBe(422);
+  expect(await rolledBack.json()).toEqual({ error: 'hd_unsupported', reason: UNSUPPORTED });
 });
 
 test('every write path refuses an HD disk by name, before reading a byte', async ({ page }) => {

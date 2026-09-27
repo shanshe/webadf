@@ -4475,14 +4475,20 @@ What it does:
   hd=read-only`.
 
 **Bench prep (controller):**
-1. Publish 1.4.0 from a clean tree (`pnpm firmware:build`, then `pnpm firmware:publish --notes "HD disks,
-   read-only"`) and update the board from the web app.
-2. `scripts/hd-test-disk.sh <a Workbench 3.1 DD ADF> <a scratch dir>` makes `HDBench.adf` and prints
+1. Build 1.4.0 from a clean tree (`pnpm firmware:build`) and install it on the bench board over USB
+   (BOOTSEL + `picotool load -p 0 -x wifi-floppy/firmware/build/wifi_floppy.uf2`) -- NOT through the web
+   app's Update flow, because 1.4.0 is not published yet.
+2. Confirm the boot log's `pio claims:` line shows pio0 with three state machines claimed (flux_out,
+   flux_in, drive_id).
+3. Run bench checklist step 1 below (DD boots and DF0 reads as DD) and the DD regression steps (2-5). Only
+   once those pass, publish 1.4.0 to the release registry (`pnpm firmware:publish --notes "HD disks,
+   read-only"`) and update the board from the web app as usual. **If step 1 fails, 1.4.0 is not published**
+   (or is withdrawn from the registry if it was already published) -- a phase or polarity bug in the
+   drive-ID responder must never reach a board over the air.
+4. `scripts/hd-test-disk.sh <a Workbench 3.1 DD ADF> <a scratch dir>` makes `HDBench.adf` and prints
    `HDCheck.txt`'s sha-256. Upload `HDBench.adf` to the library.
-3. Also look for real HD disks already in the library: `select d.id, g.title from disks d join games g on
+5. Also look for real HD disks already in the library: `select d.id, g.title from disks d join games g on
    g.id = d.game_id where d.image_format = 'adf' and d.size_bytes = 1802240;`. Try one not built here.
-4. Before step 1 below, confirm the boot log's `pio claims:` line shows pio0 with three state machines
-   claimed (flux_out, flux_in, drive_id).
 
 **Bench checklist (each step is a visible pass or fail; one physical step per turn):**
 1. On the 1.4.0 (`WF_DRIVE_ID=ON`) build, a DD Workbench 3.1 disk boots AND DF0 is recognised as a DD
@@ -4495,15 +4501,28 @@ What it does:
 3. Turrican (HFE) boots (regression).
 4. DF1 with the real drive works (regression: drive_id looks at SEL0 only).
 5. An NFC tap mounts a DD disk (regression).
-6. The HD Workbench disk boots. The log shows `drive-id: now answering HD 0xaaaaaaaa`.
-7. Its Workbench window shows ~1.7 MB capacity. `Copy HDBench:HDCheck.txt RAM:` completes with no error,
+6. **Warm path:** with the Amiga already on and a DD disk running, mount the HD Workbench disk from the
+   web app and reset with Ctrl-Amiga-Amiga. It boots. The log shows `drive-id: now answering HD
+   0xaaaaaaaa`.
+7. **Cold power-on with the HD disk already desired:** power OFF both the Amiga and the board, power both
+   ON, and record whether the HD disk boots with no reset. Why this is its own step: at power-on the
+   drive-ID responder answers DD (no disk has been fetched yet), and the HD disk is published only seconds
+   later, after WiFi, TLS and a 1.8 MB fetch complete -- a cold HD boot depends on Kickstart re-reading the
+   ID on disk insertion, which is the same unknown as the swap step (step 10) and is not guaranteed by
+   anything proven so far. If it does not boot cleanly, the §5.4 fallback (reset once the disk is in) applies
+   to every cold boot with HD desired, and that must be recorded here, not assumed from the warm-path pass.
+8. Its Workbench window shows ~1.7 MB capacity. `Copy HDBench:HDCheck.txt RAM:` completes with no error,
    `List RAM:HDCheck.txt` shows 560000 bytes, and `Type RAM:HDCheck.txt` ends "HDCHECK line 20000 of 20000".
-8. Saving anything to the HD disk gives "Disk is write protected". The log shows `wprot: ASSERTED … hd=read-only`
-   and no `write: trk` upload.
-9. Swap DD -> HD and HD -> DD while the Amiga runs; record whether each needs a reset (Ctrl-Amiga-Amiga).
-   If one does, the follow-up (not built) is the web-app note "reset the Amiga after switching between
-   DD and HD" when a disk of the other density is mounted (spec §5.4).
-10. Read the lowest `heap: free low-water` line and the largest `hd: … encoded in` line; record both here.
+   Record how long the `Copy` takes, alongside step 11's largest `hd: track N encoded in X us (new max)`
+   value -- together they tell an encode stall apart from a stale-stream retry.
+9. Saving anything to the HD disk gives "Disk is write protected". The log shows `wprot: ASSERTED … hd=read-only`
+   and no `write: trk` log line at all -- WPROT means the Amiga refuses before WGATE, so nothing is ever
+   captured to upload.
+10. Swap DD -> HD and HD -> DD while the Amiga runs; record whether each needs a reset (Ctrl-Amiga-Amiga).
+    If one does, the follow-up (not built) is the web-app note "reset the Amiga after switching between
+    DD and HD" when a disk of the other density is mounted (spec §5.4).
+11. Read the lowest `heap: free low-water` line and the largest `hd: … encoded in` line; record both here
+    (also referenced by step 8 above).
 
 ### 3am. NFC tap-to-mount -- 2026-09-26 (spec/plan 2026-09-25-nfc-tap-to-mount)
 
