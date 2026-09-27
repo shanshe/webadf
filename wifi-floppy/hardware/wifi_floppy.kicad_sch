@@ -12001,7 +12001,7 @@
 				)
 			)
 		)
-		(property "LCSC" "DNP"
+		(property "LCSC" "C2687681"
 			(at 168.91 115.57 0)
 			(hide yes)
 			(show_name no)

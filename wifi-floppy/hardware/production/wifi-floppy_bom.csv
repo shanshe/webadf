@@ -1,5 +1,5 @@
 ﻿Designator,Footprint,Quantity,Value,LCSC Part #
-BZ1,Buzzer_TDK_PS1240P02BT_D12.2mm_H6.5mm,1,Buzzer,DNP
+BZ1,Buzzer_TDK_PS1240P02BT_D12.2mm_H6.5mm,1,Buzzer,C2687681
 C1,1206,1,100nF,
 C3,1206,1,10uF,
 D1,D_SMA_Handsoldering,1,SS14,
