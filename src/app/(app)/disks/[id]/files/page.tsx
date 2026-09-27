@@ -9,7 +9,7 @@ import { findHolder } from '@/lib/disk-holder';
 import { ejectMessage, mountedReason } from '@/lib/mount-wording';
 import { requireOrg } from '@/lib/session';
 import { diskStore } from '@/lib/storage';
-import { readVolume, readUsage, type AdfEntry } from '@/lib/adffs';
+import { readVolume, readUsage, DD_GEOMETRY, type AdfEntry } from '@/lib/adffs';
 import { listCollections } from '@/lib/collections';
 import { resolveFrom, libraryTrail, fromQuery } from '@/lib/trail';
 import { loadEntries } from '@/lib/disk-history/store';
@@ -21,8 +21,6 @@ import { FileTree } from '@/components/disks/file-tree';
 import { DropStaging } from '@/components/disks/drop-staging';
 import { FileEditProvider, FileToolbar, type EditDisabled } from '@/components/disks/file-actions';
 import { HistoryPanel } from '@/components/disks/history-panel';
-import { isHdAdf } from '@/lib/disk-format';
-import { HD_NOT_BROWSABLE } from '@/lib/hd-messages';
 
 export const dynamic = 'force-dynamic';
 
@@ -116,7 +114,6 @@ export default async function DiskFilesPage(props: PageProps<'/disks/[id]/files'
       // TOSEC identity to lose.
       matchState: blobs.matchState,
       imageFormat: disks.imageFormat,
-      sizeBytes: disks.sizeBytes,
     })
     .from(disks)
     .innerJoin(entitlements, and(
@@ -145,12 +142,6 @@ export default async function DiskFilesPage(props: PageProps<'/disks/[id]/files'
   // D2); its game page states that and offers Extract as ADF. A hand-typed
   // URL lands there instead of on an editor that would refuse everything.
   if (disk.imageFormat === 'hfe') redirect(`/games/${disk.gameId}${fromQuery(from)}`);
-
-  // HD spec §4.2: adffs reads one geometry today, so an HD disk has nothing
-  // this page can show or edit. Said plainly, in place of adffs's "not a
-  // standard 880 KB ADF", which reads as a broken disk. Its 1.8 MB are not
-  // even read.
-  const hd = isHdAdf(disk);
 
   const filename = disk.tosecName ?? disk.sourceFilename ?? `${disk.sha256.slice(0, 12)}.adf`;
 
@@ -181,17 +172,18 @@ export default async function DiskFilesPage(props: PageProps<'/disks/[id]/files'
   // clear degrade rather than a crashed page for what is, either way, bytes
   // this page cannot show.
   let bytes: Uint8Array | null = null;
-  if (!hd) {
-    try {
-      bytes = historicalSeq !== null && historyEntries
-        ? await materialise(historyEntries, historicalSeq, (sha256) => diskStore.read(sha256))
-        : await diskStore.read(disk.sha256);
-    } catch {
-      bytes = null;
-    }
+  try {
+    bytes = historicalSeq !== null && historyEntries
+      ? await materialise(historyEntries, historicalSeq, (sha256) => diskStore.read(sha256))
+      : await diskStore.read(disk.sha256);
+  } catch {
+    bytes = null;
   }
 
   const volume = bytes ? readVolume(bytes) : null;
+  // 880 DD, 1,760 HD. When there is no filesystem every edit is refused
+  // anyway (`disabled` below), so the DD value is only a placeholder there.
+  const rootBlock = volume?.ok ? volume.rootBlock : DD_GEOMETRY.rootBlock;
   // Null for a disk whose bitmap cannot be trusted; the header says so
   // rather than showing a figure someone might act on.
   const usage = bytes ? readUsage(bytes) : null;
@@ -342,18 +334,13 @@ export default async function DiskFilesPage(props: PageProps<'/disks/[id]/files'
             </Link>
           </div>
         )}
-        {hd ? (
-          <div className="glass-card p-5 text-[13px]" style={{ color: 'var(--muted)' }}
-               data-testid="hd-not-browsable">
-            {HD_NOT_BROWSABLE}
-          </div>
-        ) : volume === null ? (
+        {volume === null ? (
           <div className="glass-card p-5 text-[13px]" style={{ color: 'var(--amber-text)' }}
                data-testid="blob-unavailable">
             The stored bytes for this disk could not be read.
           </div>
         ) : (
-          <FileEditProvider diskId={id} disabled={disabled} tosecName={matchedTosecName}>
+          <FileEditProvider diskId={id} disabled={disabled} tosecName={matchedTosecName} rootBlock={rootBlock}>
             <VolumeHeader result={volume} filename={filename} usage={usage} />
             {/*
               Shown even when there is no filesystem to browse -- a disk

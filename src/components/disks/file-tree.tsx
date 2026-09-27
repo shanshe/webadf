@@ -18,7 +18,6 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical } from 'lucide-react';
 import type { AdfEntry } from '@/lib/adffs';
-import { ROOT_BLOCK } from '@/lib/adffs/constants';
 import { useFileEdit, MAX_NAME_LENGTH, type EditDisabled } from './file-actions';
 
 /**
@@ -122,7 +121,7 @@ function findEntryByBlock(entries: AdfEntry[], block: number): AdfEntry | null {
 
 /**
  * Every entry's block, mapped to the block it currently lives directly
- * under (`ROOT_BLOCK` for anything at the top level) -- `AdfEntry` itself
+ * under (the disk's root block for anything at the top level) -- `AdfEntry` itself
  * carries no parent pointer (it is a tree of children, not a flat list with
  * back-references), so this is the one walk that knows it.
  *
@@ -192,7 +191,7 @@ const GRIP_GUTTER = 22;
 
 export function FileTree({ entries, diskId }: { entries: AdfEntry[]; diskId: string }) {
   const [openBlocks, setOpenBlocks] = useState<ReadonlySet<number>>(() => new Set());
-  const { disabled, busy, runEdit } = useFileEdit();
+  const { disabled, busy, runEdit, rootBlock } = useFileEdit();
 
   // Which single row, if any, has its rename or delete form expanded. Kept
   // here rather than per-row, and mutually exclusive with each other: at
@@ -318,8 +317,8 @@ export function FileTree({ entries, diskId }: { entries: AdfEntry[]; diskId: str
    * differs between rows -- only what a given row must exclude from it does.
    */
   const directoryOptions = useMemo<DirectoryOption[]>(
-    () => [{ block: ROOT_BLOCK, label: '/' }, ...collectDirectories(entries)],
-    [entries],
+    () => [{ block: rootBlock, label: '/' }, ...collectDirectories(entries)],
+    [entries, rootBlock],
   );
 
   // Each row's own current parent block, so it can drop that one entry back
@@ -328,9 +327,9 @@ export function FileTree({ entries, diskId }: { entries: AdfEntry[]; diskId: str
   // offering a choice that changes nothing is still misleading noise.
   const parentBlocks = useMemo(() => {
     const map = new Map<number, number>();
-    buildParentMap(entries, ROOT_BLOCK, map);
+    buildParentMap(entries, rootBlock, map);
     return map;
-  }, [entries]);
+  }, [entries, rootBlock]);
 
   /**
    * Mouse and touch are two sensors, not one PointerSensor -- copied
@@ -382,8 +381,8 @@ export function FileTree({ entries, diskId }: { entries: AdfEntry[]; diskId: str
   // a new one: there is exactly one of these per page, so it was already a
   // stable, unique locator.
   const { setNodeRef: setRootDropRef, isOver: rootIsOver } = useDroppable({
-    id: ROOT_BLOCK,
-    data: { block: ROOT_BLOCK } satisfies FileDragData,
+    id: rootBlock,
+    data: { block: rootBlock } satisfies FileDragData,
     disabled: !!disabled,
   });
 
@@ -450,7 +449,7 @@ export function FileTree({ entries, diskId }: { entries: AdfEntry[]; diskId: str
             moveBlock={moveBlock}
             moveTarget={moveTarget}
             directoryOptions={directoryOptions}
-            currentParent={parentBlocks.get(entry.block) ?? ROOT_BLOCK}
+            currentParent={parentBlocks.get(entry.block) ?? rootBlock}
             forbiddenBlocks={forbiddenBlocks}
             diskId={diskId}
             toggle={toggle}

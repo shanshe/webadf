@@ -4,10 +4,8 @@ import { createContext, useContext, useRef, useState, type ReactNode } from 'rea
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { ROOT_BLOCK } from '@/lib/adffs/constants';
 import { ejectMessage, isMountedReason } from '@/lib/mount-wording';
 import { HFE_READ_ONLY } from '@/lib/hfe/messages';
-import { HD_READ_ONLY } from '@/lib/hd-messages';
 
 /**
  * Every AmigaDOS name field this app writes is 30 bytes (`bcplString(...,
@@ -55,7 +53,6 @@ export function describeEditError(reason: string): string {
     case 'no-filesystem': return 'This disk has no filesystem to edit.';
     case 'blob_unavailable': return 'The disk image could not be read from storage.';
     case 'hfe_read_only': return HFE_READ_ONLY;
-    case 'hd_read_only': return HD_READ_ONLY;
     default: return reason;
   }
 }
@@ -63,6 +60,9 @@ export function describeEditError(reason: string): string {
 interface FileEditContextValue {
   diskId: string;
   disabled: EditDisabled | null;
+  /** The disk's root directory block: 880 DD, 1,760 HD (HD writes spec §6.1).
+   *  Every control that means "the root" sends this, never a constant. */
+  rootBlock: number;
   busy: boolean;
   /**
    * Runs one write against this disk's file routes: `perform` issues the
@@ -100,7 +100,7 @@ export function useFileEdit(): FileEditContextValue {
  * the exact same gate.
  */
 export function FileEditProvider({
-  diskId, disabled, tosecName, children,
+  diskId, disabled, tosecName, rootBlock, children,
 }: {
   diskId: string;
   disabled: EditDisabled | null;
@@ -115,6 +115,8 @@ export function FileEditProvider({
    * that gets this right.
    */
   tosecName: string | null;
+  /** From readVolume's `rootBlock` (page.tsx). */
+  rootBlock: number;
   children: ReactNode;
 }) {
   const router = useRouter();
@@ -178,7 +180,7 @@ export function FileEditProvider({
   }
 
   return (
-    <FileEditContext.Provider value={{ diskId, disabled, busy, runEdit }}>
+    <FileEditContext.Provider value={{ diskId, disabled, busy, runEdit, rootBlock }}>
       {children}
       {/*
         Portalled to document.body, same reasoning as DeleteDiskDialog: this
@@ -244,12 +246,12 @@ export function FileEditProvider({
 
 /**
  * The two disk-root controls: upload a file, and create a new folder.
- * Both always add directly to the disk's root directory (block 880) --
- * there is no per-row "add inside this folder" yet, matching the scope this
- * page's read-only browse already had.
+ * Both always add directly to the disk's root directory (block 880 on a DD
+ * disk, 1,760 on an HD one) -- there is no per-row "add inside this folder"
+ * yet, matching the scope this page's read-only browse already had.
  */
 export function FileToolbar() {
-  const { diskId, disabled, busy, runEdit } = useFileEdit();
+  const { diskId, disabled, busy, runEdit, rootBlock } = useFileEdit();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -280,7 +282,7 @@ export function FileToolbar() {
     const file = uploadFile;
     runEdit(() => {
       const form = new FormData();
-      form.set('parentBlock', String(ROOT_BLOCK));
+      form.set('parentBlock', String(rootBlock));
       form.set('name', name);
       form.set('file', file);
       return fetch(`/api/disks/${diskId}/files`, { method: 'POST', body: form });
@@ -298,7 +300,7 @@ export function FileToolbar() {
     if (!name) return;
     runEdit(() => {
       const form = new FormData();
-      form.set('parentBlock', String(ROOT_BLOCK));
+      form.set('parentBlock', String(rootBlock));
       form.set('name', name);
       return fetch(`/api/disks/${diskId}/files`, { method: 'POST', body: form });
     }, `Created "${name}"`);

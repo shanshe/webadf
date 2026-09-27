@@ -17,7 +17,7 @@ const formatKb = (bytes: number) => `${Math.round(bytes / 1024)} KB`;
  * actually a catalog problem.
  */
 const NO_FILESYSTEM_COPY: Record<'not-adf' | 'no-dos-signature' | 'no-filesystem', string> = {
-  'not-adf': 'This image is not a standard 880 KB ADF.',
+  'not-adf': 'This image is not a standard 880 KB or 1.76 MB ADF.',
   'no-dos-signature':
     'No AmigaDOS filesystem — this disk has no DOS signature, which is normal for a game or demo with a custom bootblock.',
   'no-filesystem':

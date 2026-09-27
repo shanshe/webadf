@@ -49,7 +49,7 @@ async function uploadViaApi(page: Page, bytes: Buffer, filename: string) {
   return sha256;
 }
 
-test('an uploaded HD ADF is tagged HD everywhere its size shows, cannot be made writable, and the file browser says why', async ({ page }) => {
+test('an uploaded HD ADF is tagged HD, can be made writable, and opens in the file browser', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
   await page.goto('/ingest');
   await page.getByTestId('file-input').setInputFiles({
@@ -65,15 +65,21 @@ test('an uploaded HD ADF is tagged HD everywhere its size shows, cannot be made 
   await page.goto(`/games/${d.gameId}`);
   await expect(page.getByTestId(`hd-tag-${d.id}`)).toBeVisible();
   const wp = page.getByTestId(`wp-${d.id}`);
-  await expect(wp).toBeDisabled();
+  // Protected by default like every disk, and now a real toggle (HD writes spec §5.3).
   await expect(wp).toHaveAttribute('data-protected', 'true');
-  await expect(wp).toHaveAttribute('data-locked', 'true');
+  await expect(wp).not.toHaveAttribute('data-locked', 'true');
+  await expect(wp).toBeEnabled();
+  await wp.click();
+  await expect(wp).toHaveAttribute('data-protected', 'false');
 
   await page.goto('/library?view=table');
   await expect(page.getByTestId('game-hd-tag')).toBeVisible();
 
   await page.goto(`/disks/${d.id}/files`);
-  await expect(page.getByTestId('hd-not-browsable')).toHaveText("HD disks can't be browsed in the browser yet");
+  await expect(page.getByTestId('hd-not-browsable')).toHaveCount(0);
+  // These bytes are noise with no DOS signature: the ordinary "no filesystem"
+  // answer any such disk gets, not a refusal because it is HD.
+  await expect(page.getByTestId('file-edit-disabled')).toContainText('no filesystem');
 });
 
 test('an HD disk mounts only on a board reporting playsHd, follows the library\'s write-protect flag, and is served as WFAD', async ({ page, request }) => {
@@ -175,9 +181,23 @@ test('every browser write path works on an HD disk, whose root is block 1760', a
   expect(got.status()).toBe(200);
   expect((await got.body()).toString()).toBe('hello hd');
 
+  // A batch mkdir (files/batch, D-DD-3) lands under the HD root too --
+  // `applyBatch` resolves an empty parentPath from the volume's own
+  // rootBlock, not a DD constant.
+  const batch = await page.request.post(`/api/disks/${d.id}/files/batch`, {
+    multipart: { manifest: JSON.stringify([{ op: 'mkdir', path: 'BATCHDIR' }]) },
+  });
+  expect(batch.status()).toBe(200);
+  const afterBatch = readVolume(new Uint8Array(await (await page.request.get(`/api/disks/${d.id}/adf`)).body()));
+  if (!afterBatch.ok) throw new Error(`expected a volume, got ${afterBatch.reason}`);
+  expect(afterBatch.root.some((e) => e.name === 'BATCHDIR' && e.kind === 'dir')).toBe(true);
+
   // A stale DD root as a move target is not found here either.
+  const beforeStaleMove = (await getDb().select({ sha256: disks.sha256 }).from(disks).where(eq(disks.id, d.id)))[0].sha256;
   const staleMove = await page.request.patch(`/api/disks/${d.id}/files/${hello.block}`, { data: { toParent: 880 } });
   expect(staleMove.status()).toBe(400);
+  expect(await staleMove.json()).toMatchObject({ error: 'edit_failed', reason: 'not-found' });
+  expect((await getDb().select({ sha256: disks.sha256 }).from(disks).where(eq(disks.id, d.id)))[0].sha256).toBe(beforeStaleMove);
 
   expect((await page.request.patch(`/api/disks/${d.id}/files/${hello.block}`, { data: { name: 'RENAMED.TXT' } })).status()).toBe(200);
   expect((await page.request.patch(`/api/disks/${d.id}/files/${hello.block}`, { data: { toParent: dir.block } })).status()).toBe(200);

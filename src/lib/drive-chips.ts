@@ -1,7 +1,6 @@
 import { deviceState, isOnline, type DeviceState } from '@/lib/device-state';
 // The same predicate DeviceCard (also client-rendered) already imports.
 import { isDefaultDeviceName } from '@/lib/device-name';
-import { adfDensity } from '@/lib/disk-format';
 // Type-only: live-state.ts pulls in node:crypto, and this module's output is
 // handed to a client component. The import is erased at compile time.
 import type { LiveStateRow } from '@/lib/live-state';
@@ -34,10 +33,11 @@ export interface DriveChipDisk {
   diskNo: number | null;
   writeProtected: boolean | null;
   /**
-   * Why this disk can never be made writable, or null: an HFE (spec D2) or an
-   * HD disk (HD spec §4.3). The PATCH refuses to unprotect either.
+   * Why this disk can never be made writable, or null: an HFE (spec D2). The
+   * PATCH refuses to unprotect one. HD disks are ordinary here (HD writes
+   * spec §5.3).
    */
-  readOnly: 'HFE' | 'HD' | null;
+  readOnly: 'HFE' | null;
 }
 
 export interface DriveChip {
@@ -88,10 +88,7 @@ export function toDriveChip(r: LiveStateRow, now: number): DriveChip {
           title: r.mountedGameTitle ?? 'Untitled',
           diskNo: (r.mountedDiskCount ?? 0) > 1 ? r.mountedDiskNo : null,
           writeProtected: r.mountedDiskWriteProtected,
-          readOnly: r.mountedImageFormat === 'hfe' ? 'HFE'
-            : r.mountedImageFormat === 'adf' && r.mountedSizeBytes !== null &&
-              adfDensity(r.mountedSizeBytes) === 'hd' ? 'HD'
-            : null,
+          readOnly: r.mountedImageFormat === 'hfe' ? 'HFE' : null,
         }
       : null;
 

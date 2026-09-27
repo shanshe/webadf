@@ -66,6 +66,7 @@ describe('readDesired and HD (HD writes spec §5.3)', () => {
   const row = {
     version: 5, sha256: 'a'.repeat(64), diskId: 'disk-hd', gameId: 'g1', diskNo: 1,
     title: 'T', label: 'L', diskCount: 1,
+    imageFormat: 'adf', sizeBytes: 1_802_240,
   };
 
   it("sends an HD disk's flag as the library has it", async () => {
