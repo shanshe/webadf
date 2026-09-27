@@ -16,6 +16,7 @@
     "hw:verify": "python3 wifi-floppy/hardware/hw_verify.py",
     "adffs:verify": "tsx scripts/adffs-verify.ts",
     "adfmfm:diff": "~/.local/pipx/venvs/greaseweazle/bin/python scripts/adfmfm-diff.py adf-archive",
+    "firmware:hd-fixtures": "~/.local/pipx/venvs/greaseweazle/bin/python scripts/adf-mfm-hd-fixtures.py wifi-floppy/firmware/test/fixtures/adf_mfm_hd",
     "firmware:build": "cd wifi-floppy/firmware && cmake -B build -G Ninja -DPICO_SDK_PATH=$HOME/pico-sdk -DPICO_BOARD=pimoroni_pico_plus2_w_rp2350 && cmake --build build",
     "firmware:test": "wifi-floppy/firmware/test/run.sh",
     "firmware:install-partitioned": "scripts/firmware-install-partitioned.sh",
