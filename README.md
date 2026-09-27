@@ -58,7 +58,7 @@ ordering. The current bench board is rev A2.*
 - Works as DF0 or alongside a second drive as DF1.
 - Plays HD disks read-only: the board tells the Amiga it is an HD drive while an HD
   disk is in, and asserts write protect. Needs Kickstart 3.0 or later, and firmware
-  1.4.0 or later (the web app refuses to mount an HD disk on older firmware and says
+  1.4.1 or later (the web app refuses to mount an HD disk on older firmware and says
   so).
 - Write protection can be switched from the web app while the disk is in the drive.
 - OLED status display: WiFi strength, what it is doing, the disk's name and the
@@ -117,7 +117,7 @@ deltas.
 | Writing on a real Amiga, saves reach the library | verified on hardware |
 | Second drive (DF1) alongside the board | verified on hardware |
 | HFE, including long-track (Turrican) | verified on hardware; weak-bit titles not yet tested |
-| HD disks, read-only (Kickstart 3.0+) | built and host-tested; bench checklist owed (HANDOFF 3an) |
+| HD disks, read-only (Kickstart 3.0+) | verified on hardware (firmware 1.4.1) |
 | Firmware updates from the web app | verified on hardware (current: 1.3.1; 1.4.0 built, not yet published) |
 | NFC: tap to mount, write tags from the web | verified on hardware |
 | Rev B board | in design (Shanshe) |
