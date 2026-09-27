@@ -70,11 +70,12 @@ void track_cache_invalidate(int track);
 bool track_cache_image_complete(void);
 int  track_cache_fill_percent(void);
 
-// Test-only: size of the SRAM staging buffer each track is copied into by
-// track_cache_get(). Must be >= TRACK_MAX_BYTES (psram_image.h) -- that gap
-// between what image_loader.c will accept into PSRAM and what this buffer
-// could actually hold (13312 vs 13000, before this fix) was a live SRAM
-// overflow for any track in between. Exposed as a function of the real
-// buffer's sizeof, not a second macro, so the check can't drift the same way.
+// Test-only: size of the SRAM staging buffer each track is copied or encoded
+// into by track_cache_get(): TRACK_BUF_BYTES. The binding invariant is now
+// >= ADF_MFM_HD_TRACK_BYTES (25,336, an HD track encoded on the board), which
+// also covers >= TRACK_MAX_BYTES (psram_image.h) for a stored MFM track. A
+// gap between what a tier can hand this buffer and what it holds is a live
+// SRAM overflow -- it once was, 13312 vs 13000. Exposed as a function of the
+// real buffer's sizeof, not a second macro, so the check can't drift.
 size_t track_cache_buf_bytes(void);
 #endif

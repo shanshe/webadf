@@ -287,6 +287,13 @@ target_link_options(wifi_floppy PRIVATE
   -Wl,-u,dns_handle -Wl,-u,dhcp_handle -Wl,-u,portal_request
   -Wl,-u,portal_run -Wl,-u,portal_stop)
 
+# HD spec §7 bench step 10's heap low-water log (main.c heap_free_bytes()):
+# every heap growth passes through main.c's __wrap__sbrk, which records the
+# break, so core0 can read it without ever calling _sbrk itself -- the SDK's
+# _sbrk stores its heap_end back even for sbrk(0), and doing that outside
+# malloc's lock while core1 allocates would corrupt the heap.
+target_link_options(wifi_floppy PRIVATE -Wl,--wrap=_sbrk)
+
 # altcp_tls_mbedtls.c is the SDK's own file (patched for mbedtls 3.x
 # compatibility -- see pico_lwip's CMakeLists.txt) when the bundled mbedtls
 # is 3.x, or lwIP's upstream apps/altcp_tls/altcp_tls_mbedtls.c for 2.x.

@@ -55,7 +55,7 @@
 #include "pico/rand.h"
 #include "hardware/sync.h"   // __dmb(), for the display seqlock below
 #include <string.h>
-#include <unistd.h>          // sbrk, for heap_free_bytes() below
+#include <stddef.h>          // ptrdiff_t, for __wrap__sbrk() below
 
 // transport_tls.c is device-only (no host test exercises it, unlike every
 // other file this task wires in), so it has no shared header of its own --
@@ -595,14 +595,41 @@ static uint32_t clock_ms(void) {
 // and __StackLimit, the ceiling the SDK's _sbrk refuses to grow past
 // (pico_clib_interface/newlib_interface.c; 0x20080000 in this build's map,
 // with the stacks above it in scratch RAM). Chunks malloc holds free below
-// the break are NOT counted, so the real figure is at least this. Not
-// mallinfo(): it walks the heap without the SDK's malloc lock, and core1
-// allocates concurrently. sbrk(0) only reads the break -- one word.
+// the break are NOT counted, so the real figure is at least this.
 // HD spec §7 bench step 10: HD grew the SRAM buffers by ~33 KB, and this is
 // the number that says what that left.
+//
+// How the break is learned matters more than the arithmetic. Core0 must
+// never call sbrk()/_sbrk() itself, not even sbrk(0): the SDK's _sbrk is a
+// read-modify-write of its static heap_end that stores it back even for an
+// increment of 0, and a call from here runs outside malloc's lock while
+// core1 (mbedTLS, lwIP) may be growing the heap -- a lost update there
+// corrupts the heap. mallinfo() is out for the same reason (it walks the
+// heap unlocked). Instead CMakeLists.txt links with -Wl,--wrap=_sbrk, so
+// every heap growth malloc makes -- under its own lock, on whichever core --
+// passes through __wrap__sbrk, which records the new break in one aligned
+// word. heap_free_bytes() only LOADS that word.
 extern char __StackLimit;
+extern char end;                       // linker: first byte of the heap (= __end__)
+void *__real__sbrk(ptrdiff_t incr);
+static volatile uintptr_t g_heap_break;    // 0 = no growth yet: the break is `end`
+
+void *__wrap__sbrk(ptrdiff_t incr) {
+    char *prev = __real__sbrk(incr);
+    if (prev != (char *)-1) {
+        // PICO_USE_OPTIMISTIC_SBRK may hand out less than asked, clamped to
+        // __StackLimit; the break is never past it.
+        uintptr_t brk = (uintptr_t)prev + (uintptr_t)incr;
+        if (incr > 0 && brk > (uintptr_t)&__StackLimit) brk = (uintptr_t)&__StackLimit;
+        g_heap_break = brk;
+    }
+    return prev;
+}
+
 static uint32_t heap_free_bytes(void) {
-    return (uint32_t)((uintptr_t)&__StackLimit - (uintptr_t)sbrk(0));
+    uintptr_t brk = g_heap_break;
+    if (brk == 0) brk = (uintptr_t)&end;
+    return (uint32_t)((uintptr_t)&__StackLimit - brk);
 }
 
 // ---------------------------------------------------------------- NFC tap
@@ -2279,26 +2306,27 @@ int main(void) {
             uint32_t bits;
             const uint64_t get_t0 = time_us_64();
             const uint8_t *mfm = track_cache_get(want, &bits);
-            // An HD track was encoded just now (track_cache.c) -- or served
-            // from the double buffer, which is only faster: say so when it
-            // takes longer than any before. The spike's worst was 4.9 ms
-            // against a ~15 ms settle budget, and the previous track keeps
-            // streaming for all of it (start_streaming below only aborts it
-            // once the new track is in hand).
-            static uint32_t hd_encode_max_us;
-            if (mfm && bits == ADF_MFM_HD_TRACK_BITS) {
-                const uint32_t us = (uint32_t)(time_us_64() - get_t0);
-                if (us > hd_encode_max_us) {
-                    hd_encode_max_us = us;
-                    wf_logf(WF_INFO, "hd: track %d encoded in %lu us (new max)", want, (unsigned long)us);
-                }
-            }
+            // Taken before start_streaming so it times only the get: for an
+            // HD track that is the encode (track_cache.c), or a double-buffer
+            // hit, which is only faster. The previous track keeps streaming
+            // for all of it (start_streaming only aborts it once the new
+            // track is in hand).
+            const uint32_t get_us = (uint32_t)(time_us_64() - get_t0);
             if (mfm) {
                 track_live = false;
                 start_streaming(mfm, bits);
                 loaded = want;
                 wf_trace(WF_EV_TRACK_SERVED, (uint32_t)want, bits);
                 led_blip();
+                // Logged AFTER start_streaming, so the logging cost is never
+                // on the path to the new stream: say so when an HD get takes
+                // longer than any before. The spike's worst was 4.9 ms
+                // against a ~15 ms settle budget.
+                static uint32_t hd_encode_max_us;
+                if (bits == ADF_MFM_HD_TRACK_BITS && get_us > hd_encode_max_us) {
+                    hd_encode_max_us = get_us;
+                    wf_logf(WF_INFO, "hd: track %d encoded in %lu us (new max)", want, (unsigned long)get_us);
+                }
             } else {
                 // Not a cache miss to retry -- psram_image.h is explicit
                 // that a track absent from PSRAM is a fault. Worth a record
@@ -2445,6 +2473,15 @@ int main(void) {
         }
 
 #if WF_VERIFY_TRACKS
+        // An ADF_HD slot holds sector data, not MFM: psram_image_read
+        // refuses it, and its tracks are encoded on read (track_cache.c),
+        // so there is nothing stored to decode. Say so once rather than
+        // report 160 unreadable tracks.
+        if (verify_next < NUM_TRACKS &&
+            psram_image_slot_kind(psram_active_slot()) == SLOT_KIND_ADF_HD) {
+            verify_next = NUM_TRACKS;
+            wf_logf(WF_INFO, "verify: HD slot: verify skipped, tracks are encoded on read");
+        }
         if (verify_next < NUM_TRACKS) {
             static uint8_t vmfm[TRACK_MAX_BYTES];
             static uint8_t vdec[MFM_TRACK_DATA_BYTES];
