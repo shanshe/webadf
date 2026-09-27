@@ -14,6 +14,15 @@
 #include <stddef.h>
 #include "floppy_io.h"
 
+// The SRAM staging buffers -- track_cache.c's double buffer and main.c's DMA
+// word buffer -- are sized for the LONGEST track either tier hands them: an
+// HD track encoded on the board, 202,688 bits = 25,336 bytes, rounded up to a
+// multiple of 4 (HD spec §5.2). Separate from TRACK_MAX_BYTES (psram_image.h),
+// the PSRAM stride, which stays 14 KB: an HD slot holds 11,264 ADF bytes a
+// track. Costs ~33 KB of SRAM over 14336-byte buffers; the spike measured
+// ~170 KB free before this.
+#define TRACK_BUF_BYTES 25344u
+
 void track_cache_init(void);
 // track_cache_flush() was removed -- see track_cache.c for why (it was an
 // uncalled, unrequested eject). Do not reintroduce it under that name.
@@ -41,16 +50,16 @@ void track_cache_init(void);
 // slot, false for SLOT_NONE / an eject).
 bool track_cache_check_swap(int32_t *last_token, bool *mounted_out);
 
-// Core 0 (see psram_image.h/.c: "core0 (track_cache.c's track_cache_get())
-// is the only reader" of the published active slot -- this comment
-// previously said "Core 1", which task 10 corrects: main.c's core1 runs
-// the network/device_client.c loop, which blocks for tens of seconds at a
-// time on a long poll, and calling this from that same core would leave
-// the flux DMA replaying a stale track for the whole time a poll is in
-// flight after a seek). Returns an SRAM buffer for 'track', copied from
-// the PSRAM image's active slot (psram_active_slot()). NULL means either
-// no disk is mounted
-// or the track is not in the active slot's image - do not stream anything.
+// Core 0 ONLY, from main()'s service loop -- thread mode, never an interrupt:
+// the STEP and SIDE ISRs only set want_track, and dma_irq only re-arms from
+// main.c's track_words. (Not core1: its device_client.c loop blocks for tens
+// of seconds on a long poll, which would leave the flux DMA replaying a stale
+// track after a seek.) Returns an SRAM buffer for 'track' from the PSRAM
+// image's active slot (psram_active_slot()): copied for an MFM slot, ENCODED
+// for an ADF_HD slot (adf_mfm.c, ~4 ms measured on the RP2350, HD spec §5.2;
+// the previous track keeps streaming meanwhile). NULL means no disk is
+// mounted or the track is not in the active slot's image - do not stream
+// anything.
 const uint8_t *track_cache_get(int track, uint32_t *bit_count);
 
 // Drop any SRAM copy of `track`. Needed after a write rewrites that track in

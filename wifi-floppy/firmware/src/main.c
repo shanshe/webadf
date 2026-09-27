@@ -17,6 +17,7 @@
 #include "bus_gate.h"
 #include "bus_out.h"
 #include "track_cache.h"
+#include "adf_mfm.h"
 #include "psram_image.h"
 #include "image_loader.h"
 #include "transport.h"
@@ -54,6 +55,7 @@
 #include "pico/rand.h"
 #include "hardware/sync.h"   // __dmb(), for the display seqlock below
 #include <string.h>
+#include <unistd.h>          // sbrk, for heap_free_bytes() below
 
 // transport_tls.c is device-only (no host test exercises it, unlike every
 // other file this task wires in), so it has no shared header of its own --
@@ -312,7 +314,9 @@ static volatile int  cur_side  = 0;
 static volatile int  want_track = -1;      // core0 -> core1 request
 static volatile bool track_live = false;
 
-static uint32_t track_words[(TRACK_MAX_BYTES + 3) / 4];
+// Sized for the longest track track_cache_get() can return -- an encoded HD
+// track (TRACK_BUF_BYTES, track_cache.h) -- not the PSRAM stride.
+static uint32_t track_words[TRACK_BUF_BYTES / 4];
 static uint32_t track_word_count;
 
 // ---------------------------------------------------------------- DMA feed
@@ -585,6 +589,20 @@ static uint32_t wb_last_write_ms(void) { return g_write_last_ms; }
 
 static uint32_t clock_ms(void) {
     return to_ms_since_boot(get_absolute_time());
+}
+
+// Free heap, conservatively: only the never-claimed space between the break
+// and __StackLimit, the ceiling the SDK's _sbrk refuses to grow past
+// (pico_clib_interface/newlib_interface.c; 0x20080000 in this build's map,
+// with the stacks above it in scratch RAM). Chunks malloc holds free below
+// the break are NOT counted, so the real figure is at least this. Not
+// mallinfo(): it walks the heap without the SDK's malloc lock, and core1
+// allocates concurrently. sbrk(0) only reads the break -- one word.
+// HD spec §7 bench step 10: HD grew the SRAM buffers by ~33 KB, and this is
+// the number that says what that left.
+extern char __StackLimit;
+static uint32_t heap_free_bytes(void) {
+    return (uint32_t)((uintptr_t)&__StackLimit - (uintptr_t)sbrk(0));
 }
 
 // ---------------------------------------------------------------- NFC tap
@@ -2259,7 +2277,22 @@ int main(void) {
         int want = want_track;
         if (want >= 0 && want != loaded) {
             uint32_t bits;
+            const uint64_t get_t0 = time_us_64();
             const uint8_t *mfm = track_cache_get(want, &bits);
+            // An HD track was encoded just now (track_cache.c) -- or served
+            // from the double buffer, which is only faster: say so when it
+            // takes longer than any before. The spike's worst was 4.9 ms
+            // against a ~15 ms settle budget, and the previous track keeps
+            // streaming for all of it (start_streaming below only aborts it
+            // once the new track is in hand).
+            static uint32_t hd_encode_max_us;
+            if (mfm && bits == ADF_MFM_HD_TRACK_BITS) {
+                const uint32_t us = (uint32_t)(time_us_64() - get_t0);
+                if (us > hd_encode_max_us) {
+                    hd_encode_max_us = us;
+                    wf_logf(WF_INFO, "hd: track %d encoded in %lu us (new max)", want, (unsigned long)us);
+                }
+            }
             if (mfm) {
                 track_live = false;
                 start_streaming(mfm, bits);
@@ -2292,6 +2325,21 @@ int main(void) {
                 // track that only arrives later is re-attempted then.
                 loaded = want;
                 wf_trace(WF_EV_TRACK_MISS, (uint32_t)want, 0);
+            }
+        }
+
+        // HD spec §7 step 10: the free-heap low-water mark, logged each time
+        // it drops (sampled every 5 s, so a transient dip can be missed --
+        // it is a floor for the bench, not a guarantee).
+        {
+            static uint32_t heap_low = UINT32_MAX, heap_checked_ms;
+            if (clock_ms() - heap_checked_ms >= 5000u) {
+                heap_checked_ms = clock_ms();
+                const uint32_t f = heap_free_bytes();
+                if (f < heap_low) {
+                    heap_low = f;
+                    wf_logf(WF_INFO, "heap: free low-water %lu bytes", (unsigned long)f);
+                }
             }
         }
 

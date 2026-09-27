@@ -4,6 +4,7 @@
 // incomplete, which is a fault, not a reason to stall the floppy bus.
 #include "track_cache.h"
 #include "psram_image.h"
+#include "adf_mfm.h"
 #include <string.h>
 
 // Tier 0: double buffer. One is feeding the PIO while the other is being
@@ -24,8 +25,12 @@ typedef struct {
     int32_t  token;
     int      track;
     uint32_t bit_count;
-    uint8_t  data[TRACK_MAX_BYTES] __attribute__((aligned(4)));
+    uint8_t  data[TRACK_BUF_BYTES] __attribute__((aligned(4)));
 } sram_buf_t;
+
+_Static_assert(TRACK_BUF_BYTES >= ADF_MFM_HD_TRACK_BYTES, "an encoded HD track must fit");
+_Static_assert(TRACK_BUF_BYTES >= TRACK_MAX_BYTES, "a PSRAM track must fit");
+_Static_assert(TRACK_BUF_BYTES % 4u == 0, "main.c's DMA reads whole words");
 
 static sram_buf_t buf[2];
 static int        active;              // index of the buffer feeding the PIO
@@ -73,6 +78,32 @@ const uint8_t *track_cache_get(int track, uint32_t *bit_count) {
         }
 
     sram_buf_t *dst = &buf[active ^ 1];        // fill the idle half
+
+    // Untag the idle half BEFORE writing into it: whatever it held is about
+    // to be overwritten, and if the fill below fails part-way (an encode
+    // that returns 0, a short PSRAM read) the old (track, token) tag must
+    // not survive over torn bytes, or a later request for that track would
+    // be a cache hit on garbage. Only a completed fill re-tags it.
+    dst->track = -1;
+
+    // Tier 1, HD: an ADF_HD slot holds sector data, not MFM -- encode it
+    // straight into the idle half (HD spec §5.2). Tagged with the same
+    // token, so the stale-track guarantee above holds unchanged. The kind
+    // is read from `slot`, the slot the published token names, and never
+    // from any other slot: an interrupted WFAD fetch can leave an
+    // UNPUBLISHED slot marked ADF_HD. The slot's kind was written before
+    // its publish, so the acquire in psram_active_token() above covers it.
+    if (psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD) {
+        const uint8_t *adf = psram_image_track_data(slot, track);
+        if (!adf || adf_mfm_encode_track(adf, ADF_MFM_HD_SECTORS, (unsigned)track, dst->data) == 0)
+            return 0;
+        dst->bit_count = ADF_MFM_HD_TRACK_BITS;
+        dst->track = track;
+        dst->token = token;
+        active ^= 1;
+        *bit_count = dst->bit_count;
+        return dst->data;
+    }
 
     // Tier 1: PSRAM.
     if (psram_image_have(slot, track) &&
