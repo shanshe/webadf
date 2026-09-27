@@ -1,5 +1,5 @@
-import { applyDelta, decodeDelta, shouldSnapshot } from './delta';
-import { ADF_BYTES } from '@/lib/adfmfm';
+import { applyDelta, decodeDelta, shouldSnapshot, isHistoryImage } from './delta';
+import { ADF_BYTES } from '@/lib/adfmfm/constants';
 
 /**
  * A disk's history as a chain of versions, and how to get back to any of them.
@@ -52,11 +52,14 @@ export class HistoryError extends Error {
  */
 export const MAX_CHAIN_DEPTH = 64;
 
-/** What the next version should be, given the write about to be recorded. */
-export function nextKind(changedSectors: number, deltasSinceSnapshot: number): VersionKind {
+/** What the next version should be, given the write about to be recorded.
+ *  `imageBytes` is the disk's size (HD writes spec §5.2). */
+export function nextKind(
+  changedSectors: number, deltasSinceSnapshot: number, imageBytes: number = ADF_BYTES,
+): VersionKind {
   // Either reason is sufficient: a delta that no longer saves space, or a
   // chain that has grown long enough to make rewinding slow.
-  if (shouldSnapshot(changedSectors)) return 'snapshot';
+  if (shouldSnapshot(changedSectors, imageBytes)) return 'snapshot';
   if (deltasSinceSnapshot >= MAX_CHAIN_DEPTH) return 'snapshot';
   return 'delta';
 }
@@ -105,7 +108,7 @@ export async function materialise(
   const [first, ...rest] = plan;
 
   let image = await read(first.blobSha256);
-  if (image.length !== ADF_BYTES) {
+  if (!isHistoryImage(image)) {
     throw new HistoryError(`snapshot ${first.seq} is ${image.length} bytes, not a disk image`);
   }
   for (const entry of rest) {

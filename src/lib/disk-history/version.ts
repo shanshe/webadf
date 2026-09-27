@@ -1,4 +1,5 @@
-import { ADF_BYTES, TRACK_DATA_BYTES, TRACKS } from '@/lib/adfmfm';
+import { ADF_BYTES, ADF_HD_BYTES, HD_TRACK_DATA_BYTES, TRACK_DATA_BYTES, TRACKS } from '@/lib/adfmfm/constants';
+import { adfDensity } from '@/lib/disk-format';
 import { buildDelta, encodeDelta } from './delta';
 import { nextKind, deltasSinceSnapshot, type VersionEntry, type VersionKind } from './chain';
 
@@ -9,19 +10,41 @@ import { nextKind, deltasSinceSnapshot, type VersionEntry, type VersionKind } fr
 
 export interface StagedTrack { track: number; data: Uint8Array }
 
-/** A track the board may upload: 0..159, exactly one track of sector data. */
-export function isTrackUpload(track: number, data: Uint8Array): boolean {
-  return Number.isInteger(track) && track >= 0 && track < TRACKS
-    && data.length === TRACK_DATA_BYTES;
+/** One track's sector data for an image of this size: 5,632 DD, 11,264 HD
+ *  (HD writes spec §5.1). Null for any other size. */
+export function trackBytesForImage(imageBytes: number): number | null {
+  if (imageBytes === ADF_BYTES) return TRACK_DATA_BYTES;
+  if (imageBytes === ADF_HD_BYTES) return HD_TRACK_DATA_BYTES;
+  return null;
 }
 
-/** `head` with each staged track written over it. Does not modify `head`. */
+/** The same, from a disk row. An HFE takes no uploads (spec D2): null. */
+export function trackBytesForDisk(d: { imageFormat: string; sizeBytes: number }): number | null {
+  if (d.imageFormat !== 'adf') return null;
+  const density = adfDensity(d.sizeBytes);
+  if (density === 'hd') return HD_TRACK_DATA_BYTES;
+  if (density === 'dd') return TRACK_DATA_BYTES;
+  return null;
+}
+
+/** A track the board may upload: 0..159, exactly one track of `trackBytes`
+ *  (this disk's size; DD unless told otherwise). */
+export function isTrackUpload(track: number, data: Uint8Array, trackBytes: number = TRACK_DATA_BYTES): boolean {
+  return Number.isInteger(track) && track >= 0 && track < TRACKS
+    && data.length === trackBytes;
+}
+
+/** `head` with each staged track written over it, at the head's own track
+ *  size. Does not modify `head`. */
 export function overlayTracks(head: Uint8Array, tracks: readonly StagedTrack[]): Uint8Array {
-  if (head.length !== ADF_BYTES) throw new Error(`head must be ${ADF_BYTES} bytes, got ${head.length}`);
+  const trackBytes = trackBytesForImage(head.length);
+  if (trackBytes === null) {
+    throw new Error(`head must be ${ADF_BYTES} or ${ADF_HD_BYTES} bytes, got ${head.length}`);
+  }
   const out = head.slice();
   for (const t of tracks) {
-    if (!isTrackUpload(t.track, t.data)) throw new Error(`not a track upload: track ${t.track}`);
-    out.set(t.data, t.track * TRACK_DATA_BYTES);
+    if (!isTrackUpload(t.track, t.data, trackBytes)) throw new Error(`not a track upload: track ${t.track}`);
+    out.set(t.data, t.track * trackBytes);
   }
   return out;
 }
@@ -40,7 +63,7 @@ export function planNextVersion(
 ): PlannedVersion | null {
   const delta = buildDelta(head, next);
   if (delta.sectors.length === 0) return null;
-  const kind = nextKind(delta.sectors.length, deltasSinceSnapshot(entries));
+  const kind = nextKind(delta.sectors.length, deltasSinceSnapshot(entries), next.length);
   return {
     kind,
     sectorCount: delta.sectors.length,

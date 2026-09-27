@@ -112,6 +112,11 @@ export async function restoreVersion(
     return { ok: false, status: 503, reason: 'blob_unavailable' };
   }
 
+  // A disk's versions are all one size (HD writes spec §5.2). A target of the
+  // other size is only reachable through hand-edited rows or blobs; refused
+  // by name here rather than left to recordVersion's DeltaError as a 500.
+  if (target.length !== before.length) return { ok: false, status: 409, reason: 'size_mismatch' };
+
   const currentSeq = entries[entries.length - 1].seq;
 
   // THE HOLDER CHECK ABOVE RAN BEFORE `materialise`, which is up to 65

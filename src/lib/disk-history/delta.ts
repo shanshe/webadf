@@ -1,4 +1,4 @@
-import { ADF_BYTES } from '@/lib/adfmfm';
+import { ADF_BYTES, ADF_HD_BYTES } from '@/lib/adfmfm/constants';
 
 /**
  * Sector-level deltas between two ADF images.
@@ -22,7 +22,10 @@ import { ADF_BYTES } from '@/lib/adfmfm';
  */
 
 export const SECTOR_BYTES = 512;
+/** A DD disk's sectors. An image's own count is its length / 512. */
 export const SECTORS_PER_DISK = ADF_BYTES / SECTOR_BYTES;   // 1760
+/** The most sectors any disk here has: an HD disk's (HD writes spec §5.2). */
+export const MAX_SECTORS_PER_DISK = ADF_HD_BYTES / SECTOR_BYTES;   // 3520
 
 const MAGIC = 0x5744_4c44;   // 'WDLD', big-endian
 const FORMAT_VERSION = 1;
@@ -40,19 +43,31 @@ export class DeltaError extends Error {
   constructor(message: string) { super(message); this.name = 'DeltaError'; }
 }
 
-function assertImage(img: Uint8Array, what: string): void {
-  if (img.length !== ADF_BYTES) {
-    throw new DeltaError(`${what} must be ${ADF_BYTES} bytes, got ${img.length}`);
+/** The two image sizes history records: 901,120 (DD) and 1,802,240 (HD). */
+export function isHistoryImage(img: Uint8Array): boolean {
+  return img.length === ADF_BYTES || img.length === ADF_HD_BYTES;
+}
+
+/** The image's sector count, or a DeltaError for any other size. */
+function assertImage(img: Uint8Array, what: string): number {
+  if (!isHistoryImage(img)) {
+    throw new DeltaError(`${what} must be ${ADF_BYTES} or ${ADF_HD_BYTES} bytes, got ${img.length}`);
   }
+  return img.length / SECTOR_BYTES;
 }
 
 /** Sectors in which `after` differs from `before`. */
 export function buildDelta(before: Uint8Array, after: Uint8Array): Delta {
-  assertImage(before, 'before');
+  const sectorsInImage = assertImage(before, 'before');
   assertImage(after, 'after');
+  // A disk's versions are all one size (HD writes spec §5.2): a DD image and
+  // an HD one are not two states of the same disk.
+  if (before.length !== after.length) {
+    throw new DeltaError(`before is ${before.length} bytes and after is ${after.length}: a disk has one size`);
+  }
 
   const sectors: number[] = [];
-  for (let s = 0; s < SECTORS_PER_DISK; s++) {
+  for (let s = 0; s < sectorsInImage; s++) {
     const at = s * SECTOR_BYTES;
     let same = true;
     for (let i = 0; i < SECTOR_BYTES; i++) {
@@ -70,13 +85,13 @@ export function buildDelta(before: Uint8Array, after: Uint8Array): Delta {
 
 /** `image` with the delta applied. Does not modify its argument. */
 export function applyDelta(image: Uint8Array, delta: Delta): Uint8Array {
-  assertImage(image, 'image');
+  const sectorsInImage = assertImage(image, 'image');
   if (delta.bytes.length !== delta.sectors.length * SECTOR_BYTES) {
     throw new DeltaError('delta payload does not match its sector count');
   }
   const out = image.slice();
   delta.sectors.forEach((s, n) => {
-    if (!Number.isInteger(s) || s < 0 || s >= SECTORS_PER_DISK) {
+    if (!Number.isInteger(s) || s < 0 || s >= sectorsInImage) {
       throw new DeltaError(`sector ${s} is outside the disk`);
     }
     out.set(delta.bytes.subarray(n * SECTOR_BYTES, (n + 1) * SECTOR_BYTES), s * SECTOR_BYTES);
@@ -138,7 +153,9 @@ export function decodeDelta(src: Uint8Array): Delta {
   let prev = -1;
   for (let n = 0; n < count; n++) {
     const s = dv.getUint32(at); at += ENTRY_HEADER_BYTES;
-    if (s >= SECTORS_PER_DISK) throw new DeltaError(`sector ${s} is outside the disk`);
+    // Bounded by the LARGEST disk: a delta does not say which disk it is for,
+    // so applyDelta bounds it again by the image it is applied to.
+    if (s >= MAX_SECTORS_PER_DISK) throw new DeltaError(`sector ${s} is outside the disk`);
     // Ascending and unique, enforced rather than assumed: two entries for one
     // sector would make the result depend on apply order, and a delta must
     // mean exactly one thing.
@@ -166,6 +183,7 @@ export function encodedSize(sectorCount: number): number {
  */
 export const SNAPSHOT_THRESHOLD = 0.5;
 
-export function shouldSnapshot(changedSectors: number): boolean {
-  return encodedSize(changedSectors) >= ADF_BYTES * SNAPSHOT_THRESHOLD;
+/** `imageBytes` is the disk's own size: half of an HD disk is twice half a DD one. */
+export function shouldSnapshot(changedSectors: number, imageBytes: number = ADF_BYTES): boolean {
+  return encodedSize(changedSectors) >= imageBytes * SNAPSHOT_THRESHOLD;
 }

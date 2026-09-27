@@ -312,6 +312,20 @@ describe('restoreVersion', () => {
     expect(diskVersionRows).toHaveLength(rowCountBefore); // nothing recorded
   });
 
+  it('refuses a target whose size differs from the head, recording nothing (Review Focus 5)', async () => {
+    await buildChain(['A']);   // DD versions 0..1
+    // The head the disk row points at is an HD image: only reachable by a
+    // hand-edited row or blob, and it must be a refusal, never a 500.
+    const hdHead = formatVolume({ filesystem: 'FFS', volumeName: 'Other', density: 'hd' });
+    blobBytes.set(sha256Of(hdHead), hdHead);
+    diskLookupResult = [{ sha256: sha256Of(hdHead), tosecName: 'Chain.adf', sourceFilename: 'Chain.adf' }];
+    const rowCountBefore = diskVersionRows.length;
+
+    const { restoreVersion } = await import('./restore');
+    expect(await restoreVersion(ORG, DISK, 0, null)).toEqual({ ok: false, status: 409, reason: 'size_mismatch' });
+    expect(diskVersionRows).toHaveLength(rowCountBefore);
+  });
+
   it('a broken chain (HistoryError) is a 500, not a silent empty restore', async () => {
     const images = await buildChain(['A', 'B', 'C']); // versions 0..3, seq 1 is a delta
     diskLookupResult = [{ sha256: sha256Of(images[3]), tosecName: 'Chain.adf', sourceFilename: 'Chain.adf' }];

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { ADF_BYTES } from '@/lib/adfmfm';
+import { ADF_BYTES, ADF_HD_BYTES } from '@/lib/adfmfm';
 import {
   buildDelta, applyDelta, encodeDelta, decodeDelta, encodedSize,
-  shouldSnapshot, DeltaError, SECTOR_BYTES, SECTORS_PER_DISK,
+  shouldSnapshot, DeltaError, SECTOR_BYTES, SECTORS_PER_DISK, MAX_SECTORS_PER_DISK,
 } from './delta';
 
 /**
@@ -102,6 +102,19 @@ describe('buildDelta / applyDelta', () => {
     expect(d.sectors.length).toBe(Math.ceil(SECTORS_PER_DISK / 7));
     expect(firstDiff(applyDelta(before, d), after)).toBe(SAME);
   });
+
+  it('round-trips an HD image, including a sector past the DD end', () => {
+    const before = noise(21, ADF_HD_BYTES);
+    const after = withSector(withSector(before, 3, 0xaa), 3519, 0xbb);
+    const d = buildDelta(before, after);
+    expect(d.sectors).toEqual([3, 3519]);
+    expect(firstDiff(applyDelta(before, decodeDelta(encodeDelta(d))), after)).toBe(SAME);
+  });
+
+  it('refuses two images of different sizes: a disk has one size', () => {
+    expect(() => buildDelta(noise(22), noise(22, ADF_HD_BYTES))).toThrow(DeltaError);
+    expect(() => buildDelta(noise(23, ADF_HD_BYTES), noise(23))).toThrow(/one size/);
+  });
 });
 
 describe('encodeDelta / decodeDelta', () => {
@@ -133,11 +146,19 @@ describe('encodeDelta / decodeDelta', () => {
     expect(() => decodeDelta(enc.subarray(0, enc.length - 10))).toThrow(/but is/);
   });
 
-  it('rejects a sector index outside the disk', () => {
+  it('rejects a sector index past the largest disk, and applies none past the image it is given', () => {
+    // A WDLD blob does not say which disk it belongs to (the format is
+    // unchanged, HD writes spec §5.2), so decode bounds by the largest disk
+    // and apply bounds by the image.
     const d = buildDelta(noise(9), withSector(noise(9), 5, 0x99));
     const enc = encodeDelta(d);
-    new DataView(enc.buffer).setUint32(16, SECTORS_PER_DISK);   // one past the end
+    new DataView(enc.buffer).setUint32(16, MAX_SECTORS_PER_DISK);   // one past an HD disk
     expect(() => decodeDelta(enc)).toThrow(/outside the disk/);
+
+    new DataView(enc.buffer).setUint32(16, SECTORS_PER_DISK);       // one past a DD disk
+    const decoded = decodeDelta(enc);
+    expect(() => applyDelta(noise(9), decoded)).toThrow(/outside the disk/);
+    expect(applyDelta(noise(9, ADF_HD_BYTES), decoded).length).toBe(ADF_HD_BYTES);
   });
 
   it('rejects repeated or out-of-order sectors', () => {
@@ -169,6 +190,13 @@ describe('shouldSnapshot', () => {
     // image it describes.
     expect(shouldSnapshot(SECTORS_PER_DISK)).toBe(true);
     expect(shouldSnapshot(Math.floor(SECTORS_PER_DISK * 0.9))).toBe(true);
+  });
+
+  it("judges half the disk against the image's own size (Review Focus 4)", () => {
+    // 1,000 sectors is past half a DD disk but under half an HD one.
+    expect(shouldSnapshot(1000)).toBe(true);
+    expect(shouldSnapshot(1000, ADF_HD_BYTES)).toBe(false);
+    expect(shouldSnapshot(MAX_SECTORS_PER_DISK, ADF_HD_BYTES)).toBe(true);
   });
 });
 

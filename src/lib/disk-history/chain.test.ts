@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { ADF_BYTES } from '@/lib/adfmfm';
+import { ADF_BYTES, ADF_HD_BYTES } from '@/lib/adfmfm';
 import {
   replayPlan, materialise, nextKind, deltasSinceSnapshot,
   MAX_CHAIN_DEPTH, type VersionEntry,
 } from './chain';
-import { buildDelta, encodeDelta, SECTOR_BYTES, SECTORS_PER_DISK } from './delta';
+import { buildDelta, encodeDelta, SECTOR_BYTES, SECTORS_PER_DISK, MAX_SECTORS_PER_DISK } from './delta';
 
 function noise(seed: number): Uint8Array {
   const out = new Uint8Array(ADF_BYTES);
@@ -145,6 +145,12 @@ describe('nextKind', () => {
     // the point where a delta costs as much as the image.
     expect(nextKind(SECTORS_PER_DISK, 0)).toBe('snapshot');
   });
+
+  it("takes the snapshot threshold from the disk's own size (HD writes spec §5.2)", () => {
+    expect(nextKind(1000, 0)).toBe('snapshot');
+    expect(nextKind(1000, 0, ADF_HD_BYTES)).toBe('delta');
+    expect(nextKind(MAX_SECTORS_PER_DISK, 0, ADF_HD_BYTES)).toBe('snapshot');
+  });
 });
 
 describe('deltasSinceSnapshot', () => {
@@ -152,5 +158,24 @@ describe('deltasSinceSnapshot', () => {
     const { entries } = makeHistory(10, [7]);
     expect(deltasSinceSnapshot(entries)).toBe(3);            // 8, 9, 10
     expect(deltasSinceSnapshot(entries.slice(0, 8))).toBe(0); // ends AT the snapshot
+  });
+});
+
+describe('materialise, HD', () => {
+  it('replays an HD chain', async () => {
+    const base = new Uint8Array(ADF_HD_BYTES).fill(1);
+    const next = base.slice();
+    next.fill(9, 3000 * SECTOR_BYTES, 3001 * SECTOR_BYTES);   // past a DD disk's end
+    const blobs = new Map<string, Uint8Array>([
+      ['s0', base], ['d1', encodeDelta(buildDelta(base, next))],
+    ]);
+    const entries: VersionEntry[] = [
+      { seq: 0, kind: 'snapshot', blobSha256: 's0', imageSha256: 'i0' },
+      { seq: 1, kind: 'delta', blobSha256: 'd1', imageSha256: 'i1' },
+    ];
+    const got = await materialise(entries, 1, async (sha) => blobs.get(sha)!);
+    expect(got.length).toBe(ADF_HD_BYTES);
+    expect(got[3000 * SECTOR_BYTES]).toBe(9);
+    expect(got[2999 * SECTOR_BYTES]).toBe(1);
   });
 });
