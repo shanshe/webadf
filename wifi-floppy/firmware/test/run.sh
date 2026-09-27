@@ -89,6 +89,16 @@ if grep -nE 'gpio_put\(PIN_(INDEX|CHNG|WPROT|RDY|TRK0|RDATA)\b' ../src/*.c; then
   fail=1
 fi
 
+# pico-sdk 2.3.0 release builds: pio_encode_mov(pio_osr, x) returns
+# `mov pindirs, x` (pio_osr == pio_exec, remapped twice; HANDOFF §3an). It
+# switched RDY's output off on every HD drive-ID reload in 1.4.0 and looked
+# like nothing at all. Build such words from the fields (drive_id_load).
+# Code only: a line with // or ; before the call is a comment naming the bug.
+if grep -nE '^[^/;]*pio_encode_mov(_reverse)?\([[:space:]]*pio_osr\b' ../src/*.c ../src/*.h ../src/*.pio; then
+  echo "FAIL: pio_encode_mov(pio_osr, ...) encodes mov pindirs in pico-sdk 2.3.0 (use drive_id_load or encode the fields)"
+  fail=1
+fi
+
 # M3 (spec 2026-09-22-firmware-update-device-design.md): once the board boots
 # from a partition, the boot ROM's address translation maps only the booted
 # slot at XIP_BASE. Reading anything else through XIP_BASE -- the config and

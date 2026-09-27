@@ -14,14 +14,17 @@
 //  * MTR is latched on each SEL0 fall, as a real drive (and sel_mtr) does.
 //  * Motor latched ON: RDY is the CPU's level (dskchg: spun up + disk in).
 //  * Motor latched OFF: the FIRST such select after a motor-on one (or after
-//    power-up) is the RESET. It reloads the ID and answers NOTHING: RDY
-//    stays released. Every motor-off select after it answers the next bit,
-//    MSB first, 1 = RDY asserted. After 32 the pattern repeats seamlessly.
+//    power-up) loads the ID and answers bit 31 at once; every motor-off
+//    select after it answers the next bit, MSB first, 1 = RDY asserted. A
+//    motor-on select resets: the next motor-off select starts at bit 31
+//    again. After 32 the pattern repeats seamlessly.
 //
-// Why that phase: measured on the bench 2026-09-26 (HANDOFF, HD spike). With
-// the reset carrying bit 31 -- the spike's program, and FlashFloppy's reading
-// of it -- the logical HD ID read as an invalid one, and 0x55555555 on the
-// wire read as HD. So Kickstart does not sample the reset select.
+// Why that phase: the amiga-hddlw PAL (github.com/schlae/amiga-hddlw,
+// pal/amiga-hddlw.pld), a real HD drive's logic: a motor-on select resets the
+// ID, and RDY is asserted on the first motor-off select after it (DD: on
+// every one; HD: alternately, starting asserted). Verified on the bench
+// 2026-09-27 (HANDOFF §3an, firmware 1.4.1). 1.4.0's "the reset select
+// carries no bit" was wrong.
 //
 // Polarity: "asserted" is GPIO 12 HIGH, which through the BSS138 pulls /RDY
 // LOW (floppy_io.h, bus_gate.c); the Amiga counts /RDY low as a 1 bit, so a
@@ -60,6 +63,20 @@ bool drive_id_model_rdy_gpio(const drive_id_model_t *m);
 // host-test-only: the PIO program is what runs on the board).
 static inline uint32_t drive_id_for(bool hd_mounted) {
     return hd_mounted ? DRIVE_ID_HD : DRIVE_ID_DD;
+}
+
+// The instruction bus_out.c writes at drive_id's reset_load and repeat_load:
+// `mov osr, y` for HD (Y holds DRIVE_ID_HD from init) or `mov osr, ~null`
+// for DD's all ones. Built from the MOV fields -- opcode 101 [15:13],
+// destination OSR 111 [7:5], op [4:3] (01 = invert), source [2:0] (Y 010,
+// NULL 011) -- and NEVER with pio_encode_mov(pio_osr, ...): in pico-sdk 2.3.0
+// release builds that returns `mov pindirs, ...` (pio_osr == pio_exec, remapped
+// twice), which turned RDY's output off on every HD reload (1.4.0, HANDOFF
+// §3an). Pinned by test_drive_id_pio.c.
+static inline uint16_t drive_id_load(bool hd) {
+    const unsigned op  = hd ? 0u : 1u;    // none / invert
+    const unsigned src = hd ? 2u : 3u;    // Y / NULL
+    return (uint16_t)((0x5u << 13) | (0x7u << 5) | (op << 3) | src);
 }
 
 #endif

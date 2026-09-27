@@ -20,15 +20,16 @@ static int  id_sm = -1;            // written under gate_lock, before the machin
 static bool id_hd;
 _Static_assert(PIN_SEL0 == 2, "floppy.pio's drive_id waits on GP2 literally");
 
-// The two loads name the ID: `mov osr, isr` for HD (ISR holds DRIVE_ID_HD
-// from init) or `mov osr, ~null` for DD's all-ones. A rewritten instruction
-// takes effect at its next fetch, and a load runs only at the start of an
-// answer (the reset, or the 32-bit repeat), so a change never lands
-// mid-answer -- drive_id.h's model, test_drive_id.c's
-// an_id_change_waits_for_the_next_answer.
+// The two loads name the ID: `mov osr, y` for HD (Y holds DRIVE_ID_HD from
+// init) or `mov osr, ~null` for DD's all-ones -- drive_id_load(), which
+// builds the words itself because pio_encode_mov(pio_osr, ...) emits
+// `mov pindirs, ...` in pico-sdk 2.3.0 release builds (drive_id.h). A
+// rewritten instruction takes effect at its next fetch, and a load runs only
+// at the start of an answer (the first motor-off select after a motor-on one,
+// or the 32-bit repeat), so a change never lands mid-answer -- drive_id.h's
+// model, test_drive_id.c's an_id_change_waits_for_the_next_answer.
 static void id_write_loads(bool hd) {
-    const uint load = hd ? pio_encode_mov(pio_osr, pio_isr)
-                         : pio_encode_mov_not(pio_osr, pio_null);
+    const uint16_t load = drive_id_load(hd);
     id_pio->instr_mem[id_off + drive_id_offset_reset_load]  = load;
     id_pio->instr_mem[id_off + drive_id_offset_repeat_load] = load;
 }
@@ -63,9 +64,19 @@ void __not_in_flash_func(bus_out_set)(unsigned pin, bool assert) {
         // from here; pushing under the lock keeps the words in order.
         pio_sm_put(gate_pio, gate_sm, next);
 #if WF_DRIVE_ID
-        // RDY's pad is drive_id's: give it the level too. One register write.
-        if (id_sm >= 0 && ((next ^ was) & (1u << PIN_RDY)))
-            pio_sm_exec(id_pio, (uint)id_sm, pio_encode_set(pio_x, (next >> PIN_RDY) & 1u));
+        // RDY's pad is drive_id's: give it the level too. The program puts X
+        // on the pad once per motor-on select, so an assert that arrives
+        // while it sits at on_selected_wait (selected, motor on) is also put
+        // there at once; a release waits for the deselect's `mov pins, null`.
+        // If SEL0 rises between the PC read and the exec, the `set pins, 1`
+        // lands on the way out and on_released's `mov pins, null` clears it a
+        // few cycles later.
+        if (id_sm >= 0 && ((next ^ was) & (1u << PIN_RDY))) {
+            const bool on = (next >> PIN_RDY) & 1u;
+            pio_sm_exec(id_pio, (uint)id_sm, pio_encode_set(pio_x, on));
+            if (on && pio_sm_get_pc(id_pio, (uint)id_sm) == id_off + drive_id_offset_on_selected_wait)
+                pio_sm_exec(id_pio, (uint)id_sm, pio_encode_set(pio_pins, 1));
+        }
 #endif
     }
     spin_unlock(gate_lock, save);
@@ -75,7 +86,7 @@ void __not_in_flash_func(bus_out_set)(unsigned pin, bool assert) {
 void bus_out_drive_id_init(PIO pio) {
     uint off = (uint)pio_add_program(pio, &drive_id_program);
     uint sm  = (uint)pio_claim_unused_sm(pio, true);
-    drive_id_program_init(pio, sm, off, PIN_RDY, PIN_MTR, PIN_SEL0, DRIVE_ID_HD);
+    drive_id_program_init(pio, sm, off, PIN_RDY, PIN_MTR, DRIVE_ID_HD);
     uint32_t save = spin_lock_blocking(gate_lock);
     id_pio = pio;
     id_off = off;
