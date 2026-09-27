@@ -2152,6 +2152,9 @@ separately.
     requirement of the feature, not a blocker. The UI should say so where an HD disk is
     created or mounted, since a 1.3 machine would simply fail to read it.
 
+- **Redesign the create-ADF menu** (operator, 2026-09-27): choose OFS/FFS and 880 KB (DD) / 1.76 MB (HD) in a
+  UX-friendly way that works on mobile. Today `src/components/library/create-adf.tsx` offers FFS/OFS only; blank HD
+  disks also need the adffs geometry work (spec 2026-09-26 §9 item 1).
 - **An NFC card for swapping disks within the mounted game or utility** (operator, 2026-09-27): a dedicated tag
   that, when tapped, advances the drive to the next disk of the title that is mounted (rather than naming one disk).
   Relates to the multi-disk item below.
