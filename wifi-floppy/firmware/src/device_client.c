@@ -567,12 +567,13 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
         dc_emit(c, DC_OBS_VERIFY, (uint32_t)g_img_got, (uint32_t)g_img_got);
         if (!image_parse_end()) {
             // Content-Length matched what arrived, but the bytes
-            // themselves are not a well-formed, complete WFMF container.
-            // Resending the exact same bytes under this digest would fail
-            // the same way every time, so this digest is treated like the
-            // 400/404/422 cases below rather than backed off forever.
+            // themselves are not a well-formed, complete WFMF or WFAD
+            // container. Resending the exact same bytes under this digest
+            // would fail the same way every time, so this digest is
+            // treated like the 400/404/422 cases below rather than backed
+            // off forever.
             wf_logf(WF_WARN, "fetch: %.12s arrived complete but is not a "
-                    "valid WFMF container -- digest blocked", d->sha256);
+                    "valid WFMF or WFAD container -- digest blocked", d->sha256);
             dc_block_digest(c, d->sha256);
             // Review (final), Important 2: `since` has NOT advanced -- only
             // dc_complete_transition moves it, and no transition happened
@@ -687,7 +688,10 @@ static void dc_take_nfc_write(device_client_t *c, char *json) {
     id[0] = '\0';
     if (!json_str(obj, "diskId", id, sizeof id) || !nfc_disk_id_valid(id)) id[0] = '\0';
     c->nfc_write_seq = seq;
-    snprintf(c->nfc_write_disk_id, sizeof c->nfc_write_disk_id, "%s", id);
+    // id is valid (36 chars) or empty here; the precision only tells gcc so
+    // (its -Wformat-truncation cannot see nfc_disk_id_valid, and CI's -Werror stops on it).
+    snprintf(c->nfc_write_disk_id, sizeof c->nfc_write_disk_id, "%.*s",
+             (int)(sizeof c->nfc_write_disk_id - 1), id);
     c->nfc_write_title[0] = '\0';
     if (id[0]) json_str(obj, "title", c->nfc_write_title, sizeof c->nfc_write_title);
     c->nfc_write_new = true;
@@ -1086,9 +1090,11 @@ bool dc_report_status(device_client_t *c, int psram_free, int rssi, const char *
     int body_len = snprintf(body, sizeof body,
         "{\"mountedSha256\":%s,\"mountedDiskId\":%s,\"version\":%lu,"
         "\"error\":%s,\"psramFree\":%d,\"firmwareVersion\":%s,\"rssi\":%d,"
-        "\"trackMaxBytes\":%u%s%s}",
+        "\"trackMaxBytes\":%u%s%s%s}",
         sha_field, disk_field, (unsigned long)c->mounted_version,
-        err_field, psram_free, ver_field, rssi, (unsigned)TRACK_MAX_BYTES, fw_tail, nfc_tail);
+        err_field, psram_free, ver_field, rssi, (unsigned)TRACK_MAX_BYTES, fw_tail, nfc_tail,
+        // playsHd: only from a build with the drive-ID responder (HD spec §5.5).
+        c->_plays_hd ? ",\"playsHd\":true" : "");
     if (body_len < 0 || body_len >= (int)sizeof body) return false; // should never happen; give up quietly
 
     static char req[DC_STATUS_REQ_BYTES];
@@ -1308,6 +1314,10 @@ void dc_set_nfc_reader(device_client_t *c, const char *state) {
     } else {
         c->_nfc_reader[0] = '\0';
     }
+}
+
+void dc_set_plays_hd(device_client_t *c, bool on) {
+    c->_plays_hd = on;
 }
 
 #define DC_TAP_PATH       "/api/device/tap"

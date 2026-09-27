@@ -22,4 +22,23 @@ void bus_out_init(PIO pio, uint32_t initial);
 
 void bus_out_set(unsigned pin, bool assert);
 
+// CMake passes WF_DRIVE_ID=0 or 1 (option WF_DRIVE_ID, default ON). The
+// fallback is the conservative one: no responder.
+#ifndef WF_DRIVE_ID
+#define WF_DRIVE_ID 0
+#endif
+
+#if WF_DRIVE_ID
+// Hands RDY to floppy.pio's drive_id program on `pio`, which answers the
+// Amiga's drive-ID read on DF0's motor-off selects (drive_id.h, HD spec
+// §5.4). Answers DD until bus_out_drive_id_set_hd(true). bus_out_set(PIN_RDY,
+// ...) keeps working: the level goes to drive_id. Call once on core0, after
+// bus_out_init.
+void bus_out_drive_id_init(PIO pio);
+// Answer HD (true) or DD (false) from the next answer on -- the next reset
+// select or the 32-bit repeat, never mid-answer. Core0 only. True if it
+// changed.
+bool bus_out_drive_id_set_hd(bool hd);
+#endif
+
 #endif

@@ -11,6 +11,7 @@ import { tosecEntries } from '@/db/schema/tosec';
 import { orgFilter } from '@/db/scope';
 import { getGameDemozoo, demozooCovers, type GameDemozoo } from '@/lib/demozoo/queries';
 import type { ImageFormat } from '@/lib/disk-format';
+import { isHdAdfSql } from '@/lib/disk-format-sql';
 
 export interface GameListItem {
   id: string; title: string; year: number | null; publisher: string | null;
@@ -49,6 +50,8 @@ export interface GameListItem {
    */
   kind: string | null;
   sizeBytes: number; sha256Prefix: string | null;
+  /** Any of its disks is HD (HD spec §4.2): the table tags the size. */
+  hasHd: boolean;
 }
 
 /**
@@ -86,6 +89,7 @@ export async function listGames(
         coverAssetId: games.coverAssetId, authored: games.authored,
         diskCount: sql<number>`count(${disks.id})::int`,
         sizeBytes: sql<number>`coalesce(sum(${disks.sizeBytes}), 0)::bigint`,
+        hasHd: sql<boolean>`coalesce(bool_or(${isHdAdfSql()}), false)`,
         sha256Prefix: sql<string | null>`min(${disks.sha256})`,
         diskId: sql<string | null>`min(${disks.id})`,
       })
@@ -111,6 +115,7 @@ export async function listGames(
         coverAssetId: games.coverAssetId, authored: games.authored,
         diskCount: sql<number>`count(${disks.id})::int`,
         sizeBytes: sql<number>`coalesce(sum(${disks.sizeBytes}), 0)::bigint`,
+        hasHd: sql<boolean>`coalesce(bool_or(${isHdAdfSql()}), false)`,
         sha256Prefix: sql<string | null>`min(${disks.sha256})`,
         diskId: sql<string | null>`min(${disks.id})`,
       })
@@ -138,6 +143,7 @@ export async function listGames(
       coverAssetId: games.coverAssetId, authored: games.authored,
       diskCount: sql<number>`count(${disks.id})::int`,
       sizeBytes: sql<number>`coalesce(sum(${disks.sizeBytes}), 0)::bigint`,
+      hasHd: sql<boolean>`coalesce(bool_or(${isHdAdfSql()}), false)`,
       sha256Prefix: sql<string | null>`min(${disks.sha256})`,
       diskId: sql<string | null>`min(${disks.id})`,
     })

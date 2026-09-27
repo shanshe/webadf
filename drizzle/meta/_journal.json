@@ -183,6 +183,13 @@
       "when": 1790360359951,
       "tag": "0025_nfc_tap",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1790464301971,
+      "tag": "0026_plays_hd",
+      "breakpoints": true
     }
   ]
 }

@@ -59,9 +59,10 @@ SHA-256; you browse them and press mount; a custom board emulates the floppy dri
 | **Write-back piece 2a (server)** | ✅ **done 2026-09-18, 5 tasks + final fix wave, merged to `master`.** Disk history tables, browser edits and renames recorded as versions, `POST /api/device/write` + `/close`, live write-protect; see 4g |
 | **HFE v1 disks** | ✅ **done 2026-09-24, merged and live; bench-proven 2026-09-25.** Upload keeps the `.hfe`, the board plays it read-only, "Extract as ADF" when every sector decodes. Long-track HFEs (fw 1.2.0, 14 KB tracks, per-board `trackMaxBytes`): **Turrican boots on the Amiga**; extract round trip passed byte-exact. Only the weak-bit bench item is owed (needs a weak-bit HFE). A cylinder-17 hang after a disk swap is parked; see 3al, 3al-a |
 | **NFC tap-to-mount** | ✅ **merged and live 2026-09-26 (master 0f6fbd1); firmware 1.3.0 (seq 10) confirmed on the board.** Tap a tag → the board mounts that disk from its own org's library (swap; same tag = no-op; 1 s rate limit). Claude writes tags: `pnpm nfc:write "<disk>"` arms the board through the poll, you tap a blank tag, the read-back is reported. HW-147C/Si512 reader on I2C1 (0x28). **Firmware 1.3.1 (seq 11, 2026-09-26): a tap needs 3 s of absence; a write never lands on a tag already on the reader.** Bench: write + tap-mount + same-tag proven; see §3am. **Fob button (2026-09-26, b6c4e7c):** an NFC icon on every library card and disk row writes that disk to a tag from the web (dialog picks disk and board, 2:00 countdown, read-back shown; withdraws on close/cancel/leave); shown only when a board reports a reader |
-| **Drive chips in the header** | ✅ **done 2026-09-25, merged and live.** Every paired board as a chip beside the wordmark: status dot, name, mounted disk; caret menu with Go to disk (the game page), Disk is Protected/Writable, and Eject (no confirm, below a divider). Pending states while a mount or eject converges. 1 chip + "+k" at 1280, 2 at 1536, 3 at 1920; below 1280 a single "Drives" list. Fed by `liveStateRows` (now carries the mounted game/title/disk no/format, all in `liveFingerprint`); `src/lib/drive-chips.ts`, `src/components/shell/drive-chips.tsx`. Unverified: 640–700 px the Drives button overlaps the pill (the search box already does, 640–767 px, on master) |
+| **HD floppies, read-only** | 🟡 **built on `feat/hd-floppies`, not merged.** Web + firmware 1.4.0 done and tested; migration 0026 applied; bench checklist owed; see 3an |
+| **Drive chips in the header** | ✅ **done 2026-09-25, merged and live.** Every paired board as a chip beside the wordmark: status dot, name, mounted disk; caret menu with Go to disk (the game page), Disk is Protected/Writable, and Eject (no confirm, below a divider). Pending states while a mount or eject converges. 1 chip + "+k" at 1280, 2 at 1536, 3 at 1920; below 1280 a single "Drives" list. Fed by `liveStateRows` (now carries the mounted game/title/disk no/format, all in `liveFingerprint`); `src/lib/drive-chips.ts`, `src/components/shell/drive-chips.tsx`. Unverified: 640–700 px the Drives button overlaps the pill (the search box already does, 640–767 px, on master). **2026-09-26 (`b40699c`): the chips are centred in the gap between the wordmark and the pill** (`src/components/shell/header-start.tsx` measures the pill's width; equal gaps at 1280/1536/1920, with and without Admin), and the "+k" chip shows one number at ≥1920 (a Tailwind breakpoint-order bug had shown "+2 +1") |
 | **Five minors, 2026-09-25** | ✅ **merged and live.** Update confirm is a real modal (role=dialog, Escape, focus, Enter submits); the 50-board cap (`MAX_UPDATE_BATCH`) shows in the update bar; re-extracting an EDITED extract is a 409 `already_extracted` with a link; the not-extractable reason is visible text; a refused HFE's bytes are deleted when nothing references them (a two-round-trip race is documented in `releaseRefused`) |
-| **Hardware** | rev A scrap (mirrored), **rev A2 in hand and working**. **Rev B is Shanshe's KiCad project, merged 2026-09-26 (PR #1, `22d3556`) and now the primary PCB** -- the generated-board toolchain (`generate_pcb.py`, `verify_board.py`, `export_gerbers.py`, renders) is gone. `pnpm hw:verify` (`wifi-floppy/hardware/hw_verify.py`) runs KiCad ERC/DRC + parity and checks the netlist against the firmware and §4c. **Not fab-ready yet: J2 sits in U1's RF keepout** (the one failing check); 4 of the 7 decided pull-ups (DIR, STEP, SIDE, SEL0) are not fitted; the assembly BOM (DNP flags, LCSC numbers) is for the operator to complete when sourcing; GP20 (NFC reset) is not wired. See the rev B entry in §4 |
+| **Hardware** | rev A scrap (mirrored), **rev A2 in hand and working**. **Rev B is Shanshe's KiCad project, merged 2026-09-26 (PR #1, `22d3556`) and now the primary PCB** -- the generated-board toolchain (`generate_pcb.py`, `verify_board.py`, `export_gerbers.py`, renders) is gone. `pnpm hw:verify` (`wifi-floppy/hardware/hw_verify.py`) runs KiCad ERC/DRC + parity and checks the netlist against the firmware and §4c. **PR #2 (2026-09-26, `d871430`): `hw:verify` PASSES** -- 1k pull-ups to +5V on all eight host-driven lines (WGATE, WDATA, MTR, DIR, STEP, SIDE, SEL0, SEL1), power flags fixed, J2 moved 0.1 mm to clear U1's RF keepout (keepout zones verified unchanged; J2 now sits right at its edge); the assembly BOM (DNP flags, LCSC numbers) is for the operator to complete when sourcing; GP20 (NFC reset) is not wired. See the rev B entry in §4 |
 
 **Current branch (2026-09-25):** `master`, clean and pushed; everything in the table is merged
 and live. The board runs firmware `1.2.0+ge8ac726` (seq 9). **No increment is in flight.**
@@ -2079,6 +2080,7 @@ separately.
   existing path with NO FIRMWARE CHANGE. ADF cannot represent any of them. The operator's
   call, and the backlog entry below is what it buys.
 
+- **Superseded by 3an (the real feature, read-only).** **HD floppies -- 2026-09-26 SPIKE DONE ON THE BOARD: both unknowns answered, feasible.** Throwaway code on branch `spike/hd-floppy` (worktree `.claude/worktrees/hd-spike`, commits `c996ee6`, `3aa7fc6`; not merged, not pushed). Kept from it for the real feature: `firmware/src/adf_mfm.c` (C ADF->MFM encoder, DD and HD, byte-identical to `src/lib/adfmfm` on 5 real disks x 160 tracks and to Greaseweazle HD fixtures) and the PIO `drive_id` program in `floppy.pio`. Results on hardware (Pico Plus 2 W, Kickstart/Workbench 3.1): **(1) encode time:** one HD track (22 sectors, 202,688 bits) takes median 3.7 ms from SRAM, 4.1 ms reading the ADF from PSRAM, worst seen 4.9 ms; well inside the ~15 ms head settle, so ADF-on-device with on-demand encoding stands. **(2) drive ID:** a PIO SM on pio0 (clkdiv 1) answering one bit on RDY per motor-off SEL0 select works: the DD build answered 32 selects and booted Workbench normally. **The phase is off by one select:** putting the logical HD ID `0xAAAAAAAA` on the wire made the Amiga read an invalid ID (black screen, DF0 never accessed); putting `0x55555555` on the wire made it see an HD drive -- it read the DD Workbench disk with 22-sector geometry, started to boot, and failed with "read error on block 56" (the first block where DD and HD layouts disagree), while the log shows 32 ID selects then steps and track reads. The real feature must shift the responder by one select (the motor-latch reset select should not carry bit 31, or the Amiga samples one select later) and prove `0xAAAAAAAA` logically, with a host test for the phase. Next: design the real feature (HD blank disk + adffs with root block 1760 in the browser, 1,802,240-byte upload, HD mount, per-disk ID, on-demand HD encoding). Board restored to release 1.3.1+g0ab8ce6 afterwards.
 - **HD floppies -- 2026-09-24 RESEARCH ADDED, STILL DEFERRED until the operator has the board to test on** (operator: "HD implementation will come later when I have the board you can test on"). Findings, sources in `docs/superpowers/research/2026-09-24-hfe-and-hd-floppies.md` Part C: (1) the ADF-on-device ruling below holds, and the unknown is CPU: an HD track (22 sectors, ~25 KB MFM) encoded on demand is ESTIMATED at ~1-10 ms on the RP2350 against ~15 ms of head settle -- measure it on the board before designing around it. (2) **The board answers NO drive ID today** (`dskchg.c`: removed because a GPIO ISR could not catch the 1-4 us select pulses). Amiga IDs: `0xFFFFFFFF` DD, `0xAAAAAAAA` HD, `0x00000000` none. HD needs a dedicated PIO state machine to shift the HD ID on RDY. (3) Kickstart 3.0+ for HD is still UNCONFIRMED by source (operator ruling stands). The planned first step when the board is back: a spike that ports the ADF->MFM track encoder to C (byte-identical to `src/lib/adfmfm`), times it on the board, and proves a PIO can answer the ID.
 - **HD floppies: 1.76 MB images, on a par with the 880 KB ones today. DEFERRED by the
   operator 2026-09-13**, same day it was raised -- kept here with its findings intact so
@@ -2149,6 +2151,25 @@ separately.
     Kickstart for all models is 3.2.3 (as of 2026-09-14). So this is a documented
     requirement of the feature, not a blocker. The UI should say so where an HD disk is
     created or mounted, since a 1.3 machine would simply fail to read it.
+
+- **Multi-disk games while playing: a smart way to advance to the next disk.** Requested by the operator
+  2026-09-26. Nothing designed yet. What the board already has to build on:
+  - it knows the set: every mount carries diskNo/diskCount ("disk 1 of 2" on the OLED);
+  - two PSRAM image slots (SLOT_COUNT 2), one idle while playing;
+  - a working disk-change (CHNG) path, so a swap looks like a real eject + insert to the Amiga;
+  - rev B wires SEL1 (pulled up), the second drive's select.
+  Ideas, simplest first:
+  1. **One action "Next disk"**: in the drive chip's menu, and as a long-press / double-tap of the game's
+     NFC tag (must not clash with "same tag = no-op"). Server side it is setDesired(next disk of the game).
+  2. **Prefetch the next disk into the idle slot** as soon as disk N mounts, so any swap is instant instead
+     of a ~5 s fetch (needs the loader to fill the non-active slot without disturbing the served one).
+  3. **Answer as DF0 AND DF1 at once** (disk N on SEL0, disk N+1 on SEL1, one per slot): many multi-disk
+     games read disk 2 from DF1 and never ask for a swap. Needs two-drive emulation in firmware; hardware
+     is on rev B.
+  4. **Detect "insert disk 2"**: a game waiting for a disk usually re-reads the same track in a loop; spot that
+     on an unchanged disk, show "Disk 2?" on the OLED and swap on a tap or after a delay. Risk of false
+     positives -- measure real games first (log seek/read patterns while a swap prompt is on screen).
+  Suggested order: 1 + 2 (cheap, predictable), then 3, with 4 as an experiment.
 
 - **NFC "tap a card to mount" on the board (PN532, I2C, read AND write).** Requested by the operator
   2026-09-24: a PN532 module reads a disk's hash off an NFC card, the board calls the web app, and the
@@ -2529,13 +2550,17 @@ separately.
     Inputs through U2 74LVC541A at 3.3 V; outputs through BSS138 open-drain FETs.
   - **Buzzer:** GP21 → R5 1k → Q7 gate, R6 10k pull-down, BZ1 fed from +5V, Q8 (gate tied to
     source) as the flyback diode. LED: GP22 → R4 1k → D2.
-  - **Must fix before ordering: J2 (power connector) is inside U1's 'RF Copper Keep Out'** (DRC
-    error) -- move it clear of the antenna.
-  - **Pull-ups:** 1k to +5V on WGATE, WDATA, MTR (the required ones). DIR, STEP, SIDE, SEL0 --
-    part of the 2026-09-20 decision (§4c) -- are not fitted.
+  - *(Fixed in PR #2)* J2 was inside U1's 'RF Copper Keep Out'; it now clears it by a hair.
+  - *(Fixed in PR #2)* Pull-ups now on all eight host-driven lines; resistors renumbered (1k:
+    R1-R9, R11; 10k: R10).
   - **Assembly BOM (the operator's side -- Shanshe only does layout and placement files; the
     operator orders and sources parts on LCSC):** U1, U2, J1, J2, J4, BZ1 are DNP (U2 is the SMD
     74LVC541A); C1, C3, D1 and the BSS138s have no LCSC number.
+  - **Buzzer change requested from Shanshe (2026-09-26):** BZ1 → magnetic passive 5 V S&S SEA-1295Y-0520-42Ω-38P6.5
+    (LCSC C2687681; Ø12×9.6 mm, pins Ø0.6 mm at 6.5 mm) with a 22 Ω in series from +5 V (Gotek style). The TDK piezo
+    would only click once: nothing discharges a piezo behind a low-side switch. See wifi-floppy/hardware/SOURCING.md.
+    Also found: Nano-Tek's speaker diode D1 is in SERIES and reversed (K on SPK-, A on Q1 collector) -- its speaker
+    should be silent as drawn; it was meant as a flyback across the speaker.
   - GP20 (optional NFC reset) is not wired; ERC has 54 symbol-library warnings and the known
     VSYS/GND Pico-symbol quirks; parity reports DNP flags that differ between schematic and board.
 - *(History)* **Rev B respin is OUTSOURCED (operator, 2026-09-25).** A contractor, Shanshe, is making it and
@@ -4421,6 +4446,101 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 - **Screenshot redirects:** screenshot fetches follow redirects, so the `media.demozoo.org` host
   allowlist checks only the first URL (the raster content-type allowlist and `nosniff` still apply).
 - **Cron drift:** the daily 01:30 cron against a 7-day gate can drift a refetch to 8 days.
+
+### 3an. HD floppies, read-only -- 2026-09-26 (spec/plan 2026-09-26-hd-floppies-read-only)
+
+**STATUS 2026-09-27 05:55: MERGED to master (`fc23a26`) and deployed; migration 0026 applied; firmware
+`1.4.0+g40c8614` INSTALLED ON THE BENCH BOARD BY USB (trial confirmed) but NOT PUBLISHED to the registry --
+bench prep 3 says publish only after checklist step 1 (DD boots and DF0 reads as DD). Bench checklist below owed.**
+Overnight, with the Amiga OFF (board-side only): the DB shows `firmware_version 1.4.0+g40c8614, plays_hd true`;
+boot logs `drive-id: answering DD 0xffffffff`; heap low-water 139,264 bytes before WiFi, 69,632 after TLS came up.
+Mounting the HD bench disk fetched and verified 1,802,256 bytes in 2.7 s, logged `drive-id: now answering HD
+0xaaaaaaaa`, served track 0 at 202,688 bits, first encode 5,969 us (cold). Remounting Workbench 3.1 DD logged
+`now answering DD 0xffffffff` and 101,344-bit tracks. The HD bench disk is in the library as
+"HD Bench (Workbench 3.1 on HD)" (disk `d8f054fd-fcee-590d-a4b7-2efd22d7c3a5`, built by `scripts/hd-test-disk.sh`
+from the library's Workbench 3.1; HDCheck.txt sha256 21ea2d28...1183). The board is left with Workbench 3.1 DD
+mounted, ready for step 1. Firmware CI was red since the NFC merge (gcc -Wformat-truncation at
+device_client.c:691); fixed in `864f871`, green again. Parked for later: the live PIO golden check skips in CI
+(host tests run before the build); a rolled-back board re-installed by USB with HD desired can block the HD
+digest until reboot; HANDOFF step numbers here differ from spec §7's (a cold-boot step was inserted).
+RP2350 datasheet (RP-008373-DS-2, §11.5, read 2026-09-27) on the drive-ID responder's exec'd `set x`: an instruction
+written to SMx_INSTR runs instead of the one that would have been fetched and the PC does not advance, so a
+`set x` landing on a stalled `wait` runs once and the wait resumes -- safe. `set` never stalls, which satisfies
+"instructions written to INSTR must not stall". Undocumented: an exec landing inside the `[7]` delay after a
+satisfied `wait` (whether the delay pauses or is cut short); worst case MTR is sampled a few cycles early, and
+RDY-level changes during motor-off ID selects are near-impossible. Accepted. Spec `docs/superpowers/specs/2026-09-26-hd-floppies-read-only-design.md`,
+plan `docs/superpowers/plans/2026-09-26-hd-floppies-read-only.md`.
+
+What it does:
+- An ADF of exactly 1,802,240 bytes is HD (`adfDensity`, `src/lib/disk-format.ts`, the only place that knows).
+  It is tagged HD on the game page, the library table and the upload list. It cannot be made writable, and
+  the file browser says "HD disks can't be browsed in the browser yet". Every write route refuses it
+  (`hd_read_only`).
+- The server mounts HD only on a board that reports `playsHd` (column `devices.plays_hd`, migration 0026,
+  applied as guarded SQL). Anywhere else it answers 409 `hd_unsupported`, "Update the drive's firmware to
+  play HD disks". An NFC tap on such a board answers `too_long`: old firmware knows no other refusal word.
+- The board gets HD as **WFAD** (16-byte header + the ADF). PSRAM slots are tagged `ADF_HD`, and
+  `track_cache_get` encodes each track on read (`adf_mfm.c`) in core0's service loop -- thread mode, not an
+  interrupt; the old track keeps streaming. SRAM track buffers grew to 25,344 bytes (~33 KB more).
+- The drive-ID responder (`floppy.pio` drive_id on pio0, 30/32 instruction slots) answers HD `0xAAAAAAAA`
+  while an HD disk is mounted and DD `0xFFFFFFFF` otherwise. **The reset select carries no bit** (the
+  spike's off-by-one fix); the host model `test_drive_id.c` is the reference. `WF_DRIVE_ID=OFF` removes
+  it and the `playsHd` claim.
+- WPROT is asserted for HD whatever the server sends; a captured write to HD is discarded
+  (`WB_REJECT_READ_ONLY`) and never uploaded.
+- New log lines to read on the bench: `drive-id: answering DD …` at boot, `drive-id: now answering HD …`
+  on an HD mount, `hd: track N encoded in X us (new max)`, `heap: free low-water N bytes`, and `wprot: …
+  hd=read-only`.
+
+**Bench prep (controller):**
+1. Build 1.4.0 from a clean tree (`pnpm firmware:build`) and install it on the bench board over USB
+   (BOOTSEL + `picotool load -p 0 -x wifi-floppy/firmware/build/wifi_floppy.uf2`) -- NOT through the web
+   app's Update flow, because 1.4.0 is not published yet.
+2. Confirm the boot log's `pio claims:` line shows pio0 with three state machines claimed (flux_out,
+   flux_in, drive_id).
+3. Run bench checklist step 1 below (DD boots and DF0 reads as DD) and the DD regression steps (2-5). Only
+   once those pass, publish 1.4.0 to the release registry (`pnpm firmware:publish --notes "HD disks,
+   read-only"`) and update the board from the web app as usual. **If step 1 fails, 1.4.0 is not published**
+   (or is withdrawn from the registry if it was already published) -- a phase or polarity bug in the
+   drive-ID responder must never reach a board over the air.
+4. `scripts/hd-test-disk.sh <a Workbench 3.1 DD ADF> <a scratch dir>` makes `HDBench.adf` and prints
+   `HDCheck.txt`'s sha-256. Upload `HDBench.adf` to the library.
+5. Also look for real HD disks already in the library: `select d.id, g.title from disks d join games g on
+   g.id = d.game_id where d.image_format = 'adf' and d.size_bytes = 1802240;`. Try one not built here.
+
+**Bench checklist (each step is a visible pass or fail; one physical step per turn):**
+1. On the 1.4.0 (`WF_DRIVE_ID=ON`) build, a DD Workbench 3.1 disk boots AND DF0 is recognised as a DD
+   drive -- e.g. the Workbench DF0 icon's Info shows an 880K disk and no read errors. Reason this is its
+   own step, not folded into step 2: the spike's evidence cannot tell a phase error from a polarity error
+   apart. HD passes under both hypotheses, but DD reads `0xFFFFFFFF` only under the phase one -- under the
+   polarity one it reads `0x80000000`, which Kickstart would treat as invalid, a black screen like the
+   spike's first HD attempt. This step is the one that distinguishes them.
+2. A DD game loads (regression).
+3. Turrican (HFE) boots (regression).
+4. DF1 with the real drive works (regression: drive_id looks at SEL0 only).
+5. An NFC tap mounts a DD disk (regression).
+6. **Warm path:** with the Amiga already on and a DD disk running, mount the HD Workbench disk from the
+   web app and reset with Ctrl-Amiga-Amiga. It boots. The log shows `drive-id: now answering HD
+   0xaaaaaaaa`.
+7. **Cold power-on with the HD disk already desired:** power OFF both the Amiga and the board, power both
+   ON, and record whether the HD disk boots with no reset. Why this is its own step: at power-on the
+   drive-ID responder answers DD (no disk has been fetched yet), and the HD disk is published only seconds
+   later, after WiFi, TLS and a 1.8 MB fetch complete -- a cold HD boot depends on Kickstart re-reading the
+   ID on disk insertion, which is the same unknown as the swap step (step 10) and is not guaranteed by
+   anything proven so far. If it does not boot cleanly, the §5.4 fallback (reset once the disk is in) applies
+   to every cold boot with HD desired, and that must be recorded here, not assumed from the warm-path pass.
+8. Its Workbench window shows ~1.7 MB capacity. `Copy HDBench:HDCheck.txt RAM:` completes with no error,
+   `List RAM:HDCheck.txt` shows 560000 bytes, and `Type RAM:HDCheck.txt` ends "HDCHECK line 20000 of 20000".
+   Record how long the `Copy` takes, alongside step 11's largest `hd: track N encoded in X us (new max)`
+   value -- together they tell an encode stall apart from a stale-stream retry.
+9. Saving anything to the HD disk gives "Disk is write protected". The log shows `wprot: ASSERTED … hd=read-only`
+   and no `write: trk` log line at all -- WPROT means the Amiga refuses before WGATE, so nothing is ever
+   captured to upload.
+10. Swap DD -> HD and HD -> DD while the Amiga runs; record whether each needs a reset (Ctrl-Amiga-Amiga).
+    If one does, the follow-up (not built) is the web-app note "reset the Amiga after switching between
+    DD and HD" when a disk of the other density is mounted (spec §5.4).
+11. Read the lowest `heap: free low-water` line and the largest `hd: … encoded in` line; record both here
+    (also referenced by step 8 above).
 
 ### 3am. NFC tap-to-mount -- 2026-09-26 (spec/plan 2026-09-25-nfc-tap-to-mount)
 

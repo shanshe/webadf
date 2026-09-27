@@ -2,12 +2,13 @@ import { Link } from '@/components/shell/link';
 import { fromQuery } from '@/lib/trail';
 import type { GameListItem } from '@/lib/queries';
 import { fmtSize } from '@/lib/format';
+import { HdTag } from '@/components/disks/hd-tag';
 
 // TYPE sits between title and year: it qualifies what the row IS, so it
 // belongs next to the name rather than out among the numbers.
 // 104px, not 82: "Educational" is the longest label and at 82 its pill ran
-// into the YEAR column.
-const COLS = 'grid-cols-[30px_1fr_104px_50px_128px_40px_74px_100px]';
+// into the YEAR column. SIZE widened from 74 to 96 so "1.72 MB HD" fits.
+const COLS = 'grid-cols-[30px_1fr_104px_50px_128px_40px_96px_100px]';
 
 export function GameTable({ games, collectionId }: {
   games: GameListItem[];
@@ -28,7 +29,7 @@ export function GameTable({ games, collectionId }: {
           overflow. Both are inert at desktop, where the column is far wider
           than 600px. */}
       <div className="overflow-x-auto">
-        <div className={`grid ${COLS} min-w-[600px] items-center border-b px-4 py-2 font-mono text-[9.5px] tracking-[0.06em]`}
+        <div className={`grid ${COLS} min-w-[622px] items-center border-b px-4 py-2 font-mono text-[9.5px] tracking-[0.06em]`}
              style={{ borderColor: 'var(--hairline)', color: 'var(--muted-2)' }}>
           <span /><span>TITLE</span><span>TYPE</span><span>YEAR</span><span>PUBLISHER</span>
           <span className="text-right">DSK</span><span className="text-right">SIZE</span>
@@ -36,7 +37,7 @@ export function GameTable({ games, collectionId }: {
         </div>
         {games.map((g, i) => (
           <Link key={g.id} href={`/games/${g.id}${fromQuery(collectionId)}`} data-testid="game-row"
-                className={`grid ${COLS} min-w-[600px] items-center border-b px-4 py-2 font-mono text-[11px] hover:bg-white/40`}
+                className={`grid ${COLS} min-w-[622px] items-center border-b px-4 py-2 font-mono text-[11px] hover:bg-white/40`}
                 style={{ borderColor: 'rgb(30 45 60 / 0.05)' }}>
             <span style={{ color: 'var(--faint)' }}>{String(i + 1).padStart(2, '0')}</span>
             <span className="truncate pr-3 font-medium" style={{ color: 'var(--ink)' }}>{g.title}</span>
@@ -59,7 +60,9 @@ export function GameTable({ games, collectionId }: {
                   style={{ color: g.diskCount > 1 ? 'var(--amber-text)' : 'var(--muted-2)' }}>
               {g.diskCount}
             </span>
-            <span className="text-right" style={{ color: 'var(--muted-2)' }}>{fmtSize(g.sizeBytes)}</span>
+            <span className="flex items-center justify-end gap-1 text-right" style={{ color: 'var(--muted-2)' }}>
+              {fmtSize(g.sizeBytes)}{g.hasHd && <HdTag testId="game-hd-tag" />}
+            </span>
             <span className="text-right text-[10px]" style={{ color: 'var(--faint)' }}>
               {g.sha256Prefix ? `${g.sha256Prefix.slice(0, 8)}…` : '—'}
             </span>

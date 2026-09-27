@@ -33,6 +33,7 @@ static __uninitialized_psram("image") uint8_t device_image[SLOT_COUNT][NUM_TRACK
 // Metadata stays in SRAM: it is touched from ISR-adjacent code and is tiny.
 static uint32_t      bits[SLOT_COUNT][NUM_TRACKS];
 static track_state_t state[SLOT_COUNT][NUM_TRACKS];
+static slot_kind_t   kind[SLOT_COUNT];
 static bool          have_psram;
 
 // g_base/g_len point at the backing store: the SDK's PSRAM window on device
@@ -87,6 +88,7 @@ static inline uint8_t *track_ptr(int slot, int track) {
 bool psram_image_init(void) {
     memset(bits, 0, sizeof bits);
     memset(state, 0, sizeof state);
+    memset(kind, 0, sizeof kind);    // SLOT_KIND_MFM
     g_gen = 0;
     active_word = 0;    // gen 0, unmounted -- see active_word's comment above
 
@@ -137,6 +139,7 @@ uint32_t psram_image_bits(int slot, int track) {
 
 bool psram_image_read(int slot, int track, uint8_t *dst, uint32_t *bit_count) {
     if (!psram_image_have(slot, track)) return false;
+    if (kind[slot] == SLOT_KIND_ADF_HD) return false;   // ADF bytes, not MFM (header)
     uint32_t nbytes = (bits[slot][track] + 7) / 8;
     if (nbytes > TRACK_MAX_BYTES) return false;
     memcpy(dst, track_ptr(slot, track), nbytes);
@@ -147,6 +150,7 @@ bool psram_image_read(int slot, int track, uint8_t *dst, uint32_t *bit_count) {
 static void store(int slot, int track, const uint8_t *src, uint32_t bit_count,
                   track_state_t st) {
     if (!have_psram || !slot_ok(slot) || track < 0 || track >= NUM_TRACKS) return;
+    if (kind[slot] == SLOT_KIND_ADF_HD) return;         // HD is read-only (spec §5.3)
     uint32_t nbytes = (bit_count + 7) / 8;
     if (nbytes > TRACK_MAX_BYTES) return;          // oversized track, drop
     memcpy(track_ptr(slot, track), src, nbytes);
@@ -227,6 +231,20 @@ void psram_image_reset_slot(int slot) {
     if (!slot_ok(slot)) return;
     memset(bits[slot],  0, sizeof bits[slot]);
     memset(state[slot], 0, sizeof state[slot]);
+    kind[slot] = SLOT_KIND_MFM;
+}
+
+void psram_image_set_slot_kind(int slot, slot_kind_t k) {
+    if (slot_ok(slot)) kind[slot] = k;
+}
+
+slot_kind_t psram_image_slot_kind(int slot) {
+    return slot_ok(slot) ? kind[slot] : SLOT_KIND_MFM;
+}
+
+const uint8_t *psram_image_track_data(int slot, int track) {
+    if (!psram_image_have(slot, track)) return NULL;
+    return track_ptr(slot, track);
 }
 
 // The one place `active_slot` is ever written, and the entire safety

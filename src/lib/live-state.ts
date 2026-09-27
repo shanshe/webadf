@@ -49,6 +49,8 @@ export interface LiveStateRow {
   /** How many disks the mounted disk's game has -- "disk 2" is only worth saying on a multi-disk game. */
   mountedDiskCount: number | null;
   mountedImageFormat: string | null;
+  /** With mountedImageFormat, whether the mounted disk is HD (read-only, HD spec §4.3). */
+  mountedSizeBytes: number | null;
   desiredGameTitle: string | null;
   /** Only to recognise the default "Device <MAC>" name, which the chip shortens. */
   macAddress: string | null;
@@ -102,7 +104,7 @@ export function liveFingerprint(
         r.lastError ?? '', r.lastErrorAt?.toISOString() ?? '',
         // The drive chips' inputs (see LiveStateRow).
         r.mountedGameId ?? '', r.mountedGameTitle ?? '', r.mountedDiskNo ?? '',
-        r.mountedDiskCount ?? '', r.mountedImageFormat ?? '', r.desiredGameTitle ?? '',
+        r.mountedDiskCount ?? '', r.mountedImageFormat ?? '', r.mountedSizeBytes ?? '', r.desiredGameTitle ?? '',
         r.macAddress ?? '',
         isOnline(r.lastSeenAt, now) ? '1' : '0',
         // Every offline card, not just 'stale' -- see the doc comment above.
@@ -157,6 +159,7 @@ export async function liveStateRows(db: ReturnType<typeof getDb>, orgId: string)
         where dc.game_id = ${mountedDisk.gameId} and dc.org_id = ${orgId}
       )`,
       mountedImageFormat: mountedDisk.imageFormat,
+      mountedSizeBytes: mountedDisk.sizeBytes,
       desiredGameTitle: desiredGame.title,
       macAddress: devices.macAddress,
     })

@@ -33,6 +33,22 @@
 #define IMAGE_MAGIC   0x464D4657u
 #define IMAGE_VERSION 1u
 
+// An HD disk (spec 2026-09-26-hd-floppies §4.4) arrives as WFAD instead: the
+// ADF itself, which the board encodes a track at a time on read.
+//   u32 magic 'WFAD' (0x44414657 LE)
+//   u32 version (1)
+//   u32 tracks (160)
+//   u32 sectors per track (22)
+//   then 160 x 11,264 bytes, track-major (track = cylinder * 2 + head)
+// Validated whole: any other version or geometry, a short body, or ONE byte
+// too many rejects the image, and the slot is left empty and MFM.
+#define WFAD_MAGIC        0x44414657u
+#define WFAD_VERSION      1u
+#define WFAD_TRACKS       160u
+#define WFAD_SECTORS      22u
+#define WFAD_TRACK_BYTES  (WFAD_SECTORS * 512u)              // 11,264
+#define WFAD_BODY_BYTES   (WFAD_TRACKS * WFAD_TRACK_BYTES)   // 1,802,240
+
 // Starts a new parse into PSRAM slot `slot` (task 8) -- normally the one
 // psram_inactive_slot() names, so a fetch never touches whatever the
 // active slot is currently streaming. Resets `slot` up front so stale data
@@ -48,7 +64,7 @@ void image_parse_begin(int slot);
 void image_parse_feed(const uint8_t *data, int len);
 
 // Ends the parse: true only if every byte fed since image_parse_begin()
-// forms a complete, well-formed WFMF container with every track present.
+// forms a complete, well-formed WFMF or WFAD container with every track present.
 // False on any failure (truncated, malformed, or an out-of-range track
 // count/bit count) -- in which case the slot is reset back to empty and
 // must not be published (psram_publish_slot) as the active one.

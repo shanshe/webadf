@@ -67,8 +67,32 @@ static void verdict_rejects_a_write_that_outlived_its_disk(void) {
 }
 
 static void every_verdict_has_a_reason(void) {
-    for (int v = WB_APPLY; v <= WB_REJECT_WRONG_TRACK; v++)
+    for (int v = WB_APPLY; v <= WB_REJECT_READ_ONLY; v++)
         CHECK(write_back_reason((wb_verdict_t)v)[0] != '\0', "a log line needs a reason");
+}
+
+// HD spec §5.3: an HD disk takes no writes on the board, however clean the
+// capture. The verdict refuses it, and the store refuses it again below that.
+static void an_hd_disk_takes_no_writes(void) {
+    psram_image_reset_slot(0);
+    psram_image_set_slot_kind(0, SLOT_KIND_ADF_HD);
+    int32_t tok = mounted_token();
+    mfm_decode_result_t d = whole(80);
+    CHECK_EQ_INT(write_back_verdict(&d, 80, false, tok, tok), WB_REJECT_READ_ONLY);
+    static uint8_t adf[MFM_TRACK_DATA_BYTES];
+    CHECK(!write_back_apply(0, 80, adf), "an HD slot never stores a write");
+    CHECK_EQ_INT(psram_image_dirty_count(0), 0);
+    psram_image_reset_slot(0);     // back to MFM, for anything that runs after
+}
+
+// The four gates on WPROT, one function so the HD one is tested (main.c's
+// core1 loop only feeds it).
+static void wprot_is_forced_for_an_hd_disk(void) {
+    CHECK(write_back_wprot(true, false, false, true), "HD mounted, server says writable: still protected");
+    CHECK(!write_back_wprot(true, false, false, false), "DD, writable, nothing forcing: released");
+    CHECK(write_back_wprot(false, false, false, false), "nothing mounted: protected");
+    CHECK(write_back_wprot(true, true, false, false), "the server's flag");
+    CHECK(write_back_wprot(true, false, true, false), "the uploader's force");
 }
 
 /* A disk in slot 0 whose track `t` holds the encoding of `data`. */
@@ -163,6 +187,8 @@ int main(void) {
     RUN(every_verdict_has_a_reason);
     RUN(apply_stores_dirty_and_the_new_bytes_are_served);
     RUN(capture_shaped_write_applies_and_reads_back);
+    RUN(an_hd_disk_takes_no_writes);
+    RUN(wprot_is_forced_for_an_hd_disk);
     free(mem);
     return REPORT();
 }

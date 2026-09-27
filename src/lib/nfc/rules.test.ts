@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DISK_ID_RE, decideTap, nfcWriteForPoll, shouldStoreWriteResult, NFC_WRITE_TTL_MS,
-  chooseNfcDevice, nfcWriteStatus, formatTagUid, writeFailureText,
+  chooseNfcDevice, nfcWriteStatus, formatTagUid, writeFailureText, tapRefusalOutcome,
 } from './rules';
 
 const ID = 'a1b2c3d4-e5f6-5a7b-8c9d-0e1f2a3b4c5d';
@@ -148,4 +148,13 @@ describe('writeFailureText', () => {
   it('names an unknown reason rather than hiding it', () => {
     expect(writeFailureText('bad data')).toBe('Write failed (bad data).');
   });
+});
+
+describe('tapRefusalOutcome', () => {
+  it('keeps not_found', () => expect(tapRefusalOutcome('not_found')).toBe('not_found'));
+  it('keeps too_long', () => expect(tapRefusalOutcome('track_too_long')).toBe('too_long'));
+  // Only pre-1.4.0 boards are ever refused HD, and they turn an outcome word
+  // they do not know into "no answer" (device_client.c) -- a silent drop.
+  it('says too_long for hd_unsupported, the one refusal old firmware shows', () =>
+    expect(tapRefusalOutcome('hd_unsupported')).toBe('too_long'));
 });

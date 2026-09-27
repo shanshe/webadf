@@ -3,6 +3,9 @@
 #include <string.h>
 #include <stddef.h>
 
+_Static_assert(WFAD_TRACKS == NUM_TRACKS, "a WFAD names every track of the disk");
+_Static_assert(WFAD_TRACK_BYTES <= TRACK_MAX_BYTES, "an HD track's ADF bytes fit a PSRAM slot track");
+
 // Incremental parser: bytes arrive in arbitrary chunks, so the header and
 // each track length are reassembled a byte at a time, and payload bytes go
 // straight into the PSRAM slot without an intermediate buffer.
@@ -17,6 +20,7 @@ typedef struct {
     int      len_got;
     int      track, track_count;
     uint32_t bits, payload_bytes, payload_got, pad_left;
+    bool     adf;           // a WFAD: fixed-size tracks back to back, nothing after the last
 } loader_t;
 
 static loader_t L;
@@ -34,6 +38,23 @@ static void sink(void *ctx, const uint8_t *d, int n) {
             memcpy(l->hdr + l->hdr_got, d, take);
             l->hdr_got += take; d += take; n -= take;
             if (l->hdr_got < 16) return;
+            if (le32(l->hdr) == WFAD_MAGIC) {
+                // HD (spec §5.1): the header must name exactly this geometry
+                // before a byte is stored.
+                if (le32(l->hdr + 4) != WFAD_VERSION || le32(l->hdr + 8) != WFAD_TRACKS ||
+                    le32(l->hdr + 12) != WFAD_SECTORS) {
+                    l->st = S_ERR; return;
+                }
+                psram_image_set_slot_kind(l->slot, SLOT_KIND_ADF_HD);
+                l->adf = true;
+                l->track_count = (int)WFAD_TRACKS;
+                l->track = 0;
+                l->bits = WFAD_TRACK_BYTES * 8u;
+                l->payload_bytes = WFAD_TRACK_BYTES;
+                l->payload_got = 0;
+                l->st = S_PAYLOAD;
+                break;
+            }
             if (le32(l->hdr) != IMAGE_MAGIC || le32(l->hdr + 4) != IMAGE_VERSION) {
                 l->st = S_ERR; return;
             }
@@ -70,6 +91,12 @@ static void sink(void *ctx, const uint8_t *d, int n) {
             l->payload_got += take; d += take; n -= take;
             if (l->payload_got < l->payload_bytes) return;
             psram_image_commit(l->slot, l->track, l->bits);
+            if (l->adf) {
+                // Fixed-size tracks back to back: no length words, no padding.
+                l->payload_got = 0;
+                if (++l->track >= l->track_count) l->st = S_EOF;
+                break;
+            }
             l->st = l->pad_left ? S_PAD : S_LEN;
             l->len_got = 0;
             if (l->st == S_LEN && ++l->track >= l->track_count) l->st = S_EOF;
@@ -86,6 +113,9 @@ static void sink(void *ctx, const uint8_t *d, int n) {
         default: return;
         }
     }
+    // WFAD's size is exact (spec §5.1): a byte after the last track is a
+    // malformed container, not slack to ignore. WFMF keeps its old rule.
+    if (l->adf && l->st == S_EOF && n > 0) l->st = S_ERR;
 }
 
 void image_parse_begin(int slot) {

@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, index, integer } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, index, integer, boolean } from 'drizzle-orm/pg-core';
 
 export const invites = pgTable('invites', {
   code: text('code').primaryKey(),          // normalized, uppercase
@@ -54,6 +54,16 @@ export const devices = pgTable('devices', {
    * disks.max_track_bits, so a board is never sent an image it would reject.
    */
   trackMaxBytes: integer('track_max_bytes'),
+
+  /**
+   * Whether this board's firmware answers the Amiga's drive-ID read as HD for
+   * an HD disk (the drive_id PIO responder, WF_DRIVE_ID), as IT reports in
+   * every status (HD spec §4.3, §5.5). False for every board before 1.4.0 and
+   * for a build with the responder off. setDesired refuses an HD disk
+   * anywhere else (hd_unsupported): without the ID the Amiga reads it with DD
+   * geometry and fails at the first block where the layouts differ.
+   */
+  playsHd: boolean('plays_hd').notNull().default(false),
 
   /**
    * The release this board should end up running. Null means no update is

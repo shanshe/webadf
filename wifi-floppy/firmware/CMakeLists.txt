@@ -56,7 +56,7 @@ add_executable(wifi_floppy
   src/main.c src/dskchg.c src/track_cache.c src/psram_image.c
   src/image_loader.c src/device_client.c src/http.c src/json_scan.c
   src/token_store.c src/config_store.c src/fw_state.c src/fw_trial.c src/fw_apply.c src/fw_update.c src/fw_rom.c src/provisioning.c
-  src/mfm.c src/write_back.c src/reinsert.c src/dns_server.c src/dhcp_server.c src/portal_http.c
+  src/mfm.c src/adf_mfm.c src/write_back.c src/reinsert.c src/dns_server.c src/dhcp_server.c src/portal_http.c
   src/portal_net.c
   src/transport_tls.c src/sntp_time.c
   ${WFMF_PSA_CRYPTO_RANDOM_SRC}
@@ -120,6 +120,20 @@ if (WF_BUS_SNIFF)
   target_compile_definitions(wifi_floppy PRIVATE WF_BUS_SNIFF=1 WF_LOG_SLOTS=512)
   message(STATUS "WF_BUS_SNIFF is ON: every bus input change is logged.")
 endif ()
+# The Amiga drive-ID answer on RDY (floppy.pio drive_id, drive_id.h): what
+# lets the Amiga read an HD disk as HD (spec 2026-09-26-hd-floppies §5.4).
+# ON for every release. OFF is the kill switch: no responder -- RDY released
+# through the ID read, as before 1.4.0 -- and the board stops reporting
+# playsHd, so the server refuses HD mounts cleanly. src/drive_id.c is NOT in
+# this build: it is the host-tested model of the PIO program, and the one
+# helper the device uses (drive_id_for) is inline in drive_id.h.
+option(WF_DRIVE_ID "Answer the Amiga drive-ID read on RDY (needed for HD disks)" ON)
+if (WF_DRIVE_ID)
+  target_compile_definitions(wifi_floppy PRIVATE WF_DRIVE_ID=1)
+else ()
+  target_compile_definitions(wifi_floppy PRIVATE WF_DRIVE_ID=0)
+  message(STATUS "WF_DRIVE_ID is OFF: no drive-ID answer; the server will refuse HD disks.")
+endif ()
 # Bench-only (fix round 3): a bare-bones "fwdbg-wdtest" USB-serial command
 # that deliberately reproduces the nested-flash_safe_execute wedge shape, to
 # prove the watchdog now resets the board instead of hanging forever. NEVER
@@ -148,7 +162,7 @@ endif ()
 # configure whenever this file changes. `-DFIRMWARE_SEMVER=` still overrides,
 # for a one-off build, because -D defines it before this point.
 if (NOT DEFINED FIRMWARE_SEMVER)
-  set(FIRMWARE_SEMVER "1.3.1")
+  set(FIRMWARE_SEMVER "1.4.0")
 endif ()
 
 set(WF_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/wifi_floppy_version.h")
@@ -286,6 +300,13 @@ target_link_options(wifi_floppy PRIVATE
   -Wl,-u,prov_on_portal_idle_timeout
   -Wl,-u,dns_handle -Wl,-u,dhcp_handle -Wl,-u,portal_request
   -Wl,-u,portal_run -Wl,-u,portal_stop)
+
+# HD spec §7 bench step 10's heap low-water log (main.c heap_free_bytes()):
+# every heap growth passes through main.c's __wrap__sbrk, which records the
+# break, so core0 can read it without ever calling _sbrk itself -- the SDK's
+# _sbrk stores its heap_end back even for sbrk(0), and doing that outside
+# malloc's lock while core1 allocates would corrupt the heap.
+target_link_options(wifi_floppy PRIVATE -Wl,--wrap=_sbrk)
 
 # altcp_tls_mbedtls.c is the SDK's own file (patched for mbedtls 3.x
 # compatibility -- see pico_lwip's CMakeLists.txt) when the bundled mbedtls

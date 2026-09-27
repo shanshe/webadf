@@ -47,6 +47,17 @@
 #define SLOT_COUNT 2
 #define SLOT_NONE  (-1)
 
+// What a slot's tracks hold (HD spec §5.1). MFM: ready to stream -- WFMF,
+// DD and HFE alike. ADF_HD: each track is an HD ADF's 22 x 512 = 11,264
+// sector bytes, encoded to MFM by track_cache_get() when the head arrives.
+// image_loader.c sets it before the first track lands; psram_image_reset_slot()
+// puts it back to MFM. core1 writes it before psram_publish_slot(), whose
+// release barrier makes it visible to core0 with the tracks.
+typedef enum { SLOT_KIND_MFM = 0, SLOT_KIND_ADF_HD } slot_kind_t;
+
+void        psram_image_set_slot_kind(int slot, slot_kind_t kind);
+slot_kind_t psram_image_slot_kind(int slot);      // MFM for SLOT_NONE or out of range
+
 typedef enum {
     TRK_ABSENT = 0,     // not fetched yet
     TRK_PRESENT,        // valid, matches server
@@ -64,8 +75,15 @@ track_state_t psram_image_state(int slot, int track);
 bool     psram_image_have(int slot, int track);
 uint32_t psram_image_bits(int slot, int track);
 
-// Copy a track out of PSRAM into an SRAM destination. False if not present.
+// Copy a track out of PSRAM into an SRAM destination. False if not present,
+// and false for an ADF_HD slot: its bytes are ADF, not MFM, and must never
+// reach anything that would stream them.
 bool psram_image_read(int slot, int track, uint8_t *dst, uint32_t *bit_count);
+
+// The track's bytes in place, NULL if absent. For track_cache.c's HD encode,
+// which reads the ADF straight from PSRAM (4.1 ms a track measured, vs 3.7
+// from SRAM). core0 only; never a DMA source (see above).
+const uint8_t *psram_image_track_data(int slot, int track);
 
 // Streaming store, used by the image loader: bytes arrive in arbitrary
 // chunks, so payload is written at an offset and the track is committed
@@ -74,6 +92,7 @@ void psram_image_write_at(int slot, int track, uint32_t offset, const uint8_t *s
 void psram_image_commit(int slot, int track, uint32_t bit_count);
 
 // Host wrote this track: keep the data, mark for later flush to the server.
+// Does nothing on an ADF_HD slot: HD is read-only in this release (spec §5.3).
 void psram_image_mark_dirty(int slot, int track, const uint8_t *src, uint32_t bit_count);
 
 // Next dirty track for the writeback walker, or -1 when the image is clean.
