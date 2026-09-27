@@ -120,6 +120,20 @@ if (WF_BUS_SNIFF)
   target_compile_definitions(wifi_floppy PRIVATE WF_BUS_SNIFF=1 WF_LOG_SLOTS=512)
   message(STATUS "WF_BUS_SNIFF is ON: every bus input change is logged.")
 endif ()
+# The Amiga drive-ID answer on RDY (floppy.pio drive_id, drive_id.h): what
+# lets the Amiga read an HD disk as HD (spec 2026-09-26-hd-floppies §5.4).
+# ON for every release. OFF is the kill switch: no responder -- RDY released
+# through the ID read, as before 1.4.0 -- and the board stops reporting
+# playsHd, so the server refuses HD mounts cleanly. src/drive_id.c is NOT in
+# this build: it is the host-tested model of the PIO program, and the one
+# helper the device uses (drive_id_for) is inline in drive_id.h.
+option(WF_DRIVE_ID "Answer the Amiga drive-ID read on RDY (needed for HD disks)" ON)
+if (WF_DRIVE_ID)
+  target_compile_definitions(wifi_floppy PRIVATE WF_DRIVE_ID=1)
+else ()
+  target_compile_definitions(wifi_floppy PRIVATE WF_DRIVE_ID=0)
+  message(STATUS "WF_DRIVE_ID is OFF: no drive-ID answer; the server will refuse HD disks.")
+endif ()
 # Bench-only (fix round 3): a bare-bones "fwdbg-wdtest" USB-serial command
 # that deliberately reproduces the nested-flash_safe_execute wedge shape, to
 # prove the watchdog now resets the board instead of hanging forever. NEVER

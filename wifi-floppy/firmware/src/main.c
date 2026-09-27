@@ -16,6 +16,7 @@
 #include "dskchg.h"
 #include "bus_gate.h"
 #include "bus_out.h"
+#include "drive_id.h"
 #include "track_cache.h"
 #include "adf_mfm.h"
 #include "psram_image.h"
@@ -1351,6 +1352,9 @@ static void core1_main(void) {
         dc_init(&c, tls_transport(), clock_ms, WEBADF_HOST, token);
         // AFTER dc_init, which zeroes the struct (device_client.h).
         dc_set_observer(&c, ui_observe, NULL);
+        // HD spec §5.5: this build can play HD only if the drive-ID responder
+        // is in it. After dc_init, which zeroes the struct.
+        dc_set_plays_hd(&c, WF_DRIVE_ID != 0);
         // HANDOFF 4g rule 1: a token chosen per boot, so a rebooted board's seq 1
         // is never mistaken for the previous boot's seq 1.
         static char session[20];
@@ -2107,6 +2111,14 @@ int main(void) {
     irq_set_enabled(pio_get_irq_num(bus_pio, 0), true);
     pio_sm_set_enabled(bus_pio, mtr_sm, true);
 
+#if WF_DRIVE_ID
+    // The Amiga drive-ID answer on RDY (HD spec §5.4). pio0, beside flux_out
+    // and flux_in: 30 of its 32 instruction slots.
+    bus_out_drive_id_init(pio);
+    wf_logf(WF_INFO, "drive-id: answering DD 0x%08lx on DF0 motor-off selects",
+            (unsigned long)DRIVE_ID_DD);
+#endif
+
 #if WF_BUS_SNIFF
     uint off_sniff = pio_add_program(bus_pio, &bus_sniff_program);
     sniff_sm = pio_claim_unused_sm(bus_pio, true);
@@ -2280,9 +2292,26 @@ int main(void) {
             verify_bad = 0;
 #endif
             if (now_mounted) {
+#if WF_DRIVE_ID
+                // Before the insert is announced, so an ID read the change
+                // prompts sees the new disk's density. Taken at the next
+                // answer -- the reset select or the 32-bit repeat -- never
+                // mid-answer (bus_out.c). Whether Kickstart re-reads the ID
+                // on a change at all is bench step 9. The same HD derivation
+                // as the WPROT rule on core1 (write_back_wprot).
+                const bool hd = psram_image_slot_kind(psram_active_slot()) == SLOT_KIND_ADF_HD;
+                if (bus_out_drive_id_set_hd(hd))
+                    wf_logf(WF_INFO, "drive-id: now answering %s 0x%08lx",
+                            hd ? "HD" : "DD", (unsigned long)drive_id_for(hd));
+#endif
                 dskchg_image_inserted();
                 wf_trace(WF_EV_MOUNT, (uint32_t)last_active_token, 0);
             } else {
+#if WF_DRIVE_ID
+                if (bus_out_drive_id_set_hd(false))
+                    wf_logf(WF_INFO, "drive-id: now answering DD 0x%08lx (no disk)",
+                            (unsigned long)DRIVE_ID_DD);
+#endif
                 dskchg_image_ejected();
                 track_live = false;
                 dma_channel_abort(dma_ch);

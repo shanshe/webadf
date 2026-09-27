@@ -9,6 +9,31 @@ static uint         gate_sm;
 static spin_lock_t *gate_lock;
 static uint32_t     shadow;
 
+#if WF_DRIVE_ID
+#include "drive_id.h"
+// RDY belongs to drive_id (floppy.pio) once bus_out_drive_id_init has run.
+// The CPU's level reaches it as X, by an exec'd `set x` -- see the program's
+// header for why never through its FIFO.
+static PIO  id_pio;
+static uint id_off;
+static int  id_sm = -1;            // written under gate_lock, before the machine runs
+static bool id_hd;
+_Static_assert(PIN_SEL0 == 2, "floppy.pio's drive_id waits on GP2 literally");
+
+// The two loads name the ID: `mov osr, isr` for HD (ISR holds DRIVE_ID_HD
+// from init) or `mov osr, ~null` for DD's all-ones. A rewritten instruction
+// takes effect at its next fetch, and a load runs only at the start of an
+// answer (the reset, or the 32-bit repeat), so a change never lands
+// mid-answer -- drive_id.h's model, test_drive_id.c's
+// an_id_change_waits_for_the_next_answer.
+static void id_write_loads(bool hd) {
+    const uint load = hd ? pio_encode_mov(pio_osr, pio_isr)
+                         : pio_encode_mov_not(pio_osr, pio_null);
+    id_pio->instr_mem[id_off + drive_id_offset_reset_load]  = load;
+    id_pio->instr_mem[id_off + drive_id_offset_repeat_load] = load;
+}
+#endif
+
 void bus_out_init(PIO pio, uint32_t initial) {
     gate_pio  = pio;
     gate_lock = spin_lock_instance((uint)spin_lock_claim_unused(true));
@@ -30,10 +55,43 @@ void __not_in_flash_func(bus_out_set)(unsigned pin, bool assert) {
     uint32_t save = spin_lock_blocking(gate_lock);
     uint32_t next = bus_gate_apply(shadow, pin, assert);
     if (next != shadow) {
+#if WF_DRIVE_ID
+        const uint32_t was = shadow;
+#endif
         shadow = next;
         // The machine pulls every ~33 ns, so the 8-deep FIFO cannot fill
         // from here; pushing under the lock keeps the words in order.
         pio_sm_put(gate_pio, gate_sm, next);
+#if WF_DRIVE_ID
+        // RDY's pad is drive_id's: give it the level too. One register write.
+        if (id_sm >= 0 && ((next ^ was) & (1u << PIN_RDY)))
+            pio_sm_exec(id_pio, (uint)id_sm, pio_encode_set(pio_x, (next >> PIN_RDY) & 1u));
+#endif
     }
     spin_unlock(gate_lock, save);
 }
+
+#if WF_DRIVE_ID
+void bus_out_drive_id_init(PIO pio) {
+    uint off = (uint)pio_add_program(pio, &drive_id_program);
+    uint sm  = (uint)pio_claim_unused_sm(pio, true);
+    drive_id_program_init(pio, sm, off, PIN_RDY, PIN_MTR, PIN_SEL0, DRIVE_ID_HD);
+    uint32_t save = spin_lock_blocking(gate_lock);
+    id_pio = pio;
+    id_off = off;
+    id_hd  = false;
+    id_write_loads(false);                              // DD until a disk says otherwise
+    pio_sm_exec(pio, sm, pio_encode_set(pio_x, (shadow >> PIN_RDY) & 1u));   // today's level first
+    id_sm  = (int)sm;
+    pio_sm_set_enabled(pio, sm, true);
+    pio_gpio_init(pio, PIN_RDY);                        // the pad leaves pio1 last
+    spin_unlock(gate_lock, save);
+}
+
+bool bus_out_drive_id_set_hd(bool hd) {
+    if (id_sm < 0 || hd == id_hd) return false;
+    id_hd = hd;
+    id_write_loads(hd);
+    return true;
+}
+#endif

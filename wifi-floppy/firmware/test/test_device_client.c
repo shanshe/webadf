@@ -457,6 +457,7 @@ static void test_status_body_fits_at_maximum(void) {
     dc_fw_report_t fr = { DC_UPDATE_PROTOCOL, "downloading", long_fw_err, 4294967295u };
     dc_set_fw_report(&c, &fr);
     dc_set_nfc_reader(&c, "present");   // the longer of the two words
+    dc_set_plays_hd(&c, true);
 
     fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
     CHECK(dc_report_status(&c, 2147483647, -200, long_err, long_ver),
@@ -468,8 +469,10 @@ static void test_status_body_fits_at_maximum(void) {
           "the last field is not truncated away");
     CHECK(strstr(r, "\"firmwareInstructionAck\":4294967295") != NULL,
           "the last firmware field survives");
-    CHECK(strstr(r, "\"nfcReader\":\"present\"}") != NULL,
-          "and so does the reader, the very last field");
+    CHECK(strstr(r, "\"nfcReader\":\"present\"") != NULL,
+          "and so does the reader");
+    CHECK(strstr(r, "\"playsHd\":true}") != NULL,
+          "playsHd survives a maximal body, the very last field");
 }
 
 static void test_status_carries_the_firmware_fields(void) {
@@ -1657,6 +1660,21 @@ static void status_includes_nfc_reader(void) {
     CHECK(strstr(fake_last_request(), "nfcReader") == NULL, "NULL omits");
 }
 
+// HD spec §5.5: "playsHd":true only from a build with the drive-ID responder
+// (main.c sets it from WF_DRIVE_ID); otherwise no key at all, which the
+// server reads as "cannot play HD".
+static void test_status_reports_plays_hd_only_when_set(void) {
+    boot();
+    fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
+    dc_report_status(&c, 4096, -55, NULL, "1.4.0+gabc1234");
+    CHECK(strstr(fake_last_request(), "playsHd") == NULL, "not set: no key");
+
+    dc_set_plays_hd(&c, true);
+    fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
+    dc_report_status(&c, 4096, -55, NULL, "1.4.0+gabc1234");
+    CHECK(strstr(fake_last_request(), "\"playsHd\":true") != NULL, "set: says so");
+}
+
 int main(void) {
     // Only test_successful_image_fetch_publishes_and_reflects_write_protected
     // needs real PSRAM backing (everything else in this file either never
@@ -1698,6 +1716,7 @@ int main(void) {
     RUN(test_status_sends_all_seven_fields);
     RUN(test_status_reports_a_null_version_explicitly);
     RUN(test_status_body_fits_at_maximum);
+    RUN(test_status_reports_plays_hd_only_when_set);
     RUN(test_status_carries_the_firmware_fields);
     RUN(test_status_without_a_fw_report_omits_the_fields);
     RUN(test_unmounted_reports_null_not_omitted);

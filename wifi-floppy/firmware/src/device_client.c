@@ -1087,9 +1087,11 @@ bool dc_report_status(device_client_t *c, int psram_free, int rssi, const char *
     int body_len = snprintf(body, sizeof body,
         "{\"mountedSha256\":%s,\"mountedDiskId\":%s,\"version\":%lu,"
         "\"error\":%s,\"psramFree\":%d,\"firmwareVersion\":%s,\"rssi\":%d,"
-        "\"trackMaxBytes\":%u%s%s}",
+        "\"trackMaxBytes\":%u%s%s%s}",
         sha_field, disk_field, (unsigned long)c->mounted_version,
-        err_field, psram_free, ver_field, rssi, (unsigned)TRACK_MAX_BYTES, fw_tail, nfc_tail);
+        err_field, psram_free, ver_field, rssi, (unsigned)TRACK_MAX_BYTES, fw_tail, nfc_tail,
+        // playsHd: only from a build with the drive-ID responder (HD spec §5.5).
+        c->_plays_hd ? ",\"playsHd\":true" : "");
     if (body_len < 0 || body_len >= (int)sizeof body) return false; // should never happen; give up quietly
 
     static char req[DC_STATUS_REQ_BYTES];
@@ -1309,6 +1311,10 @@ void dc_set_nfc_reader(device_client_t *c, const char *state) {
     } else {
         c->_nfc_reader[0] = '\0';
     }
+}
+
+void dc_set_plays_hd(device_client_t *c, bool on) {
+    c->_plays_hd = on;
 }
 
 #define DC_TAP_PATH       "/api/device/tap"
