@@ -567,12 +567,13 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
         dc_emit(c, DC_OBS_VERIFY, (uint32_t)g_img_got, (uint32_t)g_img_got);
         if (!image_parse_end()) {
             // Content-Length matched what arrived, but the bytes
-            // themselves are not a well-formed, complete WFMF container.
-            // Resending the exact same bytes under this digest would fail
-            // the same way every time, so this digest is treated like the
-            // 400/404/422 cases below rather than backed off forever.
+            // themselves are not a well-formed, complete WFMF or WFAD
+            // container. Resending the exact same bytes under this digest
+            // would fail the same way every time, so this digest is
+            // treated like the 400/404/422 cases below rather than backed
+            // off forever.
             wf_logf(WF_WARN, "fetch: %.12s arrived complete but is not a "
-                    "valid WFMF container -- digest blocked", d->sha256);
+                    "valid WFMF or WFAD container -- digest blocked", d->sha256);
             dc_block_digest(c, d->sha256);
             // Review (final), Important 2: `since` has NOT advanced -- only
             // dc_complete_transition moves it, and no transition happened
