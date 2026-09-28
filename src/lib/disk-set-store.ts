@@ -1,0 +1,265 @@
+/**
+ * Disk sets (spec 2026-09-28-disk-sets §2, §4): applies the pure plans from
+ * disk-set.ts to the library, each operation as ONE db.batch (neon-http has no
+ * interactive transactions; tosec-apply.ts's mergeDuplicates is the model).
+ *
+ * THE DANGER HERE IS THE CASCADE. disks.game_id references games.id with
+ * ON DELETE CASCADE, so deleting a title that still holds a disk destroys that
+ * disk -- and a destroyed disk is indistinguishable from an eject on a board
+ * that wants it. Every title delete below is therefore defended twice:
+ *
+ *  1. The plan only calls a title emptied after the store has loaded EVERY
+ *     disk of it (planAddDisks trusts allDisksOfSources to be complete), and
+ *     the batch moves those disks out BEFORE the delete runs.
+ *  2. The DELETE itself carries `NOT EXISTS (select 1 from disks d where
+ *     d.game_id = games.id)`, deliberately NOT org-scoped: disks.org_id can
+ *     drift from its game's org (admin-delete.ts), so a disk the org-scoped
+ *     read missed still keeps its title alive. The collection_games delete
+ *     carries the same guard, so a title that survives keeps its memberships.
+ *
+ * Batch order (controller ruling 2): disks, devices, the target title, then
+ * collection_games, then games.
+ *
+ * Devices: only desired_game_id/desired_disk_no and mounted_game_id/
+ * mounted_disk_no are written, per device id, org-scoped, and only while the
+ * device still names the disk the plan was made from. desired_disk_id,
+ * mounted_disk_id and desired_version are never touched: disks keep their ids,
+ * so no board's wanted disk changes and nothing is ejected.
+ */
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import type { BatchItem } from 'drizzle-orm/batch';
+import { getDb } from '@/db';
+import { games, disks, entitlements } from '@/db/schema/catalog';
+import { devices } from '@/db/schema/devices';
+import { collections, collectionGames } from '@/db/schema/collections';
+import {
+  planAddDisks, planReorder, planMoveOut, type DeviceRef, type Plan, type SetDisk,
+  PlanError,
+} from '@/lib/disk-set';
+import { stableId } from '@/lib/ingest';
+import { makeSortTitle } from '@/lib/tosec';
+import { readVolume } from '@/lib/adffs';
+import { diskStore } from '@/lib/storage';
+
+export type UndoSnapshot = {
+  diskIds: string[]; title: string; sortTitle: string; year: number | null; publisher: string | null;
+  metadataSource: string | null; hadExtras: boolean;
+};
+
+/** A title or disk that is unknown or belongs to another org -- indistinguishable on purpose. */
+export class NotFound extends Error {
+  constructor() { super('not_found'); }
+}
+
+type Db = ReturnType<typeof getDb>;
+type Stmt = BatchItem<'pg'>;
+
+const setDisk = { id: disks.id, gameId: disks.gameId, diskNo: disks.diskNo };
+
+async function orgDevices(db: Db, orgId: string): Promise<DeviceRef[]> {
+  return db.select({ id: devices.id, desiredDiskId: devices.desiredDiskId, mountedDiskId: devices.mountedDiskId })
+    .from(devices).where(eq(devices.orgId, orgId));
+}
+
+async function requireGame(db: Db, orgId: string, gameId: string): Promise<void> {
+  const rows = await db.select({ id: games.id }).from(games)
+    .where(and(eq(games.id, gameId), eq(games.orgId, orgId))).limit(1);
+  if (rows.length === 0) throw new NotFound();
+}
+
+async function disksOf(db: Db, orgId: string, gameId: string): Promise<SetDisk[]> {
+  return db.select(setDisk).from(disks).where(and(eq(disks.gameId, gameId), eq(disks.orgId, orgId)));
+}
+
+/** The title has no disk left at all, in ANY org (see the header). */
+const noDiskLeft = (gameIdCol: typeof games.id | typeof collectionGames.gameId) =>
+  sql`not exists (select 1 from ${disks} "d" where "d"."game_id" = ${gameIdCol})`;
+
+/** Statements 1 and 2 of every batch: the disk moves, then the devices. */
+function applyPlan(db: Db, orgId: string, plan: Plan, devs: DeviceRef[]): Stmt[] {
+  const out: Stmt[] = [];
+  for (const r of plan.renumber) {
+    out.push(db.update(disks).set({ gameId: r.gameId, diskNo: r.diskNo })
+      .where(and(eq(disks.id, r.diskId), eq(disks.orgId, orgId))));
+  }
+  const byId = new Map(devs.map((d) => [d.id, d]));
+  for (const u of plan.devices) {
+    const ref = byId.get(u.deviceId);
+    if (u.desired && ref?.desiredDiskId) {
+      out.push(db.update(devices).set({ desiredGameId: u.desired.gameId, desiredDiskNo: u.desired.diskNo })
+        .where(and(eq(devices.id, u.deviceId), eq(devices.orgId, orgId), eq(devices.desiredDiskId, ref.desiredDiskId))));
+    }
+    if (u.mounted && ref?.mountedDiskId) {
+      out.push(db.update(devices).set({ mountedGameId: u.mounted.gameId, mountedDiskNo: u.mounted.diskNo })
+        .where(and(eq(devices.id, u.deviceId), eq(devices.orgId, orgId), eq(devices.mountedDiskId, ref.mountedDiskId))));
+    }
+  }
+  return out;
+}
+
+/** Statements 4 and 5: memberships, then the titles -- both guarded. */
+function deleteEmptied(db: Db, orgId: string, emptied: string[]): Stmt[] {
+  if (emptied.length === 0) return [];
+  return [
+    db.delete(collectionGames).where(and(
+      inArray(collectionGames.gameId, emptied), noDiskLeft(collectionGames.gameId))),
+    db.delete(games).where(and(
+      inArray(games.id, emptied), eq(games.orgId, orgId), noDiskLeft(games.id))),
+  ];
+}
+
+function markHuman(db: Db, orgId: string, gameId: string): Stmt {
+  return db.update(games).set({ diskOrderSource: 'human' })
+    .where(and(eq(games.id, gameId), eq(games.orgId, orgId)));
+}
+
+async function run(db: Db, stmts: Stmt[]): Promise<void> {
+  if (stmts.length === 0) return;
+  await db.batch(stmts as [Stmt, ...Stmt[]]);
+}
+
+export async function addDisksToSet(
+  orgId: string, gameId: string, diskIds: string[], rename?: string,
+): Promise<{ undo: UndoSnapshot[] }> {
+  const db = getDb();
+  const ids = [...new Set(diskIds)];
+  if (ids.length === 0) throw new PlanError('nothing_to_add');
+
+  await requireGame(db, orgId, gameId);
+  const targetDisks = await disksOf(db, orgId, gameId);
+  const picked = await db.select(setDisk).from(disks)
+    .where(and(inArray(disks.id, ids), eq(disks.orgId, orgId)));
+  if (picked.length !== ids.length) throw new NotFound();
+  if (picked.some((d) => d.gameId === gameId)) throw new PlanError('same_title');
+
+  const sourceIds = [...new Set(picked.map((d) => d.gameId))];
+  const sources = await db.select({
+    id: games.id, title: games.title, sortTitle: games.sortTitle, year: games.year, publisher: games.publisher,
+    metadataSource: games.metadataSource, coverAssetId: games.coverAssetId, demozooProductionId: games.demozooProductionId,
+  }).from(games).where(and(inArray(games.id, sourceIds), eq(games.orgId, orgId)));
+  // A disk whose title is not this org's (org_id drift) is refused, never moved:
+  // this operation must not delete or strip another org's title.
+  if (sources.length !== sourceIds.length) throw new NotFound();
+
+  // EVERY disk of each source title (controller ruling 1): the plan empties
+  // and deletes each source, so a disk missing here would be left behind.
+  const allOfSources = await db.select(setDisk).from(disks)
+    .where(and(inArray(disks.gameId, sourceIds), eq(disks.orgId, orgId)));
+  const inCollection = await db.select({ gameId: collectionGames.gameId }).from(collectionGames)
+    .innerJoin(collections, and(eq(collections.id, collectionGames.collectionId), eq(collections.orgId, orgId)))
+    .where(inArray(collectionGames.gameId, sourceIds));
+  const devs = await orgDevices(db, orgId);
+
+  const plan = planAddDisks({ gameId, disks: targetDisks }, picked, allOfSources, devs);
+
+  const from = new Map(allOfSources.map((d) => [d.id, d.gameId]));
+  const collected = new Set(inCollection.map((c) => c.gameId));
+  const undo: UndoSnapshot[] = plan.emptiedGameIds.map((gid) => {
+    const g = sources.find((s) => s.id === gid)!;
+    return {
+      diskIds: plan.renumber.filter((r) => from.get(r.diskId) === gid).map((r) => r.diskId),
+      title: g.title, sortTitle: g.sortTitle, year: g.year, publisher: g.publisher, metadataSource: g.metadataSource,
+      hadExtras: g.coverAssetId !== null || g.demozooProductionId !== null || collected.has(gid),
+    };
+  });
+
+  const target = db.update(games).set(rename === undefined
+    ? { diskOrderSource: 'human' }
+    : { diskOrderSource: 'human', title: rename, sortTitle: makeSortTitle(rename), metadataSource: 'human' })
+    .where(and(eq(games.id, gameId), eq(games.orgId, orgId)));
+
+  await run(db, [...applyPlan(db, orgId, plan, devs), target, ...deleteEmptied(db, orgId, plan.emptiedGameIds)]);
+  return { undo };
+}
+
+export async function reorderSet(orgId: string, gameId: string, orderedIds: string[]): Promise<void> {
+  const db = getDb();
+  await requireGame(db, orgId, gameId);
+  const current = await disksOf(db, orgId, gameId);
+  const devs = await orgDevices(db, orgId);
+  const plan = planReorder({ gameId, disks: current }, orderedIds, devs);
+  await run(db, [...applyPlan(db, orgId, plan, devs), markHuman(db, orgId, gameId)]);
+}
+
+const stripExt = (name: string) => name.replace(/\.[^./\\]+$/, '').trim();
+
+/** The volume name, else the uploaded filename, else "Disk". Never throws. */
+async function nameFor(db: Db, orgId: string, disk: { sha256: string; imageFormat: string }): Promise<string> {
+  if (disk.imageFormat === 'adf') {
+    try {
+      const v = readVolume(await diskStore.read(disk.sha256));
+      if (v.ok && v.volume.name.trim()) return v.volume.name.trim();
+    } catch { /* unreadable image: fall back */ }
+  }
+  const ent = await db.select({ sourceFilename: entitlements.sourceFilename }).from(entitlements)
+    .where(and(eq(entitlements.orgId, orgId), eq(entitlements.sha256, disk.sha256))).limit(1);
+  const fromFile = ent[0] ? stripExt(ent[0].sourceFilename) : '';
+  return fromFile || 'Disk';
+}
+
+export async function moveDiskOut(orgId: string, diskId: string): Promise<{ gameId: string }> {
+  const db = getDb();
+  const rows = await db.select({ ...setDisk, sha256: disks.sha256, imageFormat: disks.imageFormat }).from(disks)
+    .where(and(eq(disks.id, diskId), eq(disks.orgId, orgId))).limit(1);
+  const disk = rows[0];
+  if (!disk) throw new NotFound();
+  const remaining = await db.select(setDisk).from(disks)
+    .where(and(eq(disks.gameId, disk.gameId), eq(disks.orgId, orgId), ne(disks.id, diskId)));
+  await requireGame(db, orgId, disk.gameId);
+
+  const title = await nameFor(db, orgId, disk);
+  const newId = stableId('game', orgId, 'moved-out', diskId, String(Date.now()));
+  const devs = await orgDevices(db, orgId);
+  const plan = planMoveOut({ id: disk.id, gameId: disk.gameId, diskNo: disk.diskNo }, newId, remaining, devs);
+
+  await run(db, [
+    db.insert(games).values({ id: newId, orgId, title, sortTitle: makeSortTitle(title), metadataSource: 'human' }),
+    ...applyPlan(db, orgId, plan, devs),
+    markHuman(db, orgId, disk.gameId),
+    ...deleteEmptied(db, orgId, plan.emptiedGameIds),
+  ]);
+  return { gameId: newId };
+}
+
+export async function undoMove(orgId: string, snap: UndoSnapshot): Promise<{ gameId: string }> {
+  const db = getDb();
+  const ids = [...new Set(snap.diskIds)];
+  if (ids.length === 0 || ids.length !== snap.diskIds.length) throw new NotFound();
+  const moving = await db.select(setDisk).from(disks)
+    .where(and(inArray(disks.id, ids), eq(disks.orgId, orgId)));
+  if (moving.length !== ids.length) throw new NotFound();
+
+  const leftIds = [...new Set(moving.map((d) => d.gameId))];
+  const leftDisks = await db.select(setDisk).from(disks)
+    .where(and(inArray(disks.gameId, leftIds), eq(disks.orgId, orgId)));
+  const left = await db.select({ id: games.id }).from(games)
+    .where(and(inArray(games.id, leftIds), eq(games.orgId, orgId)));
+  if (left.length !== leftIds.length) throw new NotFound();
+  const devs = await orgDevices(db, orgId);
+
+  const newId = stableId('game', orgId, 'undo', ids.join(','), String(Date.now()));
+  // The disks, 1..N in snapshot order, and each title they leave, 1..N in its
+  // current order -- each a reorder of a known list, so planReorder builds
+  // both the renumbers and the device updates.
+  const plans: Plan[] = [planReorder({ gameId: newId, disks: moving.map((d) => ({ ...d, gameId: newId })) }, ids, devs)];
+  const emptied: string[] = [];
+  for (const gid of leftIds) {
+    const rest = leftDisks.filter((d) => d.gameId === gid && !ids.includes(d.id))
+      .sort((a, b) => a.diskNo - b.diskNo || (a.id < b.id ? -1 : 1));
+    if (rest.length === 0) emptied.push(gid);
+    else plans.push(planReorder({ gameId: gid, disks: rest }, rest.map((d) => d.id), devs));
+  }
+  const merged: Plan = {
+    renumber: plans.flatMap((p) => p.renumber), emptiedGameIds: emptied, devices: plans.flatMap((p) => p.devices),
+  };
+
+  await run(db, [
+    db.insert(games).values({
+      id: newId, orgId, title: snap.title, sortTitle: snap.sortTitle, year: snap.year, publisher: snap.publisher,
+      metadataSource: snap.metadataSource,
+    }),
+    ...applyPlan(db, orgId, merged, devs),
+    ...deleteEmptied(db, orgId, emptied),
+  ]);
+  return { gameId: newId };
+}
