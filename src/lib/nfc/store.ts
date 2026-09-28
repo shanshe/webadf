@@ -3,7 +3,9 @@ import { getDb } from '@/db';
 import { devices } from '@/db/schema/devices';
 import { disks, games } from '@/db/schema/catalog';
 import { setDesired } from '@/lib/mount';
-import { decideTap, NFC_WRITE_TTL_MS, shouldStoreWriteResult, tapRefusalOutcome, type TapOutcome } from '@/lib/nfc/rules';
+import {
+  decideTap, NFC_WRITE_TTL_MS, nextCardWriters, shouldStoreWriteResult, tapRefusalOutcome, type TapOutcome,
+} from '@/lib/nfc/rules';
 import { readNextForDevices } from '@/lib/next-disk';
 
 /**
@@ -173,11 +175,14 @@ export async function readWriteResult(deviceId: string, seq: number): Promise<{ 
  * This org's boards and whether each has a reader, for the fob button: the
  * pages draw it only when one reports 'present', and /api/nfc/write chooses
  * among them (chooseNfcDevice). Org-scoped here, so a board of another org
- * never reaches either.
+ * never reaches either. `preloadState` rides along for the Next-disk card:
+ * NULL means a build too old to report `preload` (before 1.6.0), which is
+ * also a build that reads a Next-card request as a disarm.
  */
 export async function listNfcDevices(orgId: string) {
-  return getDb().select({ id: devices.id, name: devices.name, nfcReader: devices.nfcReader })
-    .from(devices).where(eq(devices.orgId, orgId)).orderBy(asc(devices.name), asc(devices.id));
+  return getDb().select({
+    id: devices.id, name: devices.name, nfcReader: devices.nfcReader, preloadState: devices.preloadState,
+  }).from(devices).where(eq(devices.orgId, orgId)).orderBy(asc(devices.name), asc(devices.id));
 }
 
 /** The disk's title and number, or null when it is not this org's -- the
@@ -217,4 +222,11 @@ export async function listNfcReaders(orgId: string): Promise<{ id: string; name:
   return (await listNfcDevices(orgId))
     .filter((d) => d.nfcReader === 'present')
     .map(({ id, name }) => ({ id, name }));
+}
+
+/** The boards the Next-disk card button can write with (nextCardWriters).
+ *  Separate from listNfcReaders, which the disk-tag fob uses and which every
+ *  reader board serves whatever its firmware. */
+export async function listNextCardWriters(orgId: string): Promise<{ id: string; name: string }[]> {
+  return nextCardWriters(await listNfcDevices(orgId));
 }

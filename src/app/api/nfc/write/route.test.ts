@@ -10,7 +10,7 @@ vi.mock('@/lib/session', () => ({
   requireOrg: () => Promise.resolve({ orgId: ORG, userId: 'user-1', email: 'a@b.test' }),
 }));
 
-type Dev = { id: string; name: string; nfcReader: string | null };
+type Dev = { id: string; name: string; nfcReader: string | null; preloadState: string | null };
 type WriteRow = {
   nfcWriteSeq: number; nfcWriteExpiresAt: Date | null;
   nfcWriteResultSeq: number | null; nfcWriteResult: string | null; nfcWriteResultUid: string | null;
@@ -31,7 +31,8 @@ vi.mock('@/lib/nfc/store', () => ({
 }));
 
 const DISK = 'a1b2c3d4-e5f6-5a7b-8c9d-0e1f2a3b4c5d';
-const reader = (id: string, name = `Board ${id}`): Dev => ({ id, name, nfcReader: 'present' });
+// preloadState 'none': a 1.6.0+ board with nothing preloaded (NULL = an older build).
+const reader = (id: string, name = `Board ${id}`): Dev => ({ id, name, nfcReader: 'present', preloadState: 'none' });
 const req = (method: string, body?: unknown, qs = '') => new Request(`http://test/api/nfc/write${qs}`, {
   method, headers: { 'content-type': 'application/json' },
   body: body === undefined ? undefined : JSON.stringify(body),
@@ -67,6 +68,25 @@ describe('POST /api/nfc/write', () => {
     expect(requestNfcNextWrite).toHaveBeenCalledWith(ORG, 'dev-1', expect.any(Date));
     expect(requestNfcWrite).not.toHaveBeenCalled();
   });
+  it('refuses the Next-disk card on a board too old to report preload (409 firmware_too_old)', async () => {
+    listNfcDevices.mockResolvedValue([{ id: 'dev-1', name: 'Old', nfcReader: 'present', preloadState: null }]);
+    const { POST } = await import('./route');
+    const res = await POST(req('POST', { kind: 'next', deviceId: 'dev-1' }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'firmware_too_old' });
+    expect(requestNfcNextWrite).not.toHaveBeenCalled();
+    // ...and the same too-old board still writes an ordinary disk tag.
+    const disk = await POST(req('POST', { diskId: DISK, deviceId: 'dev-1' }));
+    expect(disk.status).toBe(200);
+    expect(requestNfcWrite).toHaveBeenCalledWith(ORG, 'dev-1', DISK, expect.any(Date));
+  });
+  it('arms the Next-disk card on a 1.6.0+ board whatever it has preloaded', async () => {
+    listNfcDevices.mockResolvedValue([{ id: 'dev-1', name: 'New', nfcReader: 'present', preloadState: 'ready' }]);
+    const { POST } = await import('./route');
+    const res = await POST(req('POST', { kind: 'next' }));
+    expect(res.status).toBe(200);
+    expect(requestNfcNextWrite).toHaveBeenCalledWith(ORG, 'dev-1', expect.any(Date));
+  });
   it('arms the named board when several have readers', async () => {
     listNfcDevices.mockResolvedValue([reader('dev-1'), reader('dev-2', 'Kitchen')]);
     const { POST } = await import('./route');
@@ -84,7 +104,7 @@ describe('POST /api/nfc/write', () => {
     expect(requestNfcWrite).not.toHaveBeenCalled();
   });
   it('refuses no_reader when the only board has none, and arms nothing', async () => {
-    listNfcDevices.mockResolvedValue([{ id: 'dev-1', name: 'A', nfcReader: 'absent' }]);
+    listNfcDevices.mockResolvedValue([{ id: 'dev-1', name: 'A', nfcReader: 'absent', preloadState: 'none' }]);
     const { POST } = await import('./route');
     const res = await POST(req('POST', { diskId: DISK }));
     expect(res.status).toBe(409);
@@ -92,7 +112,7 @@ describe('POST /api/nfc/write', () => {
     expect(requestNfcWrite).not.toHaveBeenCalled();
   });
   it('refuses no_reader for a named board without one', async () => {
-    listNfcDevices.mockResolvedValue([{ id: 'dev-1', name: 'A', nfcReader: null }, reader('dev-2')]);
+    listNfcDevices.mockResolvedValue([{ id: 'dev-1', name: 'A', nfcReader: null, preloadState: null }, reader('dev-2')]);
     const { POST } = await import('./route');
     const res = await POST(req('POST', { diskId: DISK, deviceId: 'dev-1' }));
     expect(res.status).toBe(409);

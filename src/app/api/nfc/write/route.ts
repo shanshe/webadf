@@ -57,6 +57,13 @@ export async function POST(request: Request) {
   const { device } = choice;
 
   if ('kind' in parsed.data) {
+    // A board that has never reported `preload` runs firmware before 1.6.0,
+    // which reads the card's request (diskId: null) as a disarm -- the dialog
+    // would only count down to "expired". 409, like no_reader: the board is
+    // real and yours, it just cannot do this yet.
+    if (device.preloadState === null) {
+      return Response.json({ error: 'firmware_too_old' }, { status: 409, headers: NO_STORE });
+    }
     const seq = await requestNfcNextWrite(orgId, device.id, new Date());
     if (seq === null) return notFound();
     return Response.json({ seq, deviceId: device.id, deviceName: device.name, title: 'Next-disk card' }, { headers: NO_STORE });

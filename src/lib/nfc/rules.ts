@@ -76,6 +76,19 @@ export function chooseNfcDevice<D extends { id: string; name: string; nfcReader:
   return { ok: true, device: readers[0] };
 }
 
+/** The boards that can write a Next-disk card: a reader present AND a build
+ *  that reports `preload` (1.6.0+, preloadState NOT NULL -- a 1.6.0 board with
+ *  nothing preloaded reports null, stored as 'none'). Firmware 1.3.0 to 1.5.1
+ *  has a reader but reads the card's request (diskId: null) as a disarm, so
+ *  offering it there would only count down to "expired". */
+export function nextCardWriters<D extends { id: string; name: string; nfcReader: string | null; preloadState: string | null }>(
+  devs: D[],
+): { id: string; name: string }[] {
+  return devs
+    .filter((d) => d.nfcReader === 'present' && d.preloadState !== null)
+    .map(({ id, name }) => ({ id, name }));
+}
+
 export type NfcWriteStatus =
   | { state: 'waiting' }
   | { state: 'ok'; uid: string | null }

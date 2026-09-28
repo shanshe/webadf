@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DISK_ID_RE, decideTap, nfcWriteForPoll, shouldStoreWriteResult, NFC_WRITE_TTL_MS,
-  chooseNfcDevice, nfcWriteStatus, formatTagUid, writeFailureText, tapRefusalOutcome,
+  chooseNfcDevice, nfcWriteStatus, formatTagUid, writeFailureText, tapRefusalOutcome, nextCardWriters,
 } from './rules';
 
 const ID = 'a1b2c3d4-e5f6-5a7b-8c9d-0e1f2a3b4c5d';
@@ -76,6 +76,20 @@ describe('shouldStoreWriteResult', () => {
     expect(shouldStoreWriteResult({ nfcWriteSeq: 3, nfcWriteResultSeq: 3 }, 3)).toBe(false));
   it('refuses a seq from the future', () =>
     expect(shouldStoreWriteResult({ nfcWriteSeq: 3, nfcWriteResultSeq: null }, 4)).toBe(false));
+});
+
+describe('nextCardWriters', () => {
+  const dev = (id: string, nfcReader: string | null, preloadState: string | null) =>
+    ({ id, name: `Board ${id}`, nfcReader, preloadState });
+  it('keeps only reader boards that report preload (1.6.0+)', () => {
+    expect(nextCardWriters([
+      dev('new-none', 'present', 'none'), dev('new-ready', 'present', 'ready'),
+      dev('old', 'present', null), dev('absent', 'absent', 'none'), dev('unknown', null, 'loading'),
+    ])).toEqual([{ id: 'new-none', name: 'Board new-none' }, { id: 'new-ready', name: 'Board new-ready' }]);
+  });
+  it('is empty when every reader board is too old', () => {
+    expect(nextCardWriters([dev('old', 'present', null)])).toEqual([]);
+  });
 });
 
 describe('chooseNfcDevice', () => {

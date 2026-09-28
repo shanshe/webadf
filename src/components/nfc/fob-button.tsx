@@ -112,7 +112,9 @@ export function FobButton({ testId, title, disks, devices, mode = 'disk' }: {
           ? 'That board no longer reports an NFC reader.'
           : body?.error === 'not_found'
             ? 'That disk or board is no longer in your library.'
-            : 'Could not start the write.',
+            : body?.error === 'firmware_too_old'
+              ? 'That board needs firmware 1.6.0 or newer.'
+              : 'Could not start the write.',
       });
       return;
     }
