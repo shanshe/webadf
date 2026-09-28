@@ -2165,7 +2165,7 @@ separately.
 - **An NFC card for swapping disks within the mounted game or utility** (operator, 2026-09-27): a dedicated tag
   that, when tapped, advances the drive to the next disk of the title that is mounted (rather than naming one disk).
   Relates to the multi-disk item below.
-- **Review Shanshe's updated PR #3** (operator, 2026-09-27): the buzzer footprint must be 6.5 mm pitch for the
+- ~~**Review Shanshe's updated PR #3**~~ DONE 2026-09-28: merged (`e2eb1f5`), hw:verify passes, BZ1 has a 6.5/5 mm double footprint. (operator, 2026-09-27): the buzzer footprint must be 6.5 mm pitch for the
   SEA-1295Y (comment posted 2026-09-27); run `pnpm hw:verify` on the PR's OWN files (the script checks the files
   next to it) and check BZ1's pad pitch.
 - **Multi-disk games while playing: a smart way to advance to the next disk.** Requested by the operator
