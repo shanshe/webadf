@@ -2168,6 +2168,10 @@ separately.
   a new library version. It is one-way: a physical drive on SEL0 (even empty) spoils the board's DF0, so a true
   toggle needs an SPDT on the drive's pin 10 (second pole to GP26 so firmware follows it), or a rev C header.
   Bench items owed: SEL1 on pin 12 of the A500/A5000 cables, VOL with two terminated devices, unflashed-board boot.
+  **DECISION (operator, 2026-09-28): deferred to rev C, as a second floppy connector on the PCB** (study §3c: J5
+  "DRIVE" header, all conductors straight from J1 except pin 10, which the board drives). Why: people keep their
+  existing single-drive cable instead of hunting for one with two drive connectors. The firmware passthrough mode
+  (outputs released, write capture off, eject/insert handshake) is still needed and lands with rev C. No rev B bodge.
 - **An NFC card for swapping disks within the mounted game or utility** (operator, 2026-09-27): a dedicated tag
   that, when tapped, advances the drive to the next disk of the title that is mounted (rather than naming one disk).
   Relates to the multi-disk item below.
