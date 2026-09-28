@@ -2179,6 +2179,18 @@ separately.
 - ~~**Review Shanshe's updated PR #3**~~ DONE 2026-09-28: merged (`e2eb1f5`), hw:verify passes, BZ1 has a 6.5/5 mm double footprint. (operator, 2026-09-27): the buzzer footprint must be 6.5 mm pitch for the
   SEA-1295Y (comment posted 2026-09-27); run `pnpm hw:verify` on the PR's OWN files (the script checks the files
   next to it) and check BZ1's pad pitch.
+- **Disk groups for sets without disk numbers** (operator, 2026-09-28): an OS or application install such as Workbench
+  3.1 (Install, Workbench, Locale, Extras, Fonts, Storage) is a set of disks mostly needed together, e.g. installing
+  Workbench to a hard drive, but the disks carry no "disk N of M". Today each one lands as its own one-disk title
+  (the live library has `amiga-wb31_workbench` as a lone disk 1), so Next disk and the Next-disk card (3ap) can't
+  step through them. Not designed. Starting points:
+  - reuse the title as the group: let a person put existing disks into one title and order them (the rule in
+    `src/lib/next-disk.ts` already works on disk numbers, so a group is just ordered disk numbers under one title);
+  - or a separate "group" that references disks across titles, if a disk must also stay its own title;
+  - suggest groups: TOSEC names carry set info (e.g. "Workbench v3.1 (1993)(Commodore)(Disk 2 of 6)(Extras)"),
+    and volume names (Install3.1:, Workbench3.1:, Extras3.1:...) are recognisable;
+  - an install asks for a disk by VOLUME NAME, so "insert Extras3.1:" could one day pick the right disk of the
+    mounted group automatically (relates to multi-disk idea 4, detecting "insert disk 2").
 - **Multi-disk games while playing: a smart way to advance to the next disk.** Ideas 1 (Next disk) and 2 (preload) DONE 2026-09-28, see 3ap; ideas 3 (answer as DF0+DF1) and 4 (detect "insert disk 2") still open. Requested by the operator
   2026-09-26. What the board already has to build on:
   - it knows the set: every mount carries diskNo/diskCount ("disk 1 of 2" on the OLED);
