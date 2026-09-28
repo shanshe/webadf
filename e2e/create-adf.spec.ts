@@ -94,6 +94,34 @@ test('an HD disk is 1.76 MB with its root at block 1760, and DD stays the defaul
   expect(dd.sizeBytes).toBe(901_120);
 });
 
+test('the panel forgets the last disk: it reopens on 880 KB / FFS', async ({ page }) => {
+  await signUpFresh(page);
+  await page.goto('/library');
+
+  // Choose the two non-defaults by hand, not through createAdf(), so this
+  // test is about what the panel SHOWS rather than what the helper clicks.
+  await page.getByTestId('create-adf').click();
+  const panel = page.getByTestId('create-adf-panel');
+  await expect(panel).toBeVisible();
+  await expect(page.getByTestId('create-adf-size-dd')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('create-adf-fs-ffs')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('create-adf-size-hd').click();
+  await page.getByTestId('create-adf-fs-ofs').click();
+  // Tapping the current answer again must not leave the switch with none.
+  await page.getByTestId('create-adf-fs-ofs').click();
+  await expect(page.getByTestId('create-adf-fs-ofs')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('create-adf-submit').click();
+  await expect(page.getByTestId('game-card')).toHaveCount(1);
+  await expect(panel).toBeHidden();
+
+  // The regression this replaces: a <select> that kept OFS for the next disk.
+  await page.getByTestId('create-adf').click();
+  await expect(page.getByTestId('create-adf-size-dd')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('create-adf-size-hd')).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByTestId('create-adf-fs-ffs')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('create-adf-fs-ofs')).toHaveAttribute('aria-pressed', 'false');
+});
+
 test('renaming on the card rewrites the disk under a new digest', async ({ page }) => {
   const run = runTag();
   const u = await signUpFresh(page);
