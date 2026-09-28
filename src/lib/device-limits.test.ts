@@ -83,8 +83,8 @@ describe('the firmware bounds the server respects', () => {
     // was ASCII, but wrong now that nfcWrite's title is escaped multi-byte
     // sequences.
     //
-    // With next, nfcWrite and nfcWrite.kind included this comes to 1352
-    // bytes against the 1536-byte buffer (184 to spare).
+    // With next, nfcWrite and nfcWrite.kind included this comes to 1384
+    // bytes against the 1536-byte buffer (152 to spare).
     const worst = Buffer.byteLength(disk + next + update + nfcWrite + nfcKind, 'utf8');
     const budget = define('DC_POLL_BODY_BYTES');
     // Reported rather than just asserted, so a future reader sees the margin
