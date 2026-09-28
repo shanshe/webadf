@@ -35,6 +35,28 @@ export async function requestEject(deviceId: string): Promise<boolean> {
   return true;
 }
 
+/** POST /api/devices/[id]/next -- the drive menu's and the card's "Next disk". */
+export async function requestNextDisk(deviceId: string): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/devices/${deviceId}/next`, { method: 'POST' });
+  } catch {
+    toast.error('Could not reach the server', { description: 'Check your connection and try again.' });
+    return false;
+  }
+  const body = await res.json().catch(() => null) as { outcome?: string; diskNo?: number; diskCount?: number; reason?: string } | null;
+  if (!res.ok) {
+    toast.error('Could not switch disks', { description: body?.reason ?? `The server answered ${res.status}.` });
+    return false;
+  }
+  if (body?.outcome === 'mounting') {
+    toast.success(`Switching to disk ${body.diskNo} of ${body.diskCount}`);
+    return true;
+  }
+  toast.message(body?.outcome === 'single' ? 'This title has only one disk' : 'No disk in the drive');
+  return false;
+}
+
 /**
  * PATCH /api/disks/[id] { writeProtected }. The flag belongs to the DISK, not
  * to any one device: it changes on the disk's page and on every board
