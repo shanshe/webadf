@@ -38,8 +38,9 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   }
 
   try {
-    await undoMove(orgId, parsed.data.snapshot);
-    return new Response(null, { status: 204 });
+    // The recreated title's id, so the client can go back to it.
+    const { gameId } = await undoMove(orgId, parsed.data.snapshot);
+    return Response.json({ gameId });
   } catch (err) {
     if (err instanceof NotFound) return Response.json({ error: 'not_found' }, { status: 404 });
     // The set changed since the add (disks split up, or the set would be

@@ -34,6 +34,7 @@ import type { GameDetailDisk } from '@/lib/queries';
 import type { MountChoice } from '@/lib/mount-choice';
 import type { FobDevice } from '@/components/nfc/fob-button';
 import { DiskRow } from './disk-row';
+import { AddDisksDialog } from './add-disks-dialog';
 
 export interface DiskSetEntry {
   disk: GameDetailDisk;
@@ -52,21 +53,19 @@ function diskName(d: GameDetailDisk): string {
   return d.tosecName ?? d.sourceFilename ?? `Disk ${d.diskNo}`;
 }
 
-export function DiskSetSection({ gameId, entries, from, fobDevices = [], onAddDisks }: {
+export function DiskSetSection({ gameId, title, entries, from, fobDevices = [] }: {
   gameId: string;
+  /** The title's name, for the Add disks… heading and its "Moved to" toast. */
+  title: string;
   /** The title's disks, in set order, with their mount choices. */
   entries: DiskSetEntry[];
   /** Carried through to each DiskRow (see disk-row.tsx). */
   from?: string;
   fobDevices?: FobDevice[];
-  /**
-   * Opens the "Add disks…" dialog. Optional because the page, a server
-   * component, cannot pass a function; Task 8 wires the dialog in here.
-   */
-  onAddDisks?: () => void;
 }) {
   const router = useRouter();
   const [reordering, setReordering] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   // The order as drawn in reorder mode: optimistic, so the numbers move the
   // moment a row does. Re-seeded whenever the server's order changes (after
@@ -176,7 +175,7 @@ export function DiskSetSection({ gameId, entries, from, fobDevices = [], onAddDi
           ) : (
             <>
               <button type="button" data-testid="disk-set-add" className={BTN_CLASS} style={BTN_STYLE}
-                      onClick={() => onAddDisks?.()}>
+                      onClick={() => setAdding(true)}>
                 Add disks…
               </button>
               <button type="button" data-testid="disk-set-reorder" className={BTN_CLASS} style={BTN_STYLE}
@@ -187,6 +186,10 @@ export function DiskSetSection({ gameId, entries, from, fobDevices = [], onAddDi
           )}
         </div>
       </div>
+
+      {adding && (
+        <AddDisksDialog mode={{ kind: 'add', gameId, title }} onClose={() => setAdding(false)} />
+      )}
 
       {reordering ? (
         <ReorderList

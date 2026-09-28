@@ -11,9 +11,9 @@ import { fromQuery } from '@/lib/trail';
 import { FobButton, type FobDevice } from '@/components/nfc/fob-button';
 import { HdTag } from '@/components/disks/hd-tag';
 import { isHdAdf } from '@/lib/disk-format';
-import { DiskSetMenu, type DiskSetControls } from './disk-set-menu';
+import { DiskSetMenu, LoneDiskMenu, type DiskSetControls } from './disk-set-menu';
 
-export function DiskRow({ disk, choices, from, fobDevices = [], setControls }: {
+export function DiskRow({ disk, choices, from, fobDevices = [], setControls, loneGameId }: {
   disk: GameDetailDisk;
   /** Per-device verdict for THIS disk -- see lib/mount-choice.ts. */
   choices: MountChoice[];
@@ -30,6 +30,12 @@ export function DiskRow({ disk, choices, from, fobDevices = [], setControls }: {
    * draws the ⋯ menu with Move up / Move down / Move out of set.
    */
   setControls?: DiskSetControls;
+  /**
+   * Present only when the row is a one-disk title's only disk: the id of that
+   * title. Draws a ⋯ menu with "Add to a disk set…". Plain data, not a
+   * callback, because the server page renders this row directly.
+   */
+  loneGameId?: string;
 }) {
   // Derived from the SAME choices the mount picker uses. It used to come from
   // a separate sha256-keyed map in the page, which could name a different
@@ -178,6 +184,10 @@ export function DiskRow({ disk, choices, from, fobDevices = [], setControls }: {
           <DiskSetMenu diskId={disk.id}
                        name={disk.tosecName ?? disk.sourceFilename ?? `Disk ${disk.diskNo}`}
                        controls={setControls} />
+        )}
+        {!setControls && loneGameId && (
+          <LoneDiskMenu diskId={disk.id} gameId={loneGameId}
+                        name={disk.tosecName ?? disk.sourceFilename ?? `Disk ${disk.diskNo}`} />
         )}
       </div>
     </div>

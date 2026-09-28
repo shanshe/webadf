@@ -25,18 +25,19 @@ const req = (body: unknown) => new Request('http://x/api/disks/s1/undo-move', {
 beforeEach(() => { undoMove.mockReset(); });
 
 describe('POST /api/disks/[id]/undo-move', () => {
-  it('calls the store with the session org and the parsed snapshot; 204', async () => {
+  it('calls the store with the session org and the parsed snapshot; 200 with the recreated title', async () => {
     undoMove.mockResolvedValue({ gameId: 'NEW' });
     const res = await POST(req({ snapshot }), ctx);
     expect(undoMove).toHaveBeenCalledWith('org-1', snapshot);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ gameId: 'NEW' });
   });
 
   it('accepts null year, publisher and metadataSource', async () => {
     undoMove.mockResolvedValue({ gameId: 'NEW' });
     const s = { ...snapshot, year: null, publisher: null, metadataSource: null };
     const res = await POST(req({ snapshot: s }), ctx);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
     expect(undoMove).toHaveBeenCalledWith('org-1', s);
   });
 

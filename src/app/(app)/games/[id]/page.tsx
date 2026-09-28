@@ -63,7 +63,7 @@ export default async function GamePage(props: PageProps<'/games/[id]'>) {
           // Reorder, each row gaining a ⋯ menu. A client component, so the
           // mount choices are computed here and handed over as data.
           <DiskSetSection
-            gameId={game.id} from={from} fobDevices={readers}
+            gameId={game.id} title={game.title} from={from} fobDevices={readers}
             entries={game.disks.map((disk) => ({
               disk, choices: mountChoices(devices, disk.id, disk.sha256, now),
             }))}
@@ -76,7 +76,9 @@ export default async function GamePage(props: PageProps<'/games/[id]'>) {
             handful of rows either way.
           */
           <DiskRow key={disk.id} disk={disk} from={from} fobDevices={readers}
-                   choices={mountChoices(devices, disk.id, disk.sha256, now)} />
+                   choices={mountChoices(devices, disk.id, disk.sha256, now)}
+                   // A lone disk: its ⋯ menu offers "Add to a disk set…".
+                   loneGameId={game.id} />
         ))}
       </div>
     </>
