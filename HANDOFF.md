@@ -60,7 +60,8 @@ SHA-256; you browse them and press mount; a custom board emulates the floppy dri
 | **HFE v1 disks** | ✅ **done 2026-09-24, merged and live; bench-proven 2026-09-25.** Upload keeps the `.hfe`, the board plays it read-only, "Extract as ADF" when every sector decodes. Long-track HFEs (fw 1.2.0, 14 KB tracks, per-board `trackMaxBytes`): **Turrican boots on the Amiga**; extract round trip passed byte-exact. Only the weak-bit bench item is owed (needs a weak-bit HFE). A cylinder-17 hang after a disk swap is parked; see 3al, 3al-a |
 | **NFC tap-to-mount** | ✅ **merged and live 2026-09-26 (master 0f6fbd1); firmware 1.3.0 (seq 10) confirmed on the board.** Tap a tag → the board mounts that disk from its own org's library (swap; same tag = no-op; 1 s rate limit). Claude writes tags: `pnpm nfc:write "<disk>"` arms the board through the poll, you tap a blank tag, the read-back is reported. HW-147C/Si512 reader on I2C1 (0x28). **Firmware 1.3.1 (seq 11, 2026-09-26): a tap needs 3 s of absence; a write never lands on a tag already on the reader.** Bench: write + tap-mount + same-tag proven; see §3am. **Fob button (2026-09-26, b6c4e7c):** an NFC icon on every library card and disk row writes that disk to a tag from the web (dialog picks disk and board, 2:00 countdown, read-back shown; withdraws on close/cancel/leave); shown only when a board reports a reader |
 | **HD floppies, read-only** | ✅ **merged; firmware 1.4.1 verified on hardware 2026-09-27** (A5000, Kickstart 3.1); see 3an |
-| **HD disks: writes, history, editing, blank disks** | 🟡 **built on `feat/hd-writes`, not merged.** Web done and e2e green; firmware 1.5.0 built and host-tested, not published; bench checklist owed; see 3ao |
+| **HD disks: writes, history, editing, blank disks** | ✅ **merged 2026-09-28; firmware 1.5.1 (seq 31) on the board.** Bench steps 4-7 and the rev B `short 0` retest owed; see 3ao |
+| **Multi-disk "Next disk" + Next-disk NFC card + preload** | 🟡 **merged 2026-09-28 (`92ec133`), web live; firmware 1.6.0 (seq 32) published and targeted, installs when the Amiga is on and idle.** Bench acceptance owed; see 3ap |
 | **Drive chips in the header** | ✅ **done 2026-09-25, merged and live.** Every paired board as a chip beside the wordmark: status dot, name, mounted disk; caret menu with Go to disk (the game page), Disk is Protected/Writable, and Eject (no confirm, below a divider). Pending states while a mount or eject converges. 1 chip + "+k" at 1280, 2 at 1536, 3 at 1920; below 1280 a single "Drives" list. Fed by `liveStateRows` (now carries the mounted game/title/disk no/format, all in `liveFingerprint`); `src/lib/drive-chips.ts`, `src/components/shell/drive-chips.tsx`. Unverified: 640–700 px the Drives button overlaps the pill (the search box already does, 640–767 px, on master). **2026-09-26 (`b40699c`): the chips are centred in the gap between the wordmark and the pill** (`src/components/shell/header-start.tsx` measures the pill's width; equal gaps at 1280/1536/1920, with and without Admin), and the "+k" chip shows one number at ≥1920 (a Tailwind breakpoint-order bug had shown "+2 +1") |
 | **Five minors, 2026-09-25** | ✅ **merged and live.** Update confirm is a real modal (role=dialog, Escape, focus, Enter submits); the 50-board cap (`MAX_UPDATE_BATCH`) shows in the update bar; re-extracting an EDITED extract is a 409 `already_extracted` with a link; the not-extractable reason is visible text; a refused HFE's bytes are deleted when nothing references them (a two-round-trip race is documented in `releaseRefused`) |
 | **Hardware** | rev A scrap (mirrored), **rev A2 in hand and working**. **Rev B is Shanshe's KiCad project, merged 2026-09-26 (PR #1, `22d3556`) and now the primary PCB** -- the generated-board toolchain (`generate_pcb.py`, `verify_board.py`, `export_gerbers.py`, renders) is gone. `pnpm hw:verify` (`wifi-floppy/hardware/hw_verify.py`) runs KiCad ERC/DRC + parity and checks the netlist against the firmware and §4c. **PR #2 (2026-09-26, `d871430`): `hw:verify` PASSES** -- 1k pull-ups to +5V on all eight host-driven lines (WGATE, WDATA, MTR, DIR, STEP, SIDE, SEL0, SEL1), power flags fixed, J2 moved 0.1 mm to clear U1's RF keepout (keepout zones verified unchanged; J2 now sits right at its edge); the assembly BOM (DNP flags, LCSC numbers) is for the operator to complete when sourcing; GP20 (NFC reset) is not wired. See the rev B entry in §4 |
@@ -2172,14 +2173,14 @@ separately.
   "DRIVE" header, all conductors straight from J1 except pin 10, which the board drives). Why: people keep their
   existing single-drive cable instead of hunting for one with two drive connectors. The firmware passthrough mode
   (outputs released, write capture off, eject/insert handshake) is still needed and lands with rev C. No rev B bodge.
-- **An NFC card for swapping disks within the mounted game or utility** (operator, 2026-09-27): a dedicated tag
+- ~~**An NFC card for swapping disks within the mounted game or utility**~~ DONE 2026-09-28, see 3ap (operator, 2026-09-27): a dedicated tag
   that, when tapped, advances the drive to the next disk of the title that is mounted (rather than naming one disk).
   Relates to the multi-disk item below.
 - ~~**Review Shanshe's updated PR #3**~~ DONE 2026-09-28: merged (`e2eb1f5`), hw:verify passes, BZ1 has a 6.5/5 mm double footprint. (operator, 2026-09-27): the buzzer footprint must be 6.5 mm pitch for the
   SEA-1295Y (comment posted 2026-09-27); run `pnpm hw:verify` on the PR's OWN files (the script checks the files
   next to it) and check BZ1's pad pitch.
-- **Multi-disk games while playing: a smart way to advance to the next disk.** Requested by the operator
-  2026-09-26. Nothing designed yet. What the board already has to build on:
+- **Multi-disk games while playing: a smart way to advance to the next disk.** Ideas 1 (Next disk) and 2 (preload) DONE 2026-09-28, see 3ap; ideas 3 (answer as DF0+DF1) and 4 (detect "insert disk 2") still open. Requested by the operator
+  2026-09-26. What the board already has to build on:
   - it knows the set: every mount carries diskNo/diskCount ("disk 1 of 2" on the OLED);
   - two PSRAM image slots (SLOT_COUNT 2), one idle while playing;
   - a working disk-change (CHNG) path, so a swap looks like a real eject + insert to the Amiga;
@@ -4482,6 +4483,44 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 - **Screenshot redirects:** screenshot fetches follow redirects, so the `media.demozoo.org` host
   allowlist checks only the first URL (the raster content-type allowlist and `nosniff` still apply).
 - **Cron drift:** the daily 01:30 cron against a 7-day gate can drift a refetch to 8 days.
+
+### 3ap. Multi-disk "Next disk", the Next-disk NFC card, and preloading -- 2026-09-28 (spec/plan 2026-09-28-multi-disk-next)
+
+**STATUS 2026-09-28: MERGED (`92ec133`) and deployed; migration 0027 applied (guarded, before e2e); firmware
+`1.6.0+g62236b4` published as seq 32 and targeted at WifiFloppy1 (was on 1.5.1, nothing mounted).** Full e2e 397/397,
+vitest 1309, firmware host tests green, device build clean. Subagent-driven: 13 tasks, each reviewed; final whole-branch
+review found 1 Critical + 3 Important, all fixed and re-reviewed.
+
+What it does:
+- One server rule (`src/lib/next-disk.ts`): next = the lowest disk number above the WANTED disk (desired ?? mounted),
+  wrapping; duplicates resolve to the lowest id (`disks` has no timestamp); disks the board cannot hold are skipped.
+- Web: "Next disk: Disk N of M" in the drive-chip menu and a "Next: disk N" button on the device card
+  (`POST /api/devices/[id]/next`); a preload line: "Disk N ready (instant swap)" / "loading…" / "not preloaded yet".
+- Card: a universal WFDK **v2** tag with payload `next` (no disk, no org). Tap -> `POST /api/device/tap {action:"next"}`.
+  Older firmware reads v2 as BAD_DATA and ignores it. Written from the Devices page header ("Write a Next-disk card"),
+  offered only for boards on 1.6.0+ (they report `preload`); the route refuses older ones with 409 firmware_too_old.
+- Board: the poll carries `next: {diskId, sha256, diskNo}` (after `desired`; worst-case poll body 1384/1536). The board
+  preloads it into the idle PSRAM slot without publishing, only when there are no unsent writes, no uploader work
+  (parked included), no held swap and no firmware update in progress; a Next tap then publishes the slot at once if its
+  sha256 matches. A tap interrupts a preload. WPROT and the mount report for a swap happen before any preload (final
+  review C1). OLED: "Next: disk N of M", "Saving, then disk N" (only when the swap really waits), "Next: single disk",
+  "Next: no disk". Status reports `preload`; status buffers raised to 1280/1792.
+
+Rulings (all in the plan/spec): minimal `next` shape (budget); a changed `next` does not drop the preload record at lift
+(the swap compares sha256); preload line shows "not preloaded yet" rather than a false "loading".
+
+**Bench acceptance owed (operator):**
+1. 1.6.0 installs (Amiga on and idle); the Devices page then offers "Write a Next-disk card".
+2. Write a Next-disk card from the Devices page; tap it with a 2-disk title mounted -> OLED "Next: disk 2 of 2", swap in
+   under ~1 s once the web shows "Disk 2 ready (instant swap)" (compare ~5 s without preload).
+3. **C1 check:** protected disk 1 -> writable disk 2 via the card: the Amiga must NOT show disk 2 as write-protected
+   (`Info`), and a save to disk 2 must land as a history version. Then back the other way.
+4. Tap the card while a save is uploading: OLED "Saving, then disk N", the swap happens after the upload, no save lost.
+5. Tap during a preload: the tap is handled at once, not after the preload.
+
+Known, pre-existing, for a decision: any mount change (tap, web mount, and now Next) discards a PARKED uploader's
+dirty tracks (`uploader.c` up_refresh). Parked = a session the server would not take; Next makes mount changes more
+frequent.
 
 ### 3ao. HD disks: Amiga writes, full history, browser editing, blank HD disks -- 2026-09-27 (spec/plan 2026-09-27-hd-writes-and-editing)
 
