@@ -229,7 +229,8 @@ static void the_hd_store_takes_only_an_hd_slot(void) {
     CHECK(psram_image_store_adf(0, 3, adf), "an HD slot does");
     CHECK_EQ_INT(psram_image_state(0, 3), TRK_DIRTY);
     CHECK_EQ_INT(psram_image_bits(0, 3), MFM_HD_TRACK_DATA_BYTES * 8u);
-    CHECK(memcmp(psram_image_track_data(0, 3), adf, sizeof adf) == 0, "the bytes as given");
+    const uint8_t *stored = psram_image_track_data(0, 3);
+    CHECK(stored != NULL && memcmp(stored, adf, sizeof adf) == 0, "the bytes as given");
     static uint8_t mfm[MFM_TRACK_BYTES];
     psram_image_mark_dirty(0, 4, mfm, MFM_TRACK_BITS);
     CHECK_EQ_INT(psram_image_state(0, 4), TRK_ABSENT);       /* MFM never goes into an ADF slot */
@@ -287,10 +288,19 @@ static void an_hd_write_is_stored_and_served_back(void) {
         CHECK(served != NULL && memcmp(served, wire, HD_MFM_BYTES) == 0,
               "re-encoded exactly as Greaseweazle encoded it");
 
-        // Back to the old contents for the next skew.
+        // Back to the old contents for the next skew, and serve them again, so
+        // the cache holds a stale track 80 when the next skew's write lands:
+        // every skew, not just the first, proves the apply's invalidate.
         psram_image_write_at(0, 80, 0, zeros, (int)sizeof zeros);
         psram_image_clear_dirty(0, 80);
         track_cache_invalidate(80);
+        served = track_cache_get(80, &bits);
+        CHECK(served != NULL, "the old track is served again");
+        memset(decoded, 0xff, sizeof decoded);
+        memset(&d, 0, sizeof d);
+        if (served) mfm_decode_track_n(served, HD_MFM_BYTES, decoded, &d, write_back_sectors(tok));
+        CHECK_EQ_INT(d.found, 0x3fffff);
+        CHECK(memcmp(decoded, zeros, sizeof zeros) == 0, "and it decodes to the old zeros");
     }
     psram_image_reset_slot(0);
 }

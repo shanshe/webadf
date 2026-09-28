@@ -171,15 +171,36 @@ up_sync_t up_sync(const uploader_t *u) {
     return u->online ? UP_PENDING : UP_OFFLINE;
 }
 
-// Reads track `t` out of `slot`, decodes it, and returns a pointer to the
-// shared static decode buffer if it came back whole (all sectors found,
-// consistently numbered, matching `t`) -- NULL otherwise. Shared by
-// up_send_track (one track, Task 5) and up_close's whole-image hash (Task
-// 6, every track): a torn read -- core0 rewriting the track while this read
-// is in progress -- must never be sent OR hashed, and both call sites
-// resolve it exactly the same way, using the exact same statics, so this is
-// the one place that check lives.
-static uint8_t *up_read_whole_track(int slot, int t) {
+_Static_assert(DC_POST_BODY_MAX >= MFM_HD_TRACK_DATA_BYTES, "dc_post must carry an HD track");
+
+// Reads track `t` out of `slot` as the bytes the server keeps for it: `*len`
+// bytes, or NULL if it could not be read whole. Shared by up_send_track (one
+// track) and up_close's whole-image hash, so a torn read is resolved the same
+// way in both.
+//
+// DD (an MFM slot): decoded into core1's own static buffer, and NULL unless
+// every sector came back, consistently numbered and matching `t` -- a torn
+// read (core0 rewriting the track while this read is in progress) fails that
+// and is never sent or hashed.
+//
+// HD (an ADF_HD slot, HD writes spec §4.4): the stored 11,264 bytes ARE the
+// sector data, verified when core0 applied the write, so they are returned in
+// place, not re-decoded and not copied -- an 11 KB static copy would cost
+// core1 RAM for nothing: dc_post copies the body into its own request buffer
+// before sending, and sha256_update only reads. No checksum can catch bytes
+// torn by core0's store, and none is needed: up_send_track clears the dirty
+// flag BEFORE dc_post reads the bytes and psram_image_store_adf sets it AFTER
+// its own copy, so a track rewritten mid-read is always sent again (the
+// server keeps a track's last upload); and up_close re-checks write_gen() and
+// the dirty flags after hashing.
+static const uint8_t *up_read_whole_track(int slot, int t, uint32_t *len) {
+    if (psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD) {
+        const uint8_t *p = psram_image_track_data(slot, t);
+        if (!p) return NULL;
+        *len = MFM_HD_TRACK_DATA_BYTES;
+        return p;
+    }
+
     static uint8_t mfm[TRACK_MAX_BYTES];
     uint32_t bits = 0;
     psram_image_read(slot, t, mfm, &bits);
@@ -197,6 +218,7 @@ static uint8_t *up_read_whole_track(int slot, int t) {
 
     if (d.found != 0x7ffu || !d.track_no_consistent || d.track_no != (uint8_t)t)
         return NULL;
+    *len = MFM_TRACK_DATA_BYTES;
     return trk;
 }
 
@@ -222,7 +244,8 @@ static up_step_t up_send_track(uploader_t *u, int slot, int t) {
     // against core0.
     psram_image_clear_dirty(slot, t);
 
-    uint8_t *trk = up_read_whole_track(slot, t);
+    uint32_t tlen = 0;
+    const uint8_t *trk = up_read_whole_track(slot, t, &tlen);
     if (!trk) {
         // core0 was rewriting this track while this read was in progress --
         // a damaged track is never sent. Put the dirty flag back so it is
@@ -253,7 +276,7 @@ static up_step_t up_send_track(uploader_t *u, int slot, int t) {
 
     static char resp[256];
     int status = dc_post(dc, path, "application/octet-stream", trk,
-                         MFM_TRACK_DATA_BYTES, resp, sizeof resp);
+                         (int)tlen, resp, sizeof resp);
 
     static char err[32];
     static char reason[32];
@@ -361,7 +384,8 @@ static up_step_t up_close(uploader_t *u, int slot) {
     static sha256_t s;
     sha256_init(&s);
     for (int t = 0; t < NUM_TRACKS; t++) {
-        uint8_t *trk = up_read_whole_track(slot, t);
+        uint32_t tlen = 0;
+        const uint8_t *trk = up_read_whole_track(slot, t, &tlen);
         if (!trk) {
             // core0 is rewriting this track right now: hashing a torn read
             // would produce a digest that matches nothing. No request is
@@ -370,7 +394,7 @@ static up_step_t up_close(uploader_t *u, int slot) {
             up_backoff(u);
             return UP_WAITING;
         }
-        sha256_update(&s, trk, MFM_TRACK_DATA_BYTES);
+        sha256_update(&s, trk, tlen);   // the disk's own track size, spec §4.4
     }
 
     if (u->write_gen() != g0 || psram_image_next_dirty(slot) >= 0) {

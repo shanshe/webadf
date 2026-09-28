@@ -67,6 +67,92 @@ static void push_json(const char *status, const char *body) {
     fake_push_response(r);
 }
 
+/* ---- HD (HD writes spec §4.4) ------------------------------------------- */
+
+#define HB MFM_HD_TRACK_DATA_BYTES                // 11264
+static uint8_t hd_adf[NUM_TRACKS * HB];          // the HD disk the board holds
+
+// An HD disk in slot 0: an ADF_HD slot of ADF bytes (not MFM), every track
+// present and clean. Otherwise exactly mounted().
+static void mounted_hd(void) {
+    fake_reset(); fake_set_clock(10000);
+    wf_log_test_reset(); wf_log_test_set_sink(log_sink); logbuf[0] = '\0';
+    psram_image_reset_slot(0); psram_image_reset_slot(1);
+    psram_image_set_slot_kind(0, SLOT_KIND_ADF_HD);
+    for (int t = 0; t < NUM_TRACKS; t++) {
+        for (int i = 0; i < HB; i++) hd_adf[t * HB + i] = (uint8_t)(t * 3 + i * 5);
+        psram_image_write_at(0, t, 0, hd_adf + t * HB, HB);
+        psram_image_commit(0, t, HB * 8u);
+    }
+    psram_publish_slot(0);
+    dc_init(&c, fake_transport(), fake_clock_ms, "h", "tok");
+    strcpy(c.mounted_sha256, "aa"); strcpy(c.mounted_disk_id, "d1");
+    c.mounted_version = 7; c.since = 7;
+    gen = 0; last_ms = 10000; gen_moves = false;
+    up_init(&u, &c, "boot-abc", write_gen, last_write);
+}
+
+static void amiga_writes_hd(int t, uint8_t fill) {
+    memset(hd_adf + t * HB, fill, HB);
+    CHECK(psram_image_store_adf(0, t, hd_adf + t * HB), "core0 stored the verified track");
+    gen++; last_ms = fake_clock_ms();
+}
+
+static void hd_digest(char hex[65]) {
+    sha256_t s; uint8_t d[32];
+    sha256_init(&s); sha256_update(&s, hd_adf, sizeof hd_adf); sha256_final(&s, d);
+    sha256_hex(d, hex);
+}
+
+static void an_hd_track_is_uploaded_as_its_stored_bytes(void) {
+    mounted_hd();
+    amiga_writes_hd(159, 0x5a);
+    push_json("HTTP/1.1 200 OK", "{\"staged\":159}");
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    CHECK(strstr(fake_last_request(),
+        "POST /api/device/write?disk=d1&mount=7&track=159&session=boot-abc&seq=1 HTTP/1.1") != NULL,
+        "the protocol's query, verbatim");
+    CHECK(strstr(fake_last_request(), "Content-Length: 11264") != NULL, "an HD track's 11,264 bytes");
+    int n = fake_last_request_len();
+    CHECK(memcmp(fake_last_request() + n - HB, hd_adf + 159 * HB, HB) == 0,
+          "the stored ADF bytes, byte for byte -- no re-decode");
+    CHECK_EQ_INT(psram_image_state(0, 159), TRK_PRESENT);
+}
+
+static void an_hd_close_hashes_160_tracks_of_11264_bytes(void) {
+    mounted_hd();
+    amiga_writes_hd(40, 0x77);
+    push_json("HTTP/1.1 200 OK", "{\"staged\":40}");
+    up_step(&u);
+    fake_set_clock(last_ms + UP_IDLE_CLOSE_MS);
+    char want[65]; hd_digest(want);
+    char body[128]; snprintf(body, sizeof body, "{\"sha256\":\"%s\"}", want);
+    push_json("HTTP/1.1 200 OK", body);
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    char line[256];
+    snprintf(line, sizeof line,
+        "POST /api/device/write/close?disk=d1&mount=7&session=boot-abc&seq=1&sha256=%s HTTP/1.1", want);
+    CHECK(strstr(fake_last_request(), line) != NULL,
+          "the digest of the HD image the server will hold: 160 x 11,264 bytes");
+    CHECK(strcmp(c.mounted_sha256, want) == 0, "adopted, no re-fetch");
+    CHECK(!u.open, "closed");
+}
+
+static void an_offline_hd_write_is_kept_and_sent_later(void) {
+    mounted_hd();
+    amiga_writes_hd(7, 0x33);
+    fake_push_connect_failure();
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    CHECK_EQ_INT(psram_image_state(0, 7), TRK_DIRTY);
+    CHECK_EQ_INT(up_sync(&u), UP_OFFLINE);
+    fake_set_clock(fake_clock_ms() + u.backoff_ms);
+    push_json("HTTP/1.1 200 OK", "{\"staged\":7}");
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    int n = fake_last_request_len();
+    CHECK(memcmp(fake_last_request() + n - HB, hd_adf + 7 * HB, HB) == 0, "the same bytes, once back online");
+    CHECK_EQ_INT(psram_image_state(0, 7), TRK_PRESENT);
+}
+
 static void nothing_to_do_without_writes(void) {
     mounted();
     CHECK(!up_has_work(&u), "a clean disk needs no uploader");
@@ -616,6 +702,9 @@ int main(void) {
     RUN(a_401_upload_keeps_the_write);
     RUN(not_mounted_at_close_parks);
     RUN(a_torn_track_during_the_hash_backs_off);
+    RUN(an_hd_track_is_uploaded_as_its_stored_bytes);
+    RUN(an_hd_close_hashes_160_tracks_of_11264_bytes);
+    RUN(an_offline_hd_write_is_kept_and_sent_later);
     free(mem);
     return REPORT();
 }

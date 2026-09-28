@@ -219,6 +219,8 @@ static void dc_image_sink(void *ctx, const uint8_t *b, int n) {
 //     transport's callbacks, never these.
 //
 // The cost is ~6 KB of BSS in a build with ~390 KB of SRAM unallocated.
+// dc_post's request buffer has since grown by 5.6 KB to carry an HD track
+// (DC_POST_BODY_MAX, HD writes spec §4.4).
 // ---------------------------------------------------------------------
 
 // Exponential from the floor, doubling on every consecutive failure,
@@ -1124,7 +1126,7 @@ bool dc_report_status(device_client_t *c, int psram_free, int rssi, const char *
 int dc_post(device_client_t *c, const char *path, const char *content_type,
             const uint8_t *body, int body_len, char *resp, int resp_cap) {
     if (body_len < 0 || body_len > DC_POST_BODY_MAX) return -1;
-    // static: see the STACK note above. One head + one track, ~6.1 KB.
+    // static: see the STACK note above. One head + one HD track, ~11.8 KB.
     static char req[DC_POST_HEAD_BYTES + DC_POST_BODY_MAX];
     int n = http_build_head(req, DC_POST_HEAD_BYTES, "POST", path, c->host, c->token,
                             content_type, body_len);

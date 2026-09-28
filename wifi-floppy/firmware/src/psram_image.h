@@ -82,7 +82,9 @@ bool psram_image_read(int slot, int track, uint8_t *dst, uint32_t *bit_count);
 
 // The track's bytes in place, NULL if absent. For track_cache.c's HD encode,
 // which reads the ADF straight from PSRAM (4.1 ms a track measured, vs 3.7
-// from SRAM). core0 only; never a DMA source (see above).
+// from SRAM), and for the uploader (core1), which posts and hashes an HD
+// track's bytes from here: dc_post copies them into its own buffer, so this
+// is never a DMA source (see above).
 const uint8_t *psram_image_track_data(int slot, int track);
 
 // Streaming store, used by the image loader: bytes arrive in arbitrary
