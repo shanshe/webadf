@@ -90,10 +90,14 @@ describe('deleteDisk: a middle disk of a human-arranged set (m1)', () => {
     expect(dev).toHaveLength(2);
     expect(dev[0].sql).toMatch(/^update "devices" set "desired_game_id" = \$1, "desired_disk_no" = \$2 where/);
     expect(dev[0].sql).toMatch(/"devices"\."desired_disk_id" = \$\d+/);
-    expect(dev[0].params).toEqual(['G', 2, 'dev', 'org-1', 'c']);
+    // The last three: the EXISTS guard -- disk c really is at G, number 2.
+    expect(dev[0].params).toEqual(['G', 2, 'dev', 'org-1', 'c', 'c', 'G', 2]);
+    expect(dev[0].sql).toMatch(/exists \(select 1 from "disks" "d" where "d"\."id" = \$6 and "d"\."game_id" = \$7 and "d"\."disk_no" = \$8\)/);
     expect(dev[1].sql).toMatch(/^update "devices" set "mounted_game_id" = \$1, "mounted_disk_no" = \$2 where/);
-    expect(dev[1].params).toEqual(['G', 2, 'dev', 'org-1', 'c']);
-    for (const s of dev) expect(s.sql).not.toMatch(/set[^]*("desired_disk_id"|"mounted_disk_id"|"desired_version") =[^]*where/);
+    expect(dev[1].params).toEqual(['G', 2, 'dev', 'org-1', 'c', 'c', 'G', 2]);
+    expect(dev[1].sql).toMatch(/exists \(select 1 from "disks" "d" where "d"\."id" = \$6/);
+    for (const s of dev) expect(s.sql.slice(0, s.sql.indexOf(' where ')))
+      .not.toMatch(/"desired_disk_id"|"mounted_disk_id"|"desired_version"/);
   });
 
   it('a set that is not human-arranged keeps its numbers (a plain delete, no batch)', async () => {

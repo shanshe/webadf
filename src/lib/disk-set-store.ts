@@ -81,6 +81,10 @@ async function disksOf(db: Db, orgId: string, gameId: string): Promise<SetDisk[]
 const noDiskLeft = (gameIdCol: typeof games.id | typeof collectionGames.gameId) =>
   sql`not exists (select 1 from ${disks} "d" where "d"."game_id" = ${gameIdCol})`;
 
+/** The disk is in this title at this number (checked inside the batch, after the disk moves). */
+const diskIsAt = (diskId: string, gameId: string, diskNo: number) =>
+  sql`exists (select 1 from ${disks} "d" where "d"."id" = ${diskId} and "d"."game_id" = ${gameId} and "d"."disk_no" = ${diskNo})`;
+
 /**
  * Statements 1 and 2 of every batch: the disk moves, then the devices. Each
  * disk UPDATE is pinned to the title the plan read it in (Renumber.fromGameId),
@@ -96,13 +100,20 @@ export function applyPlan(db: Db, orgId: string, plan: Plan, devs: DeviceRef[]):
   const byId = new Map(devs.map((d) => [d.id, d]));
   for (const u of plan.devices) {
     const ref = byId.get(u.deviceId);
+    // Each device UPDATE also requires the disk to really sit where the plan
+    // put it: a disk UPDATE pinned to fromGameId matches nothing when another
+    // tab moved the disk meanwhile, and the board must then not be told this
+    // plan's title and number. Sound because the batch runs in order, as one
+    // transaction, so the disk UPDATEs above are already visible here.
     if (u.desired && ref?.desiredDiskId) {
       out.push(db.update(devices).set({ desiredGameId: u.desired.gameId, desiredDiskNo: u.desired.diskNo })
-        .where(and(eq(devices.id, u.deviceId), eq(devices.orgId, orgId), eq(devices.desiredDiskId, ref.desiredDiskId))));
+        .where(and(eq(devices.id, u.deviceId), eq(devices.orgId, orgId), eq(devices.desiredDiskId, ref.desiredDiskId),
+          diskIsAt(ref.desiredDiskId, u.desired.gameId, u.desired.diskNo))));
     }
     if (u.mounted && ref?.mountedDiskId) {
       out.push(db.update(devices).set({ mountedGameId: u.mounted.gameId, mountedDiskNo: u.mounted.diskNo })
-        .where(and(eq(devices.id, u.deviceId), eq(devices.orgId, orgId), eq(devices.mountedDiskId, ref.mountedDiskId))));
+        .where(and(eq(devices.id, u.deviceId), eq(devices.orgId, orgId), eq(devices.mountedDiskId, ref.mountedDiskId),
+          diskIsAt(ref.mountedDiskId, u.mounted.gameId, u.mounted.diskNo))));
     }
   }
   return out;

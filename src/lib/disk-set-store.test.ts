@@ -151,7 +151,24 @@ describe('addDisksToSet', () => {
     expect(dev[0].sql).toMatch(/"devices"\."id" = \$\d+ and "devices"\."org_id" = \$\d+/);
     expect(dev[0].params).toEqual(expect.arrayContaining(['G', 2, 'dev-m', 'org-1', 's1']));
     // Never the disk-id columns or the version: nothing changes which disk a board holds.
-    for (const s of dev) expect(s.sql).not.toMatch(/set[^]*("desired_disk_id"|"mounted_disk_id"|"desired_version") =[^]*where/);
+    for (const s of dev) expect(s.sql.slice(0, s.sql.indexOf(' where ')))
+      .not.toMatch(/"desired_disk_id"|"mounted_disk_id"|"desired_version"/);
+  });
+
+  it('each device UPDATE also requires the disk to sit at the planned title and number (desired and mounted)', async () => {
+    addScenario();
+    byTable.set(devices, [[{ id: 'dev-b', desiredDiskId: 's1', mountedDiskId: 's1' }]]);
+    await addDisksToSet('org-1', 'G', ['s2']);
+    const dev = only().filter((s) => /^update "devices"/.test(s.sql));
+    expect(dev).toHaveLength(2);
+    const guard = /exists \(select 1 from "disks" "d" where "d"\."id" = \$(\d+) and "d"\."game_id" = \$(\d+) and "d"\."disk_no" = \$(\d+)\)/;
+    for (const [i, col] of [[0, 'desired'], [1, 'mounted']] as const) {
+      expect(dev[i].sql).toMatch(new RegExp(`^update "devices" set "${col}_game_id"`));
+      const m = dev[i].sql.match(guard)!;
+      expect(m).not.toBeNull();
+      const [id, g, n] = [m[1], m[2], m[3]].map((k) => dev[i].params[Number(k) - 1]);
+      expect([id, g, n]).toEqual(['s1', 'G', 2]);
+    }
   });
 
   it('batch order: disks, devices, target, collection_games, games; the games delete is guarded', async () => {

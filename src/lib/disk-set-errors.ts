@@ -9,7 +9,7 @@ export function addErrorText(code: unknown): string | undefined {
     case 'nothing_to_add': return 'Nothing was picked.';
     case 'not_found': return 'A title or disk is no longer in your library.';
     case 'stale_order': return 'The set changed meanwhile; try again.';
-    case 'invalid_body': return 'The name must be 1 to 80 characters.';
+    case 'invalid_body': return 'The request was not accepted — check the name and the disks picked.';
     case 'invalid_json': return 'The request was malformed; try again.';
     default: return typeof code === 'string' ? code : undefined;
   }
