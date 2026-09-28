@@ -5,7 +5,17 @@ import { isDefaultDeviceName } from '@/lib/device-name';
 // handed to a client component. The import is erased at compile time.
 import type { LiveStateRow } from '@/lib/live-state';
 // Type-only, for the same reason: drive-chips.ts is handed to a client component.
-import type { NextInfo } from '@/lib/next-disk';
+import type { NextInfo, PreloadLine } from '@/lib/next-disk';
+
+/** The preload line's words (nextInfo's PreloadLine) -- one place, so the
+ *  drive chip and the device card can never word a state differently. Here
+ *  rather than in next-disk.ts, which reads the database and must stay out of
+ *  the client bundle. */
+export function preloadText(diskNo: number, preload: PreloadLine): string {
+  return preload === 'ready' ? `Disk ${diskNo} ready (instant swap)`
+    : preload === 'loading' ? `Disk ${diskNo} loading…`
+    : `Disk ${diskNo} not preloaded yet`;
+}
 
 /**
  * What a drive chip in the header says about one board (HANDOFF §4 backlog,

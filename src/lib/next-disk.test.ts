@@ -67,10 +67,18 @@ describe('nextInfo', () => {
   });
   it('reports ready only when the preloaded sha is the next disk', () => {
     expect(nextInfo(r, b.sha256, 'ready')).toEqual({ diskNo: 2, diskCount: 2, wraps: false, preload: 'ready' });
-    expect(nextInfo(r, a.sha256, 'ready')?.preload).toBe('loading');
-    expect(nextInfo(r, null, 'none')?.preload).toBe('loading');
+  });
+  it('reports loading only when the board says it is loading', () => {
     expect(nextInfo(r, b.sha256, 'loading')?.preload).toBe('loading');
   });
+  it('reports waiting -- never loading -- for nothing preloaded or a stale ready record', () => {
+    // 'none' and a ready record of a disk no longer next used to read
+    // "loading...", which could stay false forever.
+    expect(nextInfo(r, null, 'none')?.preload).toBe('waiting');
+    expect(nextInfo(r, a.sha256, 'ready')?.preload).toBe('waiting');
+    expect(nextInfo(r, null, 'something-new')?.preload).toBe('waiting');
+  });
+
   it('says nothing about preloading for a board too old to report', () => {
     expect(nextInfo(r, null, null)?.preload).toBeNull();
   });

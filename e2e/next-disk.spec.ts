@@ -76,7 +76,7 @@ test('the drive menu offers Next disk and it advances, then wraps', async ({ pag
   await expect(page.getByTestId(`drive-next-${deviceId}`)).toHaveText('Next disk: Disk 1 of 2 (wraps)');
 });
 
-test('the preload line shows both states', async ({ page, request }) => {
+test('the preload line shows every state', async ({ page, request }) => {
   const { orgId } = await signUpFresh(page);
   const { deviceId, token } = await pairDevice(page, request);
   const tag = runTag();
@@ -98,6 +98,15 @@ test('the preload line shows both states', async ({ page, request }) => {
   // The board keeps reporting the same mounted disk throughout -- only
   // `preload` changes -- so the chip stays converged and the Next item stays
   // on screen while the preload line changes under it.
+  // A 1.6.0+ board with nothing preloaded: "not preloaded yet", never a
+  // "loading" that might stay false forever (final review m7).
+  expect((await request.post('/api/device/status', {
+    headers: authHeader(token),
+    data: { mountedSha256: s1, mountedDiskId: disk1, preload: null },
+  })).status()).toBe(204);
+  await expect(preload).toHaveAttribute('data-preload', 'waiting', LIVE);
+  await expect(preload).toHaveText('Disk 2 not preloaded yet');
+
   expect((await request.post('/api/device/status', {
     headers: authHeader(token),
     data: { mountedSha256: s1, mountedDiskId: disk1, preload: { sha256: s2, state: 'loading' } },
@@ -204,8 +213,11 @@ test('a Next-card write button appears, arms the board, Cancel disarms, and an o
     const s1 = sha(`${tag}-1`);
     const { diskId } = await seedDisk(orgId, { title: `Next Write Card ${tag}`, diskNo: 1, sha256: s1 });
 
+    // `preload: null` is what a 1.6.0+ board reports with nothing preloaded;
+    // only such a board can write a Next-disk card (an older one never
+    // reports the field, and gets no button -- final review I2).
     expect((await request.post('/api/device/status', {
-      headers: authHeader(token), data: { mountedSha256: null, nfcReader: 'present' },
+      headers: authHeader(token), data: { mountedSha256: null, nfcReader: 'present', preload: null },
     })).status()).toBe(204);
 
     await page.goto('/devices');

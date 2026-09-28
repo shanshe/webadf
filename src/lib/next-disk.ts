@@ -103,12 +103,26 @@ export async function readNextForPoll(deviceId: string, orgId: string): Promise<
   return r?.kind === 'disk' ? { diskId: r.disk.id, sha256: r.disk.sha256, diskNo: r.disk.diskNo } : null;
 }
 
-export type NextInfo = { diskNo: number; diskCount: number; wraps: boolean; preload: 'ready' | 'loading' | null };
+/**
+ * The preload line's three states, and null for none at all:
+ *  - 'ready': the board verified THIS next disk in its idle slot;
+ *  - 'loading': the board says a preload is in progress;
+ *  - 'waiting': anything else a 1.6.0+ board reports -- nothing preloaded
+ *    ('none'), or a ready record of a disk that is no longer next. "Loading"
+ *    there would be false, possibly forever (a gate that never opens, a
+ *    blocked digest), so it says only what is true: not preloaded yet;
+ *  - null: a board too old to report `preload` -- the line is hidden.
+ */
+export type PreloadLine = 'ready' | 'loading' | 'waiting';
+
+export type NextInfo = { diskNo: number; diskCount: number; wraps: boolean; preload: PreloadLine | null };
 
 /** What the chip and the card show (plan R3). */
 export function nextInfo(r: NextResult | undefined, preloadSha256: string | null, preloadState: string | null): NextInfo | null {
   if (!r || r.kind !== 'disk') return null;
-  const preload = preloadState === null ? null
-    : preloadState === 'ready' && preloadSha256 === r.disk.sha256 ? 'ready' : 'loading';
+  const preload: PreloadLine | null = preloadState === null ? null
+    : preloadState === 'ready' && preloadSha256 === r.disk.sha256 ? 'ready'
+    : preloadState === 'loading' ? 'loading'
+    : 'waiting';
   return { diskNo: r.disk.diskNo, diskCount: r.diskCount, wraps: r.wraps, preload };
 }

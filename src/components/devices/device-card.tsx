@@ -3,6 +3,7 @@ import { firmwareLabel, updateLabel, type FirmwareState } from '@/lib/firmware-s
 import { isDefaultDeviceName } from '@/lib/device-name';
 import type { DeviceListItem } from '@/lib/queries';
 import type { NextInfo } from '@/lib/next-disk';
+import { preloadText } from '@/lib/drive-chips';
 import { EjectButton } from './eject-button';
 import { NextDiskButton } from './next-disk-button';
 import { DeviceAlias } from './device-alias';
@@ -166,10 +167,12 @@ export function DeviceCard(
           {bigText}
         </span>
         <span className="text-[12px]" style={{ color: 'var(--muted)' }}>{subText}</span>
-        {next?.preload && (
+        {/* Gated like the Next button below: the line is about the disk
+            in the drive, which only a converged board has. */}
+        {next?.preload && state === 'converged' && (
           <span className="text-[11px]" style={{ color: 'var(--muted)' }} data-testid={`device-preload-${device.id}`}
                 data-preload={next.preload}>
-            {next.preload === 'ready' ? `Disk ${next.diskNo} ready (instant swap)` : `Disk ${next.diskNo} loading…`}
+            {preloadText(next.diskNo, next.preload)}
           </span>
         )}
       </div>

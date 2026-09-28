@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Link } from '@/components/shell/link';
 import { requestEject, requestNextDisk, requestWriteProtect } from '@/components/devices/device-actions';
-import { chipSlots, diskText, protectTag, splitChips, type DriveChip } from '@/lib/drive-chips';
+import { chipSlots, diskText, preloadText, protectTag, splitChips, type DriveChip } from '@/lib/drive-chips';
 
 /**
  * Every paired wifi-floppy as a small chip in the header, each opening a menu
@@ -332,13 +332,13 @@ function DriveEntry({ chip }: { chip: DriveChip }) {
               Next disk: Disk {chip.next.diskNo} of {chip.next.diskCount}{chip.next.wraps ? ' (wraps)' : ''}
             </span>
           </DropdownMenuItem>
+          {/* A plain div, not a DropdownMenuLabel: a second group label
+              would rename the drive's menu group for screen readers. */}
           {chip.next.preload && (
-            <DropdownMenuLabel className="px-2 pb-1 text-[11px]" style={{ color: 'var(--muted)' }}
-                               data-testid={`drive-preload-${chip.id}`} data-preload={chip.next.preload}>
-              {chip.next.preload === 'ready'
-                ? `Disk ${chip.next.diskNo} ready (instant swap)`
-                : `Disk ${chip.next.diskNo} loading…`}
-            </DropdownMenuLabel>
+            <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--muted)' }}
+                 data-testid={`drive-preload-${chip.id}`} data-preload={chip.next.preload}>
+              {preloadText(chip.next.diskNo, chip.next.preload)}
+            </div>
           )}
         </>
       )}
