@@ -6,6 +6,7 @@ import { resolveFrom, libraryTrail } from '@/lib/trail';
 import { mountChoices } from '@/lib/mount-choice';
 import { PageHeader } from '@/components/shell/page-header';
 import { DiskRow } from '@/components/games/disk-row';
+import { DiskSetSection } from '@/components/games/disk-set-section';
 import { GameFacts } from '@/components/games/game-facts';
 import { EditDetails } from '@/components/games/edit-details';
 import { DemozooPanel } from '@/components/games/demozoo-panel';
@@ -57,7 +58,17 @@ export default async function GamePage(props: PageProps<'/games/[id]'>) {
       <DemozooPanel game={game} />
       <GameFacts game={game} />
       <div className="flex flex-col gap-3 px-4 pb-10 sm:px-7">
-        {game.disks.map((disk) => (
+        {game.disks.length >= 2 ? (
+          // A disk set: the same rows, under a heading with Add disks… and
+          // Reorder, each row gaining a ⋯ menu. A client component, so the
+          // mount choices are computed here and handed over as data.
+          <DiskSetSection
+            gameId={game.id} from={from} fobDevices={readers}
+            entries={game.disks.map((disk) => ({
+              disk, choices: mountChoices(devices, disk.id, disk.sha256, now),
+            }))}
+          />
+        ) : game.disks.map((disk) => (
           /*
             Per disk, not once for the page: whether a device offers "Mount
             here" or "Eject" is a fact about THIS disk and that device, so one

@@ -11,8 +11,9 @@ import { fromQuery } from '@/lib/trail';
 import { FobButton, type FobDevice } from '@/components/nfc/fob-button';
 import { HdTag } from '@/components/disks/hd-tag';
 import { isHdAdf } from '@/lib/disk-format';
+import { DiskSetMenu, type DiskSetControls } from './disk-set-menu';
 
-export function DiskRow({ disk, choices, from, fobDevices = [] }: {
+export function DiskRow({ disk, choices, from, fobDevices = [], setControls }: {
   disk: GameDetailDisk;
   /** Per-device verdict for THIS disk -- see lib/mount-choice.ts. */
   choices: MountChoice[];
@@ -24,6 +25,11 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
   from?: string;
   /** Boards with a reader present; the fob button is drawn only when there is one. */
   fobDevices?: FobDevice[];
+  /**
+   * Present only when the row is one of a disk set (two or more disks):
+   * draws the ⋯ menu with Move up / Move down / Move out of set.
+   */
+  setControls?: DiskSetControls;
 }) {
   // Derived from the SAME choices the mount picker uses. It used to come from
   // a separate sha256-keyed map in the page, which could name a different
@@ -166,6 +172,13 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
           // into a 404.
           redirectWhenGone={libraryHref(from)}
         />
+        {/* Set controls, after Delete: they rearrange the title rather than
+            act on the disk, and only exist on a title with two or more. */}
+        {setControls && (
+          <DiskSetMenu diskId={disk.id}
+                       name={disk.tosecName ?? disk.sourceFilename ?? `Disk ${disk.diskNo}`}
+                       controls={setControls} />
+        )}
       </div>
     </div>
   );
