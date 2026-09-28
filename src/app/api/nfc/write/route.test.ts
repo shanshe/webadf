@@ -18,12 +18,14 @@ type WriteRow = {
 const listNfcDevices = vi.fn<(orgId: string) => Promise<Dev[]>>();
 const readDiskForNfc = vi.fn<(orgId: string, diskId: string) => Promise<{ title: string; diskNo: number } | null>>();
 const requestNfcWrite = vi.fn<(orgId: string, deviceId: string, diskId: string, now: Date) => Promise<number | null>>();
+const requestNfcNextWrite = vi.fn<(orgId: string, deviceId: string, now: Date) => Promise<number | null>>();
 const readNfcWriteState = vi.fn<(orgId: string, deviceId: string) => Promise<WriteRow | null>>();
 const cancelNfcWrite = vi.fn<(deviceId: string, seq: number) => Promise<void>>(async () => {});
 vi.mock('@/lib/nfc/store', () => ({
   listNfcDevices: (o: string) => listNfcDevices(o),
   readDiskForNfc: (o: string, d: string) => readDiskForNfc(o, d),
   requestNfcWrite: (o: string, dev: string, d: string, n: Date) => requestNfcWrite(o, dev, d, n),
+  requestNfcNextWrite: (o: string, dev: string, n: Date) => requestNfcNextWrite(o, dev, n),
   readNfcWriteState: (o: string, dev: string) => readNfcWriteState(o, dev),
   cancelNfcWrite: (dev: string, s: number) => cancelNfcWrite(dev, s),
 }));
@@ -44,6 +46,7 @@ beforeEach(() => {
   listNfcDevices.mockResolvedValue([reader('dev-1', 'Amiga 500')]);
   readDiskForNfc.mockResolvedValue({ title: 'Turrican II', diskNo: 1 });
   requestNfcWrite.mockResolvedValue(7);
+  requestNfcNextWrite.mockResolvedValue(7);
   readNfcWriteState.mockResolvedValue(row());
 });
 
@@ -55,6 +58,14 @@ describe('POST /api/nfc/write', () => {
     expect(await res.json()).toEqual({ seq: 7, deviceId: 'dev-1', deviceName: 'Amiga 500', title: 'Turrican II' });
     expect(listNfcDevices).toHaveBeenCalledWith(ORG);
     expect(requestNfcWrite).toHaveBeenCalledWith(ORG, 'dev-1', DISK, expect.any(Date));
+  });
+  it('arms the Next-disk card on the only board with a reader', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(req('POST', { kind: 'next' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ seq: 7, deviceId: 'dev-1', deviceName: 'Amiga 500', title: 'Next-disk card' });
+    expect(requestNfcNextWrite).toHaveBeenCalledWith(ORG, 'dev-1', expect.any(Date));
+    expect(requestNfcWrite).not.toHaveBeenCalled();
   });
   it('arms the named board when several have readers', async () => {
     listNfcDevices.mockResolvedValue([reader('dev-1'), reader('dev-2', 'Kitchen')]);

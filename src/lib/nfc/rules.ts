@@ -31,14 +31,19 @@ export function decideTap(
  * does not keep releasing forever.
  */
 export function nfcWriteForPoll(
-  row: { nfcWriteSeq: number; nfcWriteDiskId: string | null; nfcWriteExpiresAt: Date | null; nfcWriteResultSeq: number | null },
+  row: {
+    nfcWriteSeq: number; nfcWriteDiskId: string | null; nfcWriteKind: string;
+    nfcWriteExpiresAt: Date | null; nfcWriteResultSeq: number | null;
+  },
   ack: number, now: Date,
-): { seq: number; diskId: string | null } | null {
+): { seq: number; diskId: string | null; kind: 'disk' | 'next' } | null {
   if (row.nfcWriteSeq <= ack) return null;
-  const live = row.nfcWriteDiskId !== null
+  const next = row.nfcWriteKind === 'next';
+  const live = (next || row.nfcWriteDiskId !== null)
     && row.nfcWriteExpiresAt !== null && now.getTime() <= row.nfcWriteExpiresAt.getTime()
     && row.nfcWriteResultSeq !== row.nfcWriteSeq;
-  return { seq: row.nfcWriteSeq, diskId: live ? row.nfcWriteDiskId : null };
+  if (!live) return { seq: row.nfcWriteSeq, diskId: null, kind: 'disk' };
+  return next ? { seq: row.nfcWriteSeq, diskId: null, kind: 'next' } : { seq: row.nfcWriteSeq, diskId: row.nfcWriteDiskId, kind: 'disk' };
 }
 
 /** Only the first answer to the CURRENT request counts. */

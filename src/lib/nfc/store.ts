@@ -85,7 +85,7 @@ export async function tapNext(
  */
 export async function readNfcWriteRow(deviceId: string) {
   const [r] = await getDb().select({
-    nfcWriteSeq: devices.nfcWriteSeq, nfcWriteDiskId: devices.nfcWriteDiskId,
+    nfcWriteSeq: devices.nfcWriteSeq, nfcWriteDiskId: devices.nfcWriteDiskId, nfcWriteKind: devices.nfcWriteKind,
     nfcWriteExpiresAt: devices.nfcWriteExpiresAt, nfcWriteResultSeq: devices.nfcWriteResultSeq,
     title: games.title,
   }).from(devices)
@@ -130,7 +130,21 @@ export async function requestNfcWrite(
     .where(and(eq(disks.id, diskId), eq(disks.orgId, orgId))).limit(1);
   if (!disk) return null;
   const [r] = await db.update(devices).set({
-    nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: diskId,
+    nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: diskId, nfcWriteKind: 'disk',
+    nfcWriteExpiresAt: new Date(now.getTime() + NFC_WRITE_TTL_MS),
+    nfcWriteResultSeq: null, nfcWriteResult: null, nfcWriteResultUid: null,
+  }).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).returning({ seq: devices.nfcWriteSeq });
+  return r?.seq ?? null;
+}
+
+/**
+ * Arms the universal Next-disk card (multi-disk spec §3.4): no disk, kind
+ * 'next'. The board picks the disk itself (readNextForDevices) when it taps
+ * the card, the same as a fob tap; the write path only puts the card in play.
+ */
+export async function requestNfcNextWrite(orgId: string, deviceId: string, now: Date): Promise<number | null> {
+  const [r] = await getDb().update(devices).set({
+    nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: null, nfcWriteKind: 'next',
     nfcWriteExpiresAt: new Date(now.getTime() + NFC_WRITE_TTL_MS),
     nfcWriteResultSeq: null, nfcWriteResult: null, nfcWriteResultUid: null,
   }).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).returning({ seq: devices.nfcWriteSeq });
@@ -138,9 +152,11 @@ export async function requestNfcWrite(
 }
 
 /** Bumps the cursor and clears the disk, but only if `seq` is still the
- *  current request -- a stale cancel must not clobber a newer one. */
+ *  current request -- a stale cancel must not clobber a newer one. Resets
+ *  the kind to 'disk' too, so a disarm this produces (nfcWriteForPoll) is
+ *  never mistaken for a live Next-disk request. */
 export async function cancelNfcWrite(deviceId: string, seq: number): Promise<void> {
-  await getDb().update(devices).set({ nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: null })
+  await getDb().update(devices).set({ nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: null, nfcWriteKind: 'disk' })
     .where(and(eq(devices.id, deviceId), eq(devices.nfcWriteSeq, seq)));
 }
 
