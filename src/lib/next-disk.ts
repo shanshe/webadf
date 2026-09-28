@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { disks } from '@/db/schema/catalog';
+import { devices } from '@/db/schema/devices';
 import { isHdAdf, isServable } from '@/lib/disk-format';
 import { LEGACY_BOARD_TRACK_MAX_BYTES } from '@/lib/adfmfm/constants';
 
@@ -84,6 +85,22 @@ export async function readNextForDevices(orgId: string, devs: NextDeviceInput[])
     out.set(d.id, g ? nextDisk(rows.filter((r) => r.gameId === g), c, d) : { kind: 'nothing_mounted' });
   }
   return out;
+}
+
+/**
+ * The minimal shape the poll route carries as `next` (multi-disk plan R1):
+ * just enough for the board to preload -- a desired-shaped object would not
+ * fit the byte budget (device-limits.test.ts). Resolved on delivery only,
+ * never per tick -- see the poll route's comment where this is called.
+ */
+export async function readNextForPoll(deviceId: string, orgId: string): Promise<{ diskId: string; sha256: string; diskNo: number } | null> {
+  const [dev] = await getDb().select({
+    id: devices.id, desiredDiskId: devices.desiredDiskId, mountedDiskId: devices.mountedDiskId,
+    trackMaxBytes: devices.trackMaxBytes, playsHd: devices.playsHd,
+  }).from(devices).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).limit(1);
+  if (!dev) return null;
+  const r = (await readNextForDevices(orgId, [dev])).get(dev.id);
+  return r?.kind === 'disk' ? { diskId: r.disk.id, sha256: r.disk.sha256, diskNo: r.disk.diskNo } : null;
 }
 
 export type NextInfo = { diskNo: number; diskCount: number; wraps: boolean; preload: 'ready' | 'loading' | null };

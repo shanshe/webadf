@@ -40,6 +40,11 @@ type NfcRow = {
 const readNfcWriteRow = vi.fn<() => Promise<NfcRow | null>>();
 vi.mock('@/lib/nfc/store', () => ({ readNfcWriteRow: () => readNfcWriteRow() }));
 
+const readNextForPoll = vi.fn<(deviceId: string, orgId: string) => Promise<{ diskId: string; sha256: string; diskNo: number } | null>>();
+vi.mock('@/lib/next-disk', () => ({
+  readNextForPoll: (deviceId: string, orgId: string) => readNextForPoll(deviceId, orgId),
+}));
+
 const get = (qs = '') => new Request(`http://test/api/device/poll${qs}`);
 
 const baseTick = (over: Partial<PollTick> = {}): PollTick => ({
@@ -51,6 +56,7 @@ beforeEach(() => {
   requireDevice.mockResolvedValue({ deviceId: 'dev-1', orgId: 'org-1' });
   readDesired.mockResolvedValue({ version: 1, desired: null });
   readFirmwareInstruction.mockResolvedValue(null);
+  readNextForPoll.mockResolvedValue(null);
 });
 
 describe('GET /api/device/poll -- nfcAck and nfcWrite', () => {
@@ -160,5 +166,61 @@ describe('GET /api/device/poll -- nfcAck and nfcWrite', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+const desiredDisk = {
+  sha256: 'a'.repeat(64), diskId: 'd1', gameId: 'g1', game: 'Game',
+  diskNo: 1, diskCount: 2, label: 'L', writeProtected: false,
+};
+
+// Every case here wakes on the FIRST tick via firmwareMoved (instructionVersion
+// ahead of instructionAck), same technique as the nfcWrite tests above -- `next`
+// does not depend on nfc at all, so there is no need to touch nfcAck/nfcMoved.
+describe('GET /api/device/poll -- next (multi-disk plan R1)', () => {
+  const wake = () => baseTick({ instructionVersion: 1, instructionAck: 0 });
+
+  it('carries next (minimal shape) when desired is present and a next disk exists', async () => {
+    readPollTick.mockResolvedValue(wake());
+    readDesired.mockResolvedValue({ version: 1, desired: desiredDisk });
+    readNextForPoll.mockResolvedValue({ diskId: 'd2', sha256: 'b'.repeat(64), diskNo: 2 });
+    const { GET } = await import('./route');
+    const res = await GET(get('?since=1'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.next).toEqual({ diskId: 'd2', sha256: 'b'.repeat(64), diskNo: 2 });
+  });
+
+  it('carries next: null when desired is present but there is no next disk (e.g. a single-disk title)', async () => {
+    readPollTick.mockResolvedValue(wake());
+    readDesired.mockResolvedValue({ version: 1, desired: desiredDisk });
+    readNextForPoll.mockResolvedValue(null);
+    const { GET } = await import('./route');
+    const res = await GET(get('?since=1'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty('next', null);
+  });
+
+  it('omits next entirely (not even null) when nothing is desired, and never calls readNextForPoll', async () => {
+    readPollTick.mockResolvedValue(wake());
+    readDesired.mockResolvedValue({ version: 1, desired: null });
+    const { GET } = await import('./route');
+    const res = await GET(get('?since=1'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).not.toHaveProperty('next');
+    expect(readNextForPoll).not.toHaveBeenCalled();
+  });
+
+  it('places next after desired in the JSON body', async () => {
+    readPollTick.mockResolvedValue(wake());
+    readDesired.mockResolvedValue({ version: 1, desired: desiredDisk });
+    readNextForPoll.mockResolvedValue({ diskId: 'd2', sha256: 'b'.repeat(64), diskNo: 2 });
+    const { GET } = await import('./route');
+    const res = await GET(get('?since=1'));
+    const body = await res.json();
+    const text = JSON.stringify(body);
+    expect(text.indexOf('"next"')).toBeGreaterThan(text.indexOf('"desired"'));
   });
 });

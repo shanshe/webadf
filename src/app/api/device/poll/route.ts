@@ -4,6 +4,7 @@ import {
 } from '@/lib/mount';
 import { readNfcWriteRow } from '@/lib/nfc/store';
 import { nfcWriteForPoll } from '@/lib/nfc/rules';
+import { readNextForPoll } from '@/lib/next-disk';
 import { DC_TITLE_MAX } from '@/lib/device-limits';
 
 // Holds up to 25 s. maxDuration covers the hold plus slack; the platform
@@ -116,6 +117,9 @@ export async function GET(request: Request) {
     if (version > clampedFrom || clampedFrom !== from || firmwareMoved || nfcMoved) {
       const state = await readDesired(device.deviceId);
       if (!state) return notFound();
+      // Multi-disk spec §3.3 / plan R1: the disk the board should preload.
+      // Computed on delivery only (never per tick), and only with a disk desired.
+      const next = state.desired ? await readNextForPoll(device.deviceId, device.orgId) : undefined;
       // Resolved only here, and only when the device has not acknowledged it.
       // Sending it again to a board that already answered is what re-issued
       // an instruction to a board mid-flash and re-tried an update that had
@@ -160,6 +164,7 @@ export async function GET(request: Request) {
         {
           version: state.version,
           desired: state.desired,
+          ...(next !== undefined ? { next } : {}),
           instructionVersion: tick.instructionVersion,
           ...(nfc
             ? {
@@ -169,6 +174,7 @@ export async function GET(request: Request) {
                   title: nfc.diskId
                     ? (nfcRow!.title !== null ? nfcRow!.title.slice(0, DC_TITLE_MAX) : null)
                     : null,
+                  ...(nfc.kind === 'next' ? { kind: 'next' } : {}),
                 },
               }
             : {}),
