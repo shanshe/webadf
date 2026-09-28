@@ -51,6 +51,9 @@ const statusBody = z.object({
   // here -- rather than a board that predates this field reading as either
   // state.
   nfcReader: z.enum(['present', 'absent']).optional().catch(undefined),
+  // Multi-disk spec §3.5: what the idle slot holds. Telemetry -- dropped, never rejected.
+  preload: z.object({ sha256: z.string().regex(SHA256_RE), state: z.enum(['loading', 'ready']) })
+    .nullable().optional().catch(undefined),
   error: z.string().max(500).nullable().optional(),
   psramFree: z.number().int().nonnegative().nullable().optional(),
   // Real WiFi RSSI ranges roughly -100..0 dBm, but a marginal link can report
@@ -119,6 +122,7 @@ export async function POST(request: Request) {
     trackMaxBytes: parsed.data.trackMaxBytes,
     playsHd: parsed.data.playsHd,
     nfcReader: parsed.data.nfcReader,
+    preload: parsed.data.preload,
   });
 
   return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } });
