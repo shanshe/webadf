@@ -12,11 +12,27 @@ const char *nfc_ui_tap_line(dc_tap_outcome_t o, const char *title, char *buf, in
     case DC_TAP_NOT_FOUND: fixed = "Tag: not in library";     break;
     case DC_TAP_TOO_LONG:  fixed = "Tag: tracks too long";    break;
     case DC_TAP_IGNORED:   fixed = "Tag: too fast";           break;
+    case DC_TAP_SINGLE:    fixed = "Tag: single disk";        break;
+    case DC_TAP_NO_DISK:   fixed = "Tag: no disk";            break;
     case DC_TAP_FAILED:
     default:               fixed = "Tag: offline";            break;
     }
     snprintf(buf, (size_t)cap, "%s", fixed);
     return buf;
+}
+
+const char *nfc_ui_next_line(dc_tap_outcome_t o, uint32_t disk_no, uint32_t disk_count, bool saving,
+                             char *buf, int cap) {
+    switch (o) {
+    case DC_TAP_MOUNTING:
+        if (saving) snprintf(buf, (size_t)cap, "Saving, then disk %lu", (unsigned long)disk_no);
+        else snprintf(buf, (size_t)cap, "Next: disk %lu of %lu", (unsigned long)disk_no,
+                      (unsigned long)disk_count);
+        return buf;
+    case DC_TAP_SINGLE:  snprintf(buf, (size_t)cap, "Next: single disk"); return buf;
+    case DC_TAP_NO_DISK: snprintf(buf, (size_t)cap, "Next: no disk");     return buf;
+    default:             return nfc_ui_tap_line(o, NULL, buf, cap);
+    }
 }
 
 const char *nfc_ui_event_line(const nfc_event_t *ev) {

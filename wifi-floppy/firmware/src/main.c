@@ -676,7 +676,12 @@ static void nfc_core0_step(nfc_armed_t *armed, bool short_pass) {
     const uint32_t now = clock_ms();
     nfc_wreq_t req;
     if (nfc_wreq_box_take(&g_nfc_wreq, &wreq_last, &req)) {
-        if (req.disk_id[0]) {
+        if (req.next) {
+            // Multi-disk: the Next-disk card. No disk id, and not a disarm.
+            nfc_arm_write_next(&g_nfc, req.seq);
+            nfc_armed_set(armed, req.seq, "Next-disk card", now);
+            wf_logf(WF_INFO, "nfc: write %lu armed (Next-disk card)", (unsigned long)req.seq);
+        } else if (req.disk_id[0]) {
             nfc_arm_write(&g_nfc, req.seq, req.disk_id);
             nfc_armed_set(armed, req.seq, req.title, now);
             wf_logf(WF_INFO, "nfc: write %lu armed (%s)", (unsigned long)req.seq, req.disk_id);
@@ -720,6 +725,37 @@ static void nfc_core0_step(nfc_armed_t *armed, bool short_pass) {
     }
 }
 
+/** core1: writes on the board the server has not yet got -- dirty tracks on
+ *  the mounted disk, or an uploader with any session at all (working, open, or
+ *  parked). Multi-disk spec §4.3's "no dirty or unsent tracks": the preload
+ *  gate refuses on it, and a Next-disk tap shows "Saving, then disk N" on it,
+ *  so the two can never disagree. up_has_work() first: it runs up_refresh(),
+ *  which unparks on a mount change, before `parked` is read. */
+static bool writes_outstanding(uploader_t *up) {
+    const bool work = up_has_work(up);
+    return work || up_pending(up) || up->parked ||
+           psram_image_dirty_count(psram_active_slot()) > 0;
+}
+
+/** core1: the multi-disk preload gate (dc_set_preload_gate). The idle slot is
+ *  used only when nothing else could want it or the network: no outstanding
+ *  writes (above), no held swap (up_holds -- the very fn dc_set_hold was
+ *  given), and no firmware update between being offered and applied (QUEUED,
+ *  DOWNLOADING, STAGED, APPLYING, REBOOTING; FAILED is terminal and IDLE is
+ *  nothing). Asked by dc_preload_step, between requests, on core1 only. */
+typedef struct {
+    uploader_t  *up;
+    const fwu_t *fwu;
+} preload_gate_t;
+
+static bool preload_ok(void *ctx) {
+    const preload_gate_t *g = (const preload_gate_t *)ctx;
+    if (writes_outstanding(g->up)) return false;
+    if (up_holds(g->up)) return false;
+    if (g->fwu->phase != FWU_IDLE && g->fwu->phase != FWU_FAILED) return false;
+    return true;
+}
+
 /** core1, between requests: a write's result first (it is held as a report
  *  owed the server, and shown), then one tap or other reader event, then the
  *  owed report -- last, and not at all on a pass that had a tap, so a send
@@ -728,7 +764,7 @@ static void nfc_core0_step(nfc_armed_t *armed, bool short_pass) {
  *  (any 2xx), retried on its own schedule (2 s doubling to 60 s -- core1's
  *  pass can turn every ~50 ms while the uploader waits, so "every pass" is
  *  not a rate); a newer write request makes it moot (nfc_core1_write_request). */
-static void nfc_core1_event(device_client_t *c) {
+static void nfc_core1_event(device_client_t *c, uploader_t *up) {
     static uint32_t warned_seq;                 // log a failed report once per seq
     const bool online = c->state != DC_UNPROVISIONED && c->state != DC_HALTED;
     char uid[NFC_UI_UID_HEX_BYTES];
@@ -752,6 +788,17 @@ static void nfc_core1_event(device_client_t *c) {
                                               : DC_TAP_FAILED;
             show = nfc_ui_tap_line(o, title, line, sizeof line);
             wf_logf(WF_INFO, "nfc: tap %s -> %s", ev.disk_id, show);
+        } else if (ev.kind == NFC_EV_TAG_NEXT) {
+            // Multi-disk: the Next-disk card. The swap it asks for waits
+            // behind unsent writes (dc_set_hold), and the glass says so --
+            // judged by the preload gate's own predicate.
+            uint32_t no = 0, count = 0;
+            static char title[DC_TITLE_MAX + 1];    // static: core1's stack is measured tight
+            const dc_tap_outcome_t o = online ? dc_tap_next(c, &no, &count, title, sizeof title)
+                                              : DC_TAP_FAILED;
+            const bool saving = writes_outstanding(up);
+            show = nfc_ui_next_line(o, no, count, saving, line, sizeof line);
+            wf_logf(WF_INFO, "nfc: next -> %s", show);
         } else {
             show = nfc_ui_event_line(&ev);
             if (show) wf_logf(WF_INFO, "nfc: %s", show);
@@ -780,6 +827,7 @@ static void nfc_core1_write_request(device_client_t *c) {
     memset(&req, 0, sizeof req);
     req.seq = c->nfc_write_seq;
     snprintf(req.disk_id, sizeof req.disk_id, "%s", c->nfc_write_disk_id);
+    req.next = c->nfc_write_next;
     // A newer request (or its withdrawal) makes an unreported older result
     // moot: the server would acknowledge and ignore it as stale.
     nfc_report_supersede(&g_nfc_report, req.seq);
@@ -1385,6 +1433,12 @@ static void core1_main(void) {
         static fwu_ops_t fwu_ops;
         static dc_fw_report_t fw_report;          // static: dc_set_fw_report keeps the pointer
         static bool fw_booted = false;
+        // Multi-disk preload gate (spec §4.3). Set on every entry: dc_init
+        // above zeroes `c`, and a NULL gate means never preload.
+        static preload_gate_t preload_gate;
+        preload_gate.up = &up;
+        preload_gate.fwu = &fwu;
+        dc_set_preload_gate(&c, preload_ok, &preload_gate);
         if (fw_booted) {
             // Re-entry after a DC_HALTED re-pair: a new token and a new
             // device row, so an instruction the old one received no longer
@@ -1488,7 +1542,7 @@ static void core1_main(void) {
             // Tap-to-mount, first: a tap that cut the last poll short goes out
             // now, ahead of anything else this pass sends. Between requests,
             // never inside one -- the uploader's included (dc_tap's rule).
-            nfc_core1_event(&c);
+            nfc_core1_event(&c, &up);
             {
                 const int r = g_nfc_reader;
                 if (r != nfc_reader_seen) {
@@ -1684,7 +1738,8 @@ static void core1_main(void) {
             // poll. Handed to core0, which owns the reader, and acked.
             if (c.nfc_write_new) {
                 wf_logf(WF_INFO, "nfc: write request %lu: %s", (unsigned long)c.nfc_write_seq,
-                        c.nfc_write_disk_id[0] ? c.nfc_write_disk_id : "withdrawn");
+                        c.nfc_write_next ? "Next-disk card"
+                        : c.nfc_write_disk_id[0] ? c.nfc_write_disk_id : "withdrawn");
                 nfc_core1_write_request(&c);
             }
             {
@@ -1697,8 +1752,15 @@ static void core1_main(void) {
                 // ack and the updater's last state must have LANDED before
                 // the flash write starts -- otherwise the server can still be
                 // re-sending an instruction the board is already acting on.
+                //
+                // Multi-disk spec §6: a preload in progress is not idle (a
+                // finished one is). dc_preload_step runs on this core and
+                // clears `loading` before it returns, so this reads false
+                // here today; it is the stated rule, kept so a preload that
+                // ever spans passes cannot start a flash write under it.
                 bool idle = c.mounted_sha256[0] == '\0' && psram_active_slot() == SLOT_NONE &&
-                            !up_has_work(&up) && !g_motor_on && !fw_report_owed;
+                            !up_has_work(&up) && !g_motor_on && !fw_report_owed &&
+                            !c.preload.loading;
                 if (fwu_step(&fwu, &fwu_ops, &fst, idle, clock_ms())) {
                     const char *st = fwu_state_text(&fwu);
                     const char *er = fwu_error_text(&fwu);
@@ -1716,6 +1778,25 @@ static void core1_main(void) {
                     dc_report_status(&c, psram_free_estimate(), wifi_rssi(), NULL, WF_FIRMWARE_VERSION);
                     for (;;) sleep_ms(1000);
                 }
+            }
+
+            // Multi-disk preload (spec §4.3): at most once per dc_step, and
+            // only after one that really polled and came back idle -- not cut
+            // short by a tap (that `continue`d above), not skipped for the
+            // uploader or the updater (`polled`), and not on a report-retry
+            // pass (which never polls). Nothing NFC may be waiting either: a
+            // tap, a write result, a write request, or a write report owed --
+            // a preload is a whole-disk fetch, seconds long, and every one of
+            // those is answered first. The gate (preload_ok) refuses on
+            // unsent writes, a held swap and a firmware update. Its result
+            // replaces `s`, so the chain below treats a preload's DC_BACKOFF
+            // or DC_HALTED exactly as it does a poll's; a preload that did
+            // work owes the server a status report (its `preload` record).
+            bool preloaded = false;
+            if (polled && s == DC_IDLE_POLL && !c.nfc_write_new && !nfc_event_pending(NULL) &&
+                !g_nfc_report.owed) {
+                preloaded = dc_preload_step(&c);
+                if (preloaded) s = c.state;
             }
 
             // Item 1: the drive may only ever report a disk once an image is
@@ -1819,7 +1900,7 @@ static void core1_main(void) {
             // Not on a report_retry pass (M3): Item 0's report just failed,
             // and sending the same report again here would double it.
             if (!report_retry && s != DC_HALTED && (disk_changed || version_changed || fw_report_owed ||
-                                    nfc_report_owed ||
+                                    nfc_report_owed || preloaded ||
                                     (now - last_status_ms) >= DC_STATUS_PERIOD_MS)) {
                 if (dc_report_status(&c, psram_free_estimate(), wifi_rssi(), NULL, WF_FIRMWARE_VERSION)) {
                     last_status_ms = now;

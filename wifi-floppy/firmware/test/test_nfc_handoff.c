@@ -87,6 +87,14 @@ static void write_request_box(void) {
     nfc_wreq_box_put(&b, &r);
     CHECK(nfc_wreq_box_take(&b, &last, &out), "the disarm");
     CHECK(out.disk_id[0] == '\0', "empty id = disarm");
+    CHECK(!out.next, "a disarm is not a Next-disk card");
+    // Multi-disk: a Next-disk card has no disk id but is NOT a disarm.
+    memset(&r, 0, sizeof r);
+    r.seq = 14;
+    r.next = true;
+    nfc_wreq_box_put(&b, &r);
+    CHECK(nfc_wreq_box_take(&b, &last, &out), "the next-card request");
+    CHECK(out.next && out.disk_id[0] == '\0', "next survives the box");
 }
 
 // ---- WRITE_DONE has its own box ------------------------------------------------

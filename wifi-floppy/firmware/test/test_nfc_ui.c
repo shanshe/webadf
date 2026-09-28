@@ -282,7 +282,45 @@ static void only_its_own_write_done_ends_a_request(void) {
     CHECK(!a.armed, "its own WRITE_DONE ends it, failed or not");
 }
 
+// ---- the Next-disk card (multi-disk spec) -------------------------------------
+
+static void next_lines(void) {
+    char b[NFC_UI_LINE_BYTES];
+    CHECK(strcmp(nfc_ui_next_line(DC_TAP_MOUNTING, 2, 3, false, b, sizeof b), "Next: disk 2 of 3") == 0,
+          "a next tap names the disk and the set");
+    CHECK(strcmp(nfc_ui_next_line(DC_TAP_MOUNTING, 2, 3, true,  b, sizeof b), "Saving, then disk 2") == 0,
+          "a held swap says it is saving first");
+    CHECK(strcmp(nfc_ui_next_line(DC_TAP_SINGLE,   0, 0, false, b, sizeof b), "Next: single disk") == 0,
+          "a disk with no set");
+    CHECK(strcmp(nfc_ui_next_line(DC_TAP_NO_DISK,  0, 0, false, b, sizeof b), "Next: no disk") == 0,
+          "nothing in the drive");
+    CHECK(strcmp(nfc_ui_next_line(DC_TAP_IGNORED,  0, 0, false, b, sizeof b), "Tag: too fast") == 0,
+          "rate limit falls through to the tap line");
+    CHECK(strcmp(nfc_ui_next_line(DC_TAP_FAILED,   0, 0, false, b, sizeof b), "Tag: offline") == 0,
+          "offline falls through to the tap line");
+}
+
+// Rendered into a wide buffer so a line that only fits by clipping still fails.
+static void every_next_line_fits_the_detail_line(void) {
+    char b[64];
+    const char *s;
+    s = nfc_ui_next_line(DC_TAP_MOUNTING, 99, 99, false, b, sizeof b);
+    CHECK((int)strlen(s) <= DISP_DETAIL_MAX, "two-digit next line fits 21");
+    s = nfc_ui_next_line(DC_TAP_MOUNTING, 99, 99, true, b, sizeof b);
+    CHECK((int)strlen(s) <= DISP_DETAIL_MAX, "two-digit saving line fits 21");
+    s = nfc_ui_next_line(DC_TAP_SINGLE, 0, 0, false, b, sizeof b);
+    CHECK((int)strlen(s) <= DISP_DETAIL_MAX, "single line fits 21");
+    s = nfc_ui_next_line(DC_TAP_NO_DISK, 0, 0, false, b, sizeof b);
+    CHECK((int)strlen(s) <= DISP_DETAIL_MAX, "no-disk line fits 21");
+    CHECK(strcmp(nfc_ui_tap_line(DC_TAP_SINGLE, "", b, sizeof b), "Tag: single disk") == 0,
+          "tap_line names SINGLE explicitly");
+    CHECK(strcmp(nfc_ui_tap_line(DC_TAP_NO_DISK, "", b, sizeof b), "Tag: no disk") == 0,
+          "tap_line names NO_DISK explicitly");
+}
+
 int main(void) {
+    RUN(next_lines);
+    RUN(every_next_line_fits_the_detail_line);
     RUN(tap_lines_are_the_spec_table);
     RUN(a_mount_without_a_title_still_says_something);
     RUN(a_rate_limited_tap_says_so);
