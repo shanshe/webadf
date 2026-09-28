@@ -728,9 +728,10 @@ static void nfc_core0_step(nfc_armed_t *armed, bool short_pass) {
 /** core1: writes on the board the server has not yet got -- dirty tracks on
  *  the mounted disk, or an uploader with any session at all (working, open, or
  *  parked). Multi-disk spec §4.3's "no dirty or unsent tracks": the preload
- *  gate refuses on it, and a Next-disk tap shows "Saving, then disk N" on it,
- *  so the two can never disagree. up_has_work() first: it runs up_refresh(),
- *  which unparks on a mount change, before `parked` is read. */
+ *  gate refuses on it. Deliberately wider than the swap hold (up_holds), which
+ *  is what a Next-disk tap's "Saving, then disk N" follows instead.
+ *  up_has_work() first: it runs up_refresh(), which unparks on a mount change,
+ *  before `parked` is read. */
 static bool writes_outstanding(uploader_t *up) {
     const bool work = up_has_work(up);
     return work || up_pending(up) || up->parked ||
@@ -790,13 +791,15 @@ static void nfc_core1_event(device_client_t *c, uploader_t *up) {
             wf_logf(WF_INFO, "nfc: tap %s -> %s", ev.disk_id, show);
         } else if (ev.kind == NFC_EV_TAG_NEXT) {
             // Multi-disk: the Next-disk card. The swap it asks for waits
-            // behind unsent writes (dc_set_hold), and the glass says so --
-            // judged by the preload gate's own predicate.
+            // behind unsent writes exactly while the hold says so
+            // (dc_set_hold's up_holds), and the glass says "Saving" on that
+            // same predicate -- not the preload gate's wider one, which also
+            // counts a parked session whose tracks the swap will not wait for.
             uint32_t no = 0, count = 0;
             static char title[DC_TITLE_MAX + 1];    // static: core1's stack is measured tight
             const dc_tap_outcome_t o = online ? dc_tap_next(c, &no, &count, title, sizeof title)
                                               : DC_TAP_FAILED;
-            const bool saving = writes_outstanding(up);
+            const bool saving = up_holds(up);
             show = nfc_ui_next_line(o, no, count, saving, line, sizeof line);
             wf_logf(WF_INFO, "nfc: next -> %s", show);
         } else {
