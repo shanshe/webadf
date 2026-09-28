@@ -16,7 +16,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { drizzle as pgProxyDrizzle } from 'drizzle-orm/pg-proxy';
-import { blobs, disks, entitlements } from '@/db/schema/catalog';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
+import { blobs, disks, entitlements, games } from '@/db/schema/catalog';
 import { diskVersions } from '@/db/schema/disk-history';
 import { fixture } from '@/lib/hfe/__fixtures__/load';
 import { stableId } from '@/lib/ingest';
@@ -40,6 +42,11 @@ vi.mock('@/lib/storage', () => ({
 /** Rows each table answers with, one entry per select against it, in order. */
 let byTable: Map<unknown, unknown[][]>;
 const selectedFrom: unknown[] = [];
+/** Each select's WHERE, by table, kept as real drizzle SQL so it can be rendered. */
+const wheres: { table: unknown; where: SQL }[] = [];
+/** Every insert: its table and the rows it was given. */
+const inserts: { table: unknown; rows: Record<string, unknown>[] }[] = [];
+const updates: { table: unknown }[] = [];
 
 // db.delete is a REAL drizzle builder run through pg-proxy (never actually
 // executed -- the callback just records the rendered SQL), the same trick
@@ -56,15 +63,24 @@ function fakeDb() {
     let table: unknown;
     const chain = {
       from: (t: unknown) => { table = t; selectedFrom.push(t); return chain; },
-      where: () => {
+      where: (w: SQL) => {
+        wheres.push({ table, where: w });
         const rows = byTable.get(table)?.shift() ?? [];
         return Promise.resolve(rows);
       },
     };
     return chain;
   };
-  const insert = () => ({ values: () => ({ onConflictDoNothing: () => Promise.resolve(undefined) }) });
-  const update = () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) });
+  const insert = (table: unknown) => ({
+    values: (rows: Record<string, unknown>[]) => {
+      inserts.push({ table, rows });
+      return { onConflictDoNothing: () => Promise.resolve(undefined), onConflictDoUpdate: () => Promise.resolve(undefined) };
+    },
+  });
+  const update = (table: unknown) => {
+    updates.push({ table });
+    return { set: () => ({ where: () => Promise.resolve(undefined) }) };
+  };
   return { select, selectDistinct: select, insert, update, delete: deleteProxy.delete.bind(deleteProxy) };
 }
 vi.mock('@/db', () => ({ getDb: () => fakeDb() }));
@@ -83,6 +99,9 @@ beforeEach(() => {
   byTable = new Map();
   selectedFrom.length = 0;
   deleteCalls.length = 0;
+  wheres.length = 0;
+  inserts.length = 0;
+  updates.length = 0;
 });
 
 describe('POST /api/ingest/complete: a refused HFE', () => {
@@ -162,5 +181,71 @@ describe('POST /api/ingest/complete: a game this call inserted with no disks', (
     // ever building gameRows -- no delete should be issued.
     await complete();
     expect(deleteCalls).toHaveLength(0);
+  });
+});
+
+// Final review I1: a person-arranged set keeps its target's ORIGINAL
+// deterministic game id, so a later upload parsing to the same title/year
+// would otherwise land inside it at its parsed disk number.
+describe('POST /api/ingest/complete: an upload whose title is a human-arranged set', () => {
+  const dialect = new PgDialect();
+  const upload = async (filename: string) => {
+    const { POST } = await import('./route');
+    return POST(new Request('http://test/api/ingest/complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ files: [{ sha256: V3_SHA, sizeBytes: V3.length, filename }] }),
+    }));
+  };
+  const rowsInto = (t: unknown) => inserts.filter((i) => i.table === t).flatMap((i) => i.rows);
+  const setId = stableId('game', 'org-1', 'somegame', '');
+
+  it('goes to a fresh one-disk title beside the set; nothing is inserted into the set', async () => {
+    byTable.set(games, [[{ id: setId }]]);   // the parsed id exists, arranged by a person
+    byTable.set(disks, [[]]);                 // this disk is not already in it
+    const res = await upload('SomeGame (Disk 2 of 3).adf');
+    expect(res.status).toBe(200);
+
+    // The human-set lookup is org-scoped and asks for disk_order_source = 'human'.
+    const q = dialect.sqlToQuery(wheres.find((w) => w.table === games)!.where);
+    expect(q.sql).toMatch(/"games"\."org_id" = \$\d+/);
+    expect(q.sql).toMatch(/"games"\."disk_order_source" = \$\d+/);
+    expect(q.params).toEqual(expect.arrayContaining([setId, 'org-1', 'human']));
+
+    const fresh = stableId('game', 'org-1', 'somegame', '', 'beside-set', V3_SHA);
+    expect(rowsInto(games)).toEqual([expect.objectContaining({
+      id: fresh, orgId: 'org-1', title: 'SomeGame', sortTitle: 'somegame', year: null, metadataSource: 'filename',
+    })]);
+    expect(rowsInto(disks)).toEqual([expect.objectContaining({
+      id: stableId('disk', fresh, V3_SHA), gameId: fresh, diskNo: 1, sha256: V3_SHA,
+    })]);
+    expect(rowsInto(disks).some((r) => r.gameId === setId)).toBe(false);
+    expect(rowsInto(games).some((r) => r.id === setId)).toBe(false);
+    // The set is not even a candidate for the empty-title cleanup.
+    expect(deleteCalls).toHaveLength(1);
+    expect(deleteCalls[0].params).not.toContain(setId);
+  });
+
+  it('a re-send of a disk already in the set stays a no-op: no new title, no insert', async () => {
+    byTable.set(games, [[{ id: setId }]]);
+    byTable.set(disks, [[{ id: stableId('disk', setId, V3_SHA) }]]);
+    const res = await upload('SomeGame.adf');
+    expect(res.status).toBe(200);
+    expect(rowsInto(games)).toEqual([]);
+    expect(rowsInto(disks)).toEqual([]);
+    expect(updates.filter((u) => u.table === disks)).toEqual([]);
+    expect(deleteCalls).toHaveLength(0);
+  });
+
+  it('an ordinary (not human-arranged) title lands where it always did', async () => {
+    byTable.set(games, [[]]);
+    const res = await upload('SomeGame (Disk 2 of 3).adf');
+    expect(res.status).toBe(200);
+    expect(rowsInto(games)).toEqual([expect.objectContaining({ id: setId, metadataSource: 'filename' })]);
+    expect(rowsInto(disks)).toEqual([expect.objectContaining({
+      id: stableId('disk', setId, V3_SHA), gameId: setId, diskNo: 2,
+    })]);
+    // No disk lookup is spent when no human set is involved.
+    expect(wheres.filter((w) => w.table === disks)).toHaveLength(0);
   });
 });
