@@ -37,6 +37,15 @@ describe('suggestSet', () => {
     expect(s.name).toBe('My Set');
     expect(s.disks.every((d) => d.ticked)).toBe(true);
   });
+  it('names a set in a nested folder after the last folder only, not the whole path (I3)', () => {
+    const s = suggestSet([
+      f('Fonts.adf', null, 'Amiga/Backups/OS/My Set/Fonts.adf'), f('Locale.adf', null, 'Amiga/Backups/OS/My Set/Locale.adf'),
+    ])!;
+    expect(s.name).toBe('My Set');
+  });
+  it('still compares the whole parent path: same last folder under different parents is not shared', () => {
+    expect(suggestSet([f('Fonts.adf', null, 'A/Set/Fonts.adf'), f('Locale.adf', null, 'B/Set/Locale.adf')])).toBeNull();
+  });
   it('refuses more than 32 disks', () => {
     expect(suggestSet(Array.from({ length: 33 }, (_, i) => f(`X${i}_1.0.adf`)))).toBeNull();
   });

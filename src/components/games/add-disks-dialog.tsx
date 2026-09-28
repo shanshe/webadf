@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { Search } from 'lucide-react';
 import type { CandidateTitle } from '@/lib/disk-set-search';
 import type { UndoSnapshot } from '@/lib/disk-set-store';
+import { addErrorText } from '@/lib/disk-set-errors';
 
 type AppRouter = ReturnType<typeof useRouter>;
 
@@ -45,16 +46,6 @@ function diskName(d: CandidateTitle['disks'][number]): string {
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
-}
-
-function addErrorText(code: unknown): string | undefined {
-  switch (code) {
-    case 'same_title': return 'That disk is already in this set.';
-    case 'nothing_to_add': return 'Nothing was picked.';
-    case 'not_found': return 'A title or disk is no longer in your library.';
-    case 'stale_order': return 'The set changed meanwhile; try again.';
-    default: return typeof code === 'string' ? code : undefined;
-  }
 }
 
 /**

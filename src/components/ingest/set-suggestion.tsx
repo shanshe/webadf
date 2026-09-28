@@ -15,6 +15,10 @@ import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import type { Suggestion } from '@/lib/disk-set-suggest';
+import { addErrorText, isStaleSuggestion } from '@/lib/disk-set-errors';
+
+/** POST /api/games/[id]/disks caps a rename at this many characters. */
+const NAME_MAX = 80;
 
 type SuggestedDisk = NonNullable<Suggestion>['disks'][number];
 
@@ -33,7 +37,7 @@ export function SetSuggestion({ suggestion, onDone }: {
   onDone: () => void;
 }) {
   const router = useRouter();
-  const [name, setName] = useState(suggestion.name);
+  const [name, setName] = useState(suggestion.name.slice(0, NAME_MAX));
   // The panel's own row order, seeded from the server's (ticked first,
   // Install/Workbench first among those -- see rank() in
   // disk-set-suggest.ts). ▲▼ mutate this; ticking does not.
@@ -78,10 +82,17 @@ export function SetSuggestion({ suggestion, onDone }: {
     }
     if (!res.ok) {
       setBusy(false);
-      const body = await res.json().catch(() => ({}) as { error?: unknown });
-      toast.error('Could not make the disk set', {
-        description: typeof body.error === 'string' ? body.error : undefined,
-      });
+      const body = (await res.json().catch(() => ({}))) as { error?: unknown };
+      // The disks moved on while the panel was open (another tab made a set
+      // of them, or one was deleted): retrying cannot help, so reload the
+      // page's data and let the panel go.
+      if (isStaleSuggestion(body.error)) {
+        toast.error('The disks changed while you were deciding — reloaded');
+        router.refresh();
+        onDone();
+        return;
+      }
+      toast.error('Could not make the disk set', { description: addErrorText(body.error) });
       return;
     }
 
@@ -110,6 +121,7 @@ export function SetSuggestion({ suggestion, onDone }: {
             type="text"
             data-testid="set-suggestion-name"
             value={name}
+            maxLength={NAME_MAX}
             onChange={(e) => setName(e.target.value)}
             className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
             style={{ color: 'var(--ink)' }}

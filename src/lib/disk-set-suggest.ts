@@ -43,11 +43,17 @@ function tagOf(d: SuggestInput): string | null {
   return releaseTag(d.volumeName ?? d.filename);
 }
 
+/** The whole parent path: what decides whether two disks share a folder. */
 function folderOf(d: SuggestInput): string | null {
   const path = d.relativePath;
   if (!path) return null;
   const i = path.lastIndexOf('/');
   return i > 0 ? path.slice(0, i) : null;
+}
+
+/** The set's suggested name: only the folder's own name, not its whole path. */
+function folderName(folder: string): string {
+  return folder.slice(folder.lastIndexOf('/') + 1);
 }
 
 const rank = (label: string): number => (/^install/i.test(label) ? 0 : /^workbench/i.test(label) ? 1 : 2);
@@ -73,7 +79,7 @@ export function suggestSet(files: SuggestInput[]): Suggestion {
 
   let name: string;
   if (sharedFolder) {
-    name = sharedFolder;
+    name = folderName(sharedFolder);
   } else {
     const isAmigaOSHint = (d: SuggestInput) =>
       /amigaos/i.test(d.filename) || (d.volumeName !== null && /amigaos/i.test(d.volumeName)) ||
