@@ -4474,8 +4474,23 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 
 ### 3ao. HD disks: Amiga writes, full history, browser editing, blank HD disks -- 2026-09-27 (spec/plan 2026-09-27-hd-writes-and-editing)
 
-**STATUS: built on `feat/hd-writes`; web e2e green; firmware 1.5.0 built and host-tested; NOT merged, NOT
-published, bench checklist below owed.** Spec `docs/superpowers/specs/2026-09-27-hd-writes-and-editing-design.md`,
+**STATUS 2026-09-28: MERGED (`6c15c10`) and deployed; firmware `1.5.0+g200c493` published (registry seq 30) and on
+the bench board. Bench on the A5000 (Kickstart 3.1, rev A2 board):**
+- **Step 1 PASSED** -- DD Workbench boots; a DD save (a file dragged to a writable DD scratch disk) was captured
+  (11/11, decode 3.3 ms), uploaded, closed, and appears in the library's version.
+- **Step 2 PASSED** -- HD Workbench disk set writable; Icons -> Copy of Clock: 5 HD tracks captured 22/22, decode
+  5.2-6.6 ms, capture 27,248 bytes (32 KB buffer: ~5.5 KB margin), uploaded, closed; `Utilities/Copy_of_Clock`
+  (+ .info) is in the library version. Heap low-water after TLS 45,056 bytes (expected ~47 K; floor 20 K).
+- **Step 3 FOUND A LOST TRACK** -- Icons -> Copy of the Utilities drawer: 27 of 28 HD captures perfect, but one
+  capture of track 51 decoded to nothing (`sec 0x000000/22 PART bad 42`, `ns 1640-31253`, 94,040 intervals vs ~100 k,
+  decode 38.5 ms). Every good capture's minimum interval is 3,600 ns; a 1,640 ns interval is a spurious WDATA edge.
+  The board rejected it (correctly), the Amiga then re-read track 51 and rewrote it without the lost blocks, so
+  `Copy_of_Utilities/Clock.info` and `MultiView.info` are zero-filled in the library. Cause (probable): the rev A2
+  bench board has no WDATA pull-up and the A5000 has none either (real drives carry their own termination). Rev B
+  has 1 kOhm on all eight host-driven lines -- see the PENDING TEST ON REV B note in the Rev B backlog entry.
+  Follow-up (defence in depth): a firmware glitch filter that merges impossibly short intervals before decode.
+- Steps 4 (offline), 5 (heap during a large write), 6 (restore), 7 (Format/DiskCopy) not yet run.
+ Spec `docs/superpowers/specs/2026-09-27-hd-writes-and-editing-design.md`,
 plan `docs/superpowers/plans/2026-09-27-hd-writes-and-editing.md` (its "Rulings" section lists every call made
 while planning).
 
