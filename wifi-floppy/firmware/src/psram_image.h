@@ -92,8 +92,16 @@ void psram_image_write_at(int slot, int track, uint32_t offset, const uint8_t *s
 void psram_image_commit(int slot, int track, uint32_t bit_count);
 
 // Host wrote this track: keep the data, mark for later flush to the server.
-// Does nothing on an ADF_HD slot: HD is read-only in this release (spec §5.3).
+// MFM only: does nothing on an ADF_HD slot, whose tracks hold ADF bytes and
+// are stored with psram_image_store_adf.
 void psram_image_mark_dirty(int slot, int track, const uint8_t *src, uint32_t bit_count);
+
+// HD writes spec §4.3: a verified HD track's 11,264 ADF bytes
+// (MFM_HD_TRACK_DATA_BYTES), stored DIRTY in an ADF_HD slot -- the HD twin of
+// psram_image_mark_dirty. False, and nothing stored, for an MFM slot, an
+// unusable slot or track, or no PSRAM. The caller drops the track's SRAM copy
+// (track_cache_invalidate) so the next read re-encodes it.
+bool psram_image_store_adf(int slot, int track, const uint8_t *adf);
 
 // Next dirty track for the writeback walker, or -1 when the image is clean.
 int  psram_image_next_dirty(int slot);

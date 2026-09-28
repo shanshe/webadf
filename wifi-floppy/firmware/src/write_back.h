@@ -41,8 +41,10 @@ uint32_t write_back_mask(unsigned nsec);
 // Short, log-line sized. `nsec` names the count (spec §4.2).
 const char *write_back_reason(wb_verdict_t v, unsigned nsec);
 
-// Encode `adf_track` (MFM_TRACK_DATA_BYTES) as a standard track and store it
-// in `slot` as DIRTY. True if it landed.
+// Store a verified track in `slot` as DIRTY. DD (an MFM slot): encode
+// `adf_track` (MFM_TRACK_DATA_BYTES) as a standard track. HD (an ADF_HD slot,
+// HD writes spec §4.3): store its MFM_HD_TRACK_DATA_BYTES as they are; they
+// are encoded on read. True if it landed.
 bool write_back_apply(int slot, int track, const uint8_t *adf_track);
 
 // Whether WPROT is asserted: nothing mounted, the server's flag, the

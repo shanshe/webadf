@@ -42,13 +42,19 @@ const char *write_back_reason(wb_verdict_t v, unsigned nsec) {
     case WB_REJECT_PARTIAL:      return hd ? "not all 22 sectors verified" : "not all 11 sectors verified";
     case WB_REJECT_INCONSISTENT: return "sector headers disagree about the track";
     case WB_REJECT_WRONG_TRACK:  return "sectors name another track";
-    case WB_REJECT_DENSITY:      return hd ? "sectors numbered past 22"
-                                           : "sectors numbered past 11: an HD track on a DD disk";
+    case WB_REJECT_DENSITY:      return hd ? "sectors numbered 22 or more"
+                                           : "sectors numbered 11 or more: an HD track on a DD disk";
     }
     return "unknown";
 }
 
 bool write_back_apply(int slot, int track, const uint8_t *adf_track) {
+    // HD writes spec §4.3: an HD slot holds ADF bytes and is encoded on read
+    // (track_cache.c), so the verified sectors go in as they are. main.c's
+    // track_cache_invalidate() after this makes the next read re-encode them.
+    if (psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD)
+        return psram_image_store_adf(slot, track, adf_track);
+
     // Static: 12.6 KB would not fit core0's frame. Not re-entrant, and only
     // ever called from core0's service loop.
     static uint8_t mfm[MFM_TRACK_BYTES];

@@ -4,6 +4,7 @@
 #include "../src/flux_bits.h"
 #include "../src/psram_image.h"
 #include "../src/track_cache.h"
+#include "../src/adf_mfm.h"
 #include "hd_fixture.h"
 #include <stdlib.h>
 #include <string.h>
@@ -218,6 +219,82 @@ static void capture_shaped_write_applies_and_reads_back(void) {
     }
 }
 
+static void the_hd_store_takes_only_an_hd_slot(void) {
+    static uint8_t adf[MFM_HD_TRACK_DATA_BYTES];
+    memset(adf, 0x5a, sizeof adf);
+    psram_image_reset_slot(0);                               /* MFM */
+    CHECK(!psram_image_store_adf(0, 3, adf), "an MFM slot never takes ADF bytes");
+    psram_image_set_slot_kind(0, SLOT_KIND_ADF_HD);
+    CHECK(!psram_image_store_adf(0, NUM_TRACKS, adf), "a track past the disk");
+    CHECK(psram_image_store_adf(0, 3, adf), "an HD slot does");
+    CHECK_EQ_INT(psram_image_state(0, 3), TRK_DIRTY);
+    CHECK_EQ_INT(psram_image_bits(0, 3), MFM_HD_TRACK_DATA_BYTES * 8u);
+    CHECK(memcmp(psram_image_track_data(0, 3), adf, sizeof adf) == 0, "the bytes as given");
+    static uint8_t mfm[MFM_TRACK_BYTES];
+    psram_image_mark_dirty(0, 4, mfm, MFM_TRACK_BITS);
+    CHECK_EQ_INT(psram_image_state(0, 4), TRK_ABSENT);       /* MFM never goes into an ADF slot */
+    psram_image_reset_slot(0);
+}
+
+// HD writes spec §7, firmware host: Greaseweazle's encoding of an HD track
+// (independent of this code), through the board's whole chain -- flux ->
+// bits -> 22 sectors -> verdict -> store -> encode on read -- must give back
+// the ADF bytes, and the served track must be Greaseweazle's, byte for byte.
+static void an_hd_write_is_stored_and_served_back(void) {
+    static uint8_t wire[HD_MFM_BYTES], want[MFM_HD_TRACK_DATA_BYTES], zeros[MFM_HD_TRACK_DATA_BYTES];
+    CHECK(read_hd_fixture(80, wire), "fixtures/adf_mfm_hd/prng-t080.mfm");
+    hd_prng_track(80, want);                                 /* the 'prng' disk's track 80 */
+
+    // An HD disk in slot 0 whose track 80 holds zeros, served (and so cached)
+    // before the write.
+    memset(zeros, 0, sizeof zeros);
+    psram_image_reset_slot(0);
+    psram_image_set_slot_kind(0, SLOT_KIND_ADF_HD);
+    psram_image_write_at(0, 80, 0, zeros, (int)sizeof zeros);
+    psram_image_commit(0, 80, MFM_HD_TRACK_DATA_BYTES * 8u);
+    psram_publish_slot(0);
+    const int32_t tok = psram_active_token();
+    uint32_t bits = 0;
+    CHECK(track_cache_get(80, &bits) != NULL, "the old track is served");
+
+    static uint8_t capbuf[FLUX_CAPTURE_BUF_BYTES];
+    for (unsigned skew = 1; skew <= 7; skew += 3) {
+        flux_bits_t fb;
+        flux_bits_init(&fb, capbuf, sizeof capbuf);
+        size_t prev = SIZE_MAX;
+        for (size_t i = skew; i < HD_MFM_BYTES * 8u; i++) {
+            if (!bit_at(wire, i)) continue;
+            if (prev != SIZE_MAX) flux_bits_feed(&fb, (uint32_t)(i - prev) * CELL_NS);
+            prev = i;
+        }
+        static uint8_t decoded[MFM_HD_TRACK_DATA_BYTES];
+        memset(decoded, 0, sizeof decoded);
+        mfm_decode_result_t d;
+        mfm_decode_track_n(capbuf, flux_bits_bytes(&fb), decoded, &d, write_back_sectors(tok));
+        CHECK_EQ_INT(d.found, 0x3fffff);
+        CHECK_EQ_INT(write_back_verdict(&d, 80, fb.overflowed, tok, psram_active_token()), WB_APPLY);
+        CHECK(write_back_apply(0, 80, decoded), "an HD track is stored");
+        CHECK_EQ_INT(psram_image_state(0, 80), TRK_DIRTY);
+        CHECK_EQ_INT(psram_image_next_dirty(0), 80);             /* the uploader will find it */
+        const uint8_t *stored = psram_image_track_data(0, 80);
+        CHECK(stored != NULL && memcmp(stored, want, sizeof want) == 0,
+              "PSRAM holds the ADF bytes the Amiga wrote");
+
+        track_cache_invalidate(80);                          /* main.c does this after every apply */
+        const uint8_t *served = track_cache_get(80, &bits);
+        CHECK(served != NULL, "served");
+        CHECK_EQ_INT(bits, ADF_MFM_HD_TRACK_BITS);
+        CHECK(served != NULL && memcmp(served, wire, HD_MFM_BYTES) == 0,
+              "re-encoded exactly as Greaseweazle encoded it");
+
+        // Back to the old contents for the next skew.
+        psram_image_write_at(0, 80, 0, zeros, (int)sizeof zeros);
+        psram_image_clear_dirty(0, 80);
+        track_cache_invalidate(80);
+    }
+    psram_image_reset_slot(0);
+}
+
 int main(void) {
     size_t len = (size_t)TRACK_MAX_BYTES * NUM_TRACKS * SLOT_COUNT;
     void *mem = malloc(len);
@@ -234,6 +311,8 @@ int main(void) {
     RUN(a_dd_disk_refuses_a_real_hd_track);
     RUN(an_hd_disk_refuses_a_real_dd_track);
     RUN(wprot_is_forced_for_an_hd_disk);
+    RUN(the_hd_store_takes_only_an_hd_slot);
+    RUN(an_hd_write_is_stored_and_served_back);
     free(mem);
     return REPORT();
 }
