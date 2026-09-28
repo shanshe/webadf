@@ -458,10 +458,12 @@ static void test_status_body_fits_at_maximum(void) {
     dc_set_fw_report(&c, &fr);
     dc_set_nfc_reader(&c, "present");   // the longer of the two words
     dc_set_plays_hd(&c, true);
-    // Multi-disk: the longer of the two preload forms ("ready" vs "loading"
-    // differ by 2; both carry a 64-hex digest) -- a ready record.
-    c.preload.slot = 1;
-    memset(c.preload.sha256, 'd', 64); c.preload.sha256[64] = '\0';
+    // Multi-disk: the longer of the two preload forms. Both carry a 64-hex
+    // digest, and "loading" is 2 bytes longer than "ready" -- so a preload in
+    // progress, which names next's digest.
+    c.preload.slot = SLOT_NONE;
+    c.preload.loading = true;
+    memset(c.preload.next_sha256, 'd', 64); c.preload.next_sha256[64] = '\0';
 
     fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
     CHECK(dc_report_status(&c, 2147483647, -200, long_err, long_ver),
@@ -475,7 +477,7 @@ static void test_status_body_fits_at_maximum(void) {
           "the last firmware field survives");
     CHECK(strstr(r, "\"nfcReader\":\"present\"") != NULL,
           "and so does the reader");
-    CHECK(strstr(r, "\"state\":\"ready\"}") != NULL,
+    CHECK(strstr(r, "\"state\":\"loading\"}") != NULL,
           "the preload record survives a maximal body");
     CHECK(strstr(r, "\"playsHd\":true}") != NULL,
           "playsHd survives a maximal body, the very last field");
@@ -1968,6 +1970,177 @@ static void status_reports_preload(void) {
     CHECK(strstr(fake_last_request(), want) != NULL, "loading");
 }
 
+// 13. Final review I1: a tap waiting during a preload cuts the transfer short.
+// No record (the slot holds half an image), NO backoff (that would hold the
+// tap's own poll), the state as on entry, and the socket never reused.
+static void preload_interrupted_by_a_tap_leaves_no_record_and_no_backoff(void) {
+    mount_a_with_next_b();
+    int active = psram_active_slot();
+    dc_set_preload_gate(&c, gate_yes, NULL);
+    dc_set_poll_interrupt(&c, intr_yes, NULL);
+    CHECK_EQ_INT(c.backoff_ms, 0);
+    // Headers and the first bytes of B, then the server goes quiet mid-body:
+    // the one place the predicate is asked.
+    fake_push_held("HTTP/1.1 200 OK\r\nContent-Length: 2027536\r\n\r\nWFMF");
+    int before = fake_request_count();
+    CHECK(!dc_preload_step(&c), "interrupted: nothing for the caller to act on");
+    CHECK(c.preload.interrupted, "and it says why");
+    CHECK_EQ_INT(fake_request_count(), before + 1);   // no retry of an interrupt
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "no record for a half-written slot");
+    CHECK(!c.preload.loading, "no longer loading");
+    CHECK(!c.preload.changed, "there was no record to drop: nothing reported moved");
+    CHECK_EQ_INT(c.state, DC_IDLE_POLL);
+    CHECK_EQ_INT(c.backoff_ms, 0);
+    CHECK_EQ_INT(psram_active_slot(), active);
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "A still mounted");
+    CHECK(!fake_connection_is_kept(), "the rest of the body is owed on it: never reuse it");
+    CHECK(fake_transport()->interrupted == NULL, "the predicate is removed after the preload");
+
+    // The next step describes itself only: the flag clears, and with the tap
+    // sent (the predicate now says no) the preload runs to completion.
+    dc_set_poll_interrupt(&c, intr_no, NULL);
+    push_image_response();
+    CHECK(dc_preload_step(&c), "preloaded on a later pass");
+    CHECK(!c.preload.interrupted, "cleared on entry");
+    CHECK(strcmp(c.preload.sha256, SHA_B) == 0, "B verified");
+    CHECK(c.preload.changed, "a new record: a report is owed");
+}
+
+// 14. An interrupted preload that replaced a "ready" record: the server was
+// told "ready" and must now hear otherwise.
+static void preload_interrupted_after_dropping_a_record_marks_it_changed(void) {
+    mount_a_preload_b();
+    c.preload.changed = false;                         // the caller took it
+    snprintf(c.preload.next_sha256, sizeof c.preload.next_sha256, "%s", SHA_C);
+    dc_set_poll_interrupt(&c, intr_yes, NULL);
+    fake_push_held("");
+    CHECK(!dc_preload_step(&c), "interrupted");
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "the B record is gone with the slot");
+    CHECK(c.preload.changed, "and the report owes that");
+    CHECK_EQ_INT(c.backoff_ms, 0);
+}
+
+// 15. The swap fetch is NOT interruptible: the poll's interrupt is installed
+// for the poll (and the preload) only, never the disk someone asked for.
+static void the_swap_fetch_is_never_interrupted(void) {
+    boot(); init_shas();
+    dc_set_poll_interrupt(&c, intr_yes, NULL);
+    push_poll_next(5, SHA_A, "", false);
+    fake_push_held("HTTP/1.1 200 OK\r\nContent-Length: 2027536\r\n\r\nWFMF");
+    CHECK_EQ_INT(dc_step(&c), DC_BACKOFF);            // a read timeout, as before
+    CHECK(!c.poll_interrupted, "the fetch ran to its own timeout");
+    CHECK(fake_transport()->interrupted == NULL, "never left installed");
+}
+
+// 16. Final review I3(a): a body that stops short -- no record, and backoff.
+static void preload_incomplete_body_leaves_no_record_and_backs_off(void) {
+    mount_a_with_next_b();
+    int active = psram_active_slot();
+    dc_set_preload_gate(&c, gate_yes, NULL);
+    fake_push_truncated("HTTP/1.1 200 OK\r\nContent-Length: 2027536\r\n\r\nWFMF", 40);
+    CHECK(dc_preload_step(&c), "a request went out");
+    CHECK_EQ_INT(c.state, DC_BACKOFF);
+    CHECK(c.backoff_ms > 0, "paced, never a retry storm");
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "no record");
+    CHECK(!c.preload.loading, "no longer loading");
+    CHECK(!c.preload.interrupted, "a failure, not an interrupt");
+    CHECK(!dc_digest_is_blocked(&c, SHA_B), "a drop says nothing about the digest");
+    CHECK_EQ_INT(psram_active_slot(), active);
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "A still mounted");
+}
+
+// 17. Final review I3(b) + m4: a forced refetch after a preload -- nothing is
+// preloaded meanwhile, and the next poll FETCHES the disk rather than
+// publishing the preloaded copy.
+static void preload_then_force_refetch_fetches_never_swaps(void) {
+    mount_a_preload_b();
+    int pre_slot = c.preload.slot;
+    dc_force_refetch(&c);
+    int before = fake_request_count();
+    snprintf(c.preload.next_sha256, sizeof c.preload.next_sha256, "%s", SHA_C);
+    CHECK(!dc_preload_step(&c), "m4: no preload while a refetch is pending");
+    CHECK_EQ_INT(fake_request_count(), before);
+    snprintf(c.preload.next_sha256, sizeof c.preload.next_sha256, "%s", SHA_B);
+    CHECK_EQ_INT(c.since, 0);                          // the refetch polls from zero
+
+    push_poll_next(6, SHA_B, SHA_C, false);
+    push_image_response();
+    CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    CHECK_EQ_INT(fake_request_count(), before + 2);   // the poll AND an image fetch
+    char want[128];
+    snprintf(want, sizeof want, "GET /api/device/image/%s ", SHA_B);
+    CHECK(strstr(fake_last_request(), want) != NULL, "B is fetched afresh");
+    CHECK(strcmp(c.mounted_sha256, SHA_B) == 0, "B mounted");
+    CHECK_EQ_INT(psram_active_slot(), pre_slot);      // the fetch's target: the same idle slot
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "the record went with the overwrite");
+}
+
+// 18. Final review I3(c): 404 -- the digest is blocked, no record, backoff.
+static void preload_404_blocks_the_digest_and_leaves_no_record(void) {
+    mount_a_with_next_b();
+    dc_set_preload_gate(&c, gate_yes, NULL);
+    push_status_json("HTTP/1.1 404 Not Found", "{\"error\":\"not_found\"}");
+    CHECK(dc_preload_step(&c), "a request went out");
+    CHECK(dc_digest_is_blocked(&c, SHA_B), "404: never retried");
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "no record");
+    CHECK_EQ_INT(c.state, DC_BACKOFF);
+    CHECK_EQ_INT(psram_active_slot() != SLOT_NONE, 1);
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "A still mounted");
+    // Idle again: a blocked next is not fetched a second time.
+    c.state = DC_IDLE_POLL;
+    int before = fake_request_count();
+    CHECK(!dc_preload_step(&c), "blocked");
+    CHECK_EQ_INT(fake_request_count(), before);
+}
+
+// 19. Final review m5: the server's digests are lowercase; an uppercase `next`
+// is not the server's shape and is never preloaded.
+static void an_uppercase_next_is_refused(void) {
+    boot(); init_shas();
+    char upper[65];
+    memset(upper, 'B', 64); upper[64] = '\0';
+    push_poll_next(5, SHA_A, upper, false);
+    push_image_response();
+    dc_step(&c);
+    CHECK(c.preload.known, "a next came with the poll");
+    CHECK(c.preload.next_sha256[0] == '\0', "but not a digest this board will fetch");
+}
+
+// 20. Final review m6: an eject clears next, so nothing of a title no longer
+// mounted is preloaded -- held or not.
+static void an_eject_clears_next(void) {
+    mount_a_with_next_b();
+    dc_set_preload_gate(&c, gate_yes, NULL);
+    push_ok_json("{\"version\":6,\"desired\":null}");
+    CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    CHECK(c.mounted_sha256[0] == '\0', "ejected");
+    CHECK(c.preload.next_sha256[0] == '\0', "no next without a mounted title");
+    CHECK(c.preload.next_disk_id[0] == '\0', "no next disk id");
+    CHECK_EQ_INT(c.preload.next_disk_no, 0);
+    int before = fake_request_count();
+    CHECK(!dc_preload_step(&c), "nothing to preload");
+    CHECK_EQ_INT(fake_request_count(), before);
+
+    // Held: the disk stays, but the server's word is still that nothing is
+    // mounted -- next is cleared all the same.
+    mount_a_with_next_b();
+    dc_set_preload_gate(&c, gate_yes, NULL);
+    dc_set_hold(&c, hold_true, NULL);
+    push_ok_json("{\"version\":6,\"desired\":null}");
+    dc_step(&c);
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "held: A stays");
+    CHECK(c.preload.next_sha256[0] == '\0', "but next is gone");
+    before = fake_request_count();
+    CHECK(!dc_preload_step(&c), "and nothing is preloaded");
+    CHECK_EQ_INT(fake_request_count(), before);
+    dc_set_hold(&c, NULL, NULL);
+}
+
 int main(void) {
     // Only test_successful_image_fetch_publishes_and_reflects_write_protected
     // needs real PSRAM backing (everything else in this file either never
@@ -2086,6 +2259,14 @@ int main(void) {
     RUN(tap_next_parses_outcome);
     RUN(nfc_write_kind_next_arms_next);
     RUN(status_reports_preload);
+    RUN(preload_interrupted_by_a_tap_leaves_no_record_and_no_backoff);
+    RUN(preload_interrupted_after_dropping_a_record_marks_it_changed);
+    RUN(the_swap_fetch_is_never_interrupted);
+    RUN(preload_incomplete_body_leaves_no_record_and_backs_off);
+    RUN(preload_then_force_refetch_fetches_never_swaps);
+    RUN(preload_404_blocks_the_digest_and_leaves_no_record);
+    RUN(an_uppercase_next_is_refused);
+    RUN(an_eject_clears_next);
 
     // The observation tests run BEFORE the backing is released: several of
     // them drive a real fetch, which writes into PSRAM. Appending them after

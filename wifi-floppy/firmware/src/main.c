@@ -1493,6 +1493,9 @@ static void core1_main(void) {
         // and whether a report is owed because it changed.
         int  nfc_reader_seen = 0;
         bool nfc_report_owed = false;
+        // Multi-disk: the preload record moved (dc_preload_t.changed) and no
+        // report carrying it has reached the server yet.
+        bool preload_report_owed = false;
 
         // 2b trial (spec D8): prove the network works, THEN confirm, THEN poll.
         {
@@ -1599,6 +1602,7 @@ static void core1_main(void) {
                     last_status_ms = clock_ms();
                     fw_report_owed = false;   // the same report carries the fw fields
                     nfc_report_owed = false;  // ...and nfcReader
+                    preload_report_owed = false;  // ...and preload
                     strncpy(last_reported_sha, c.mounted_sha256, sizeof(last_reported_sha) - 1);
                     last_reported_sha[sizeof(last_reported_sha) - 1] = '\0';
                     last_reported_version = c.mounted_version;
@@ -1783,25 +1787,6 @@ static void core1_main(void) {
                 }
             }
 
-            // Multi-disk preload (spec §4.3): at most once per dc_step, and
-            // only after one that really polled and came back idle -- not cut
-            // short by a tap (that `continue`d above), not skipped for the
-            // uploader or the updater (`polled`), and not on a report-retry
-            // pass (which never polls). Nothing NFC may be waiting either: a
-            // tap, a write result, a write request, or a write report owed --
-            // a preload is a whole-disk fetch, seconds long, and every one of
-            // those is answered first. The gate (preload_ok) refuses on
-            // unsent writes, a held swap and a firmware update. Its result
-            // replaces `s`, so the chain below treats a preload's DC_BACKOFF
-            // or DC_HALTED exactly as it does a poll's; a preload that did
-            // work owes the server a status report (its `preload` record).
-            bool preloaded = false;
-            if (polled && s == DC_IDLE_POLL && !c.nfc_write_new && !nfc_event_pending(NULL) &&
-                !g_nfc_report.owed) {
-                preloaded = dc_preload_step(&c);
-                if (preloaded) s = c.state;
-            }
-
             // Item 1: the drive may only ever report a disk once an image is
             // genuinely resident and published -- dc_step only reaches here
             // (mounted_sha256 non-empty) after a real fetch-and-verify or an
@@ -1902,13 +1887,74 @@ static void core1_main(void) {
             // used to cost.
             // Not on a report_retry pass (M3): Item 0's report just failed,
             // and sending the same report again here would double it.
+            // A preload report owed from an earlier pass (see the preload
+            // below) rides here too -- but never ahead of a waiting tap.
             if (!report_retry && s != DC_HALTED && (disk_changed || version_changed || fw_report_owed ||
-                                    nfc_report_owed || preloaded ||
+                                    nfc_report_owed ||
+                                    (preload_report_owed && !nfc_event_pending(NULL)) ||
                                     (now - last_status_ms) >= DC_STATUS_PERIOD_MS)) {
                 if (dc_report_status(&c, psram_free_estimate(), wifi_rssi(), NULL, WF_FIRMWARE_VERSION)) {
                     last_status_ms = now;
                     fw_report_owed = false;
                     nfc_report_owed = false;
+                    preload_report_owed = false;   // every report carries `preload`
+                    strncpy(last_reported_sha, c.mounted_sha256, sizeof(last_reported_sha) - 1);
+                    last_reported_sha[sizeof(last_reported_sha) - 1] = '\0';
+                    last_reported_version = c.mounted_version;
+                }
+            }
+
+            // Multi-disk preload (spec §4.3): at most once per dc_step, and
+            // only after one that really polled and came back idle -- not cut
+            // short by a tap (that `continue`d above), not skipped for the
+            // uploader or the updater (`polled`), and not on a report-retry
+            // pass (which never polls). Nothing NFC may be waiting either: a
+            // tap, a write result, a write request, or a write report owed --
+            // a preload is a whole-disk fetch, seconds long, and every one of
+            // those is answered first; a tap that arrives DURING it cuts the
+            // transfer short (dc_preload_step installs the poll-interrupt:
+            // no record, no backoff, `s` untouched, and the pass rounds to
+            // the top where nfc_core1_event sends the tap -- final review I1).
+            // The gate (preload_ok) refuses on unsent writes, a held swap and
+            // a firmware update.
+            //
+            // Final review C1: this runs AFTER Items 3 and 4, never before.
+            // A pass whose dc_step just published a swap has, by here, already
+            // driven WPROT for the NEW disk (Item 3) and told the server about
+            // it (Item 4) -- core0 raised CHNG the moment the slot changed, so
+            // the Amiga may read the pin at once, and a ~5 s preload ahead of
+            // Item 3 left it showing the PREVIOUS disk's protection all that
+            // time (reinsert_on_wprot announces a flip only within one disk
+            // id, so nothing corrected it). And not at all while the mount
+            // is still unreported (Item 4's send failed): the server judges
+            // every upload by the mountedVersion it last heard, so that
+            // report comes before any background fetch. Item 0 retries it
+            // next pass.
+            //
+            // Its result replaces `s`, so the chain below treats a preload's
+            // DC_BACKOFF or DC_HALTED exactly as it does a poll's.
+            const bool mount_reported = strcmp(c.mounted_sha256, last_reported_sha) == 0 &&
+                                        c.mounted_version == last_reported_version;
+            if (polled && s == DC_IDLE_POLL && mount_reported && !c.nfc_write_new &&
+                !nfc_event_pending(NULL) && !g_nfc_report.owed) {
+                if (dc_preload_step(&c)) s = c.state;
+                if (c.preload.changed) {
+                    // Verified, or a "ready" record dropped: the server's
+                    // copy of `preload` is stale until a report carries it.
+                    c.preload.changed = false;
+                    preload_report_owed = true;
+                }
+            }
+            // ...and say so at once, unless a tap is waiting (it goes first;
+            // Item 4 carries the owed report on a later pass). Not after a
+            // failed preload that had nothing to drop: nothing reported moved.
+            if (preload_report_owed && !report_retry && s != DC_HALTED && c.state != DC_HALTED &&
+                !nfc_event_pending(NULL)) {
+                if (dc_report_status(&c, psram_free_estimate(), wifi_rssi(), NULL, WF_FIRMWARE_VERSION)) {
+                    last_status_ms = clock_ms();
+                    fw_report_owed = false;
+                    nfc_report_owed = false;
+                    preload_report_owed = false;
                     strncpy(last_reported_sha, c.mounted_sha256, sizeof(last_reported_sha) - 1);
                     last_reported_sha[sizeof(last_reported_sha) - 1] = '\0';
                     last_reported_version = c.mounted_version;

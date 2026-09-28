@@ -207,6 +207,14 @@ typedef struct {
     int      slot;               // SLOT_NONE = nothing preloaded
     char     sha256[65];         // what `slot` holds, verified
     bool     loading;            // a preload fetch is in progress
+    // Set by dc_preload_step when the record the status report carries
+    // changed -- a preload verified, or a "ready" record dropped to make room
+    // -- and cleared by the caller once it owes the server that report. A
+    // failed preload that had no record to drop changes nothing reported.
+    bool     changed;
+    // The last dc_preload_step was cut short by the poll-interrupt (a tap
+    // waiting): no record, no backoff, state as on entry. Cleared on entry.
+    bool     interrupted;
 } dc_preload_t;
 
 typedef struct {
@@ -515,10 +523,15 @@ void dc_set_preload_gate(device_client_t *c, bool (*fn)(void *ctx), void *ctx);
 
 // Fetches the server's `next` into the inactive slot WITHOUT publishing it, if
 // the client is idle, the gate allows, the digest is not blocked, and it is
-// neither mounted nor already preloaded. Returns true if it did any work
-// (a request went out), whatever the result. A failure leaves no record and
-// backs off; 400/404/422 or an invalid container block the digest, exactly as
-// a fetch does; 401 halts. Call between dc_steps, never from inside one.
+// neither mounted nor already preloaded, and no forced refetch is pending.
+// Returns true if it did any work (a request went out and was answered or
+// failed), whatever the result. A failure leaves no record and backs off;
+// 400/404/422 or an invalid container block the digest, exactly as a fetch
+// does; 401 halts. The poll-interrupt (dc_set_poll_interrupt) is installed for
+// the transfer: when it fires, the fetch is abandoned, `preload.interrupted`
+// is set, no record is left, NO backoff is entered, and this returns false.
+// `preload.changed` says whether the record the status report carries moved.
+// Call between dc_steps, never from inside one.
 bool dc_preload_step(device_client_t *c);
 
 // POST /api/device/tap-write {"seq":N,"ok":true|false,"uid":"..","reason":".."}

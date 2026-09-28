@@ -102,7 +102,8 @@ static long g_img_next;
 // the header parser recorded. Safe to read from the sink and nowhere else:
 // http.c only starts calling the body sink after start_body_phase(), which
 // runs once the headers are complete, so the field is final by then. Points
-// at dc_fetch_image's own `static` response, whose storage outlives the call.
+// at dc_fetch_into's own `static` response (shared by the swap fetch and the
+// preload), whose storage outlives the call.
 static const http_resp_t *g_img_resp;
 static uint32_t g_img_t0;   // fetch start, for the throughput line
 // True for a preload: the sink still times and logs the transfer, but emits no
@@ -504,12 +505,18 @@ typedef enum {
     DC_FETCH_INCOMPLETE,  // transport/framing failure or a body that stopped short
     DC_FETCH_INVALID,     // 200 and whole, but not a valid WFMF/WFAD container
     DC_FETCH_STATUS,      // a whole non-200 response; *status_out says which
+    DC_FETCH_INTERRUPTED, // `interruptible` and the poll-interrupt said stop: decided nothing
 } dc_fetch_result_t;
 
 // Streams /api/device/image/<sha256> into PSRAM slot `target` and verifies it.
 // NEVER publishes anything: `target` is written, the active slot is not
 // referenced at all. `observe` false keeps it off the OLED (a preload is not
-// something the person at the Amiga asked for).
+// something the person at the Amiga asked for). `interruptible` installs the
+// poll-interrupt (dc_set_poll_interrupt) on the transport for this one
+// exchange, exactly as dc_step does for the poll: a preload is a background
+// fetch seconds long, and a waiting tap must not queue behind it (final
+// review I1). The swap fetch never passes it -- that is the disk someone asked
+// for, and cutting it short would only mean fetching it again.
 //
 // Task 8: a fetch always targets the slot that is NOT the one core0 is
 // currently streaming from -- the caller passes psram_inactive_slot().
@@ -519,7 +526,7 @@ typedef enum {
 // as dc_exchange's read loop hands them over -- there is no SRAM buffer big
 // enough to hold a whole image (up to ~2 MB, psram_image.h) first.
 static dc_fetch_result_t dc_fetch_into(device_client_t *c, const char *sha256, int target,
-                                       bool observe, int *status_out) {
+                                       bool observe, bool interruptible, int *status_out) {
     *status_out = 0;
     // static: see the STACK note above.
     static char path[DC_REQ_BUF_BYTES];
@@ -545,8 +552,25 @@ static dc_fetch_result_t dc_fetch_into(device_client_t *c, const char *sha256, i
     g_img_resp = &r;
     c->_fetch_pct = -1;     // a fresh transfer reports 0% again
     if (observe) dc_emit(c, DC_OBS_FETCH_BEGIN, 0, 0);
-    bool ok = dc_exchange(c, req, req_len, dc_image_sink, c, &r, /*retryable=*/true);
+    // Set just before, cleared just after, whatever happened -- dc_step's rule.
+    if (interruptible) {
+        c->t->interrupted = c->_poll_intr;
+        c->t->interrupt_ctx = c->_poll_intr_ctx;
+    }
+    bool interrupted = false;
+    bool ok = dc_exchange_i(c, req, req_len, dc_image_sink, c, &r, /*retryable=*/true,
+                            &interrupted);
+    c->t->interrupted = NULL;
+    c->t->interrupt_ctx = NULL;
     *status_out = r.status;
+    if (interrupted) {
+        // dc_exchange_i has abandoned the connection (the rest of the body is
+        // still owed on it). `target` holds a partial image: never published,
+        // and the caller's record was dropped before the transfer began.
+        wf_logf(WF_INFO, "fetch: %.12s interrupted after %ld bytes -- a tap is waiting",
+                sha256, g_img_got);
+        return DC_FETCH_INTERRUPTED;
+    }
 
     if (!ok || !r.body_complete) {
         // Deliberately detailed: this branch NEVER blocks the digest, so it
@@ -596,11 +620,13 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
     // *and* verified) made concrete.
     int target = psram_inactive_slot();
     int status = 0;
-    switch (dc_fetch_into(c, d->sha256, target, /*observe=*/true, &status)) {
+    switch (dc_fetch_into(c, d->sha256, target, /*observe=*/true, /*interruptible=*/false,
+                          &status)) {
     case DC_FETCH_NO_REQUEST:
         return dc_enter_backoff(c); // path too long: unexpected, treat as transient
 
     case DC_FETCH_INCOMPLETE:
+    case DC_FETCH_INTERRUPTED:   // never: this fetch is not interruptible
         // Connect/write/read failure, a response that never parsed as HTTP
         // at all, or a connection dropped before the body finished -- all
         // treated alike. Never block the digest for these: none of them
@@ -762,14 +788,16 @@ static void dc_preload_drop(device_client_t *c) {
     c->preload.sha256[0] = '\0';
 }
 
-// A 64-character lowercase-or-uppercase hex digest, and nothing else. `next`
-// goes into an image URL and is compared against desired's digest; anything
-// that is not the shape of a digest is not a disk worth preloading.
+// A 64-character LOWERCASE hex digest, and nothing else -- the server's own
+// shape (/^[0-9a-f]{64}$/). `next` goes into an image URL and is compared
+// byte-for-byte against desired's digest, so an uppercase spelling of the same
+// disk would never match it: anything that is not exactly the server's shape
+// is not a disk worth preloading.
 static bool dc_is_sha256_hex(const char *s) {
     int n = 0;
     for (; s[n]; n++) {
         char ch = s[n];
-        bool hex = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+        bool hex = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
         if (!hex || n >= 64) return false;
     }
     return n == 64;
@@ -848,6 +876,17 @@ static dc_state_t dc_handle_poll_body(device_client_t *c, const char *json) {
     }
 
     if (json_is_null(json, "desired")) {
+        // Final review m6: nothing is (to be) mounted, so there is no title
+        // whose next disk is worth fetching. Cleared on delivery -- before the
+        // hold, which only delays releasing the disk, not the server's word --
+        // so a board that keeps its `next` from before an eject never
+        // preloads a disk of a title no longer mounted. (The server sends no
+        // `next` with desired: null, which dc_take_next reads as "nothing
+        // said".) The verified record, if any, is left alone: it is only ever
+        // published when a later desired names its exact digest.
+        c->preload.next_sha256[0] = '\0';
+        c->preload.next_disk_id[0] = '\0';
+        c->preload.next_disk_no = 0;
         if (dc_held(c)) { c->state = DC_IDLE_POLL; return c->state; }
         // The one explicit, unambiguous eject instruction. No fetch is
         // needed -- the transition is "hold no disk", which is complete
@@ -1584,7 +1623,12 @@ void dc_set_preload_gate(device_client_t *c, bool (*fn)(void *ctx), void *ctx) {
 // LAST, after every cheap check, and nothing is written before it says yes.
 bool dc_preload_step(device_client_t *c) {
     dc_preload_t *p = &c->preload;
+    // Describes THIS step only (dc_step's poll_interrupted rule).
+    p->interrupted = false;
     if (c->state != DC_IDLE_POLL) return false;
+    // Final review m4: a forced refetch means the server's copy must be
+    // fetched afresh on the next poll; nothing is preloaded meanwhile.
+    if (c->_refetch) return false;
     if (p->next_sha256[0] == '\0') return false;
     if (strcmp(p->next_sha256, c->mounted_sha256) == 0) return false;
     if (p->slot != SLOT_NONE && p->slot == psram_inactive_slot() &&
@@ -1593,6 +1637,7 @@ bool dc_preload_step(device_client_t *c) {
     if (!c->_preload_ok || !c->_preload_ok(c->_preload_ok_ctx)) return false;
 
     // From here the idle slot is being overwritten: no record survives it.
+    if (p->slot != SLOT_NONE) p->changed = true;   // the server was told "ready"
     dc_preload_drop(c);
     p->loading = true;
     int target = psram_inactive_slot();
@@ -1602,12 +1647,24 @@ bool dc_preload_step(device_client_t *c) {
     snprintf(sha, sizeof sha, "%s", p->next_sha256);
     wf_logf(WF_INFO, "preload: %.12s -> slot %d", sha, target);
     int status = 0;
-    dc_fetch_result_t res = dc_fetch_into(c, sha, target, /*observe=*/false, &status);
+    dc_fetch_result_t res = dc_fetch_into(c, sha, target, /*observe=*/false,
+                                          /*interruptible=*/true, &status);
     p->loading = false;
 
     switch (res) {
+    case DC_FETCH_INTERRUPTED:
+        // Final review I1: a tap is waiting. Nothing failed, so no backoff
+        // (that would hold the tap's own poll up to 60 s), and nothing was
+        // verified, so no record. The state is what it was on entry
+        // (dc_fetch_into moved it to DC_FETCHING). False: no result for the
+        // caller to act on -- it rounds to the top and sends the tap; a later
+        // idle pass preloads again.
+        p->interrupted = true;
+        c->state = DC_IDLE_POLL;
+        return false;
     case DC_FETCH_OK:
         p->slot = target;
+        p->changed = true;
         snprintf(p->sha256, sizeof p->sha256, "%s", sha);
         wf_logf(WF_INFO, "preload: %.12s verified in slot %d", sha, target);
         c->state = DC_IDLE_POLL;
