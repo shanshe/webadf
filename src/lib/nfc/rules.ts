@@ -11,7 +11,7 @@ export const DISK_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{
 export const TAP_MIN_INTERVAL_MS = 1000;
 export const NFC_WRITE_TTL_MS = 120_000;
 
-export type TapOutcome = 'mounting' | 'already' | 'not_found' | 'too_long' | 'ignored';
+export type TapOutcome = 'mounting' | 'already' | 'not_found' | 'too_long' | 'ignored' | 'single' | 'nothing_mounted';
 
 /** D2: a different disk swaps, the desired one is a no-op, and a burst is ignored. */
 export function decideTap(

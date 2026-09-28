@@ -4,6 +4,7 @@ import { devices } from '@/db/schema/devices';
 import { disks, games } from '@/db/schema/catalog';
 import { setDesired } from '@/lib/mount';
 import { decideTap, NFC_WRITE_TTL_MS, shouldStoreWriteResult, tapRefusalOutcome, type TapOutcome } from '@/lib/nfc/rules';
+import { readNextForDevices } from '@/lib/next-disk';
 
 /**
  * One tap, end to end (spec §5.2). The org is the caller's -- the device's
@@ -36,6 +37,43 @@ export async function tapDevice(
     .innerJoin(games, eq(games.id, disks.gameId))
     .where(and(eq(disks.id, diskId), eq(disks.orgId, orgId))).limit(1);
   return t ? { outcome, title: t.title } : { outcome };
+}
+
+/**
+ * The Next-disk card (multi-disk spec §3.1): the same guard and the same
+ * mount step as a disk tap, with the disk chosen by nextDisk. The card
+ * carries no disk and no org -- the board's own token bounds it.
+ */
+export async function tapNext(
+  deviceId: string, orgId: string, now: Date,
+): Promise<{ outcome: TapOutcome; diskNo?: number; diskCount?: number; title?: string }> {
+  const db = getDb();
+  const [row] = await db.select({
+    desiredDiskId: devices.desiredDiskId, mountedDiskId: devices.mountedDiskId, lastTapAt: devices.lastTapAt,
+    trackMaxBytes: devices.trackMaxBytes, playsHd: devices.playsHd,
+  }).from(devices).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).limit(1);
+  if (!row) return { outcome: 'not_found' };
+  // The burst rule only: 'already' cannot happen, since next is never the current disk.
+  if (decideTap({ desiredDiskId: null, lastTapAt: row.lastTapAt }, '', now) === 'ignored') return { outcome: 'ignored' };
+
+  const next = (await readNextForDevices(orgId, [{ id: deviceId, ...row }])).get(deviceId)!;
+  let outcome: TapOutcome;
+  let extra: { diskNo?: number; diskCount?: number; title?: string } = {};
+  if (next.kind !== 'disk') {
+    outcome = next.kind;
+  } else {
+    const r = await setDesired(orgId, deviceId, next.disk.id);
+    outcome = r.ok ? 'mounting' : tapRefusalOutcome(r.reason);
+    if (r.ok) {
+      const [t] = await db.select({ title: games.title }).from(disks)
+        .innerJoin(games, eq(games.id, disks.gameId))
+        .where(and(eq(disks.id, next.disk.id), eq(disks.orgId, orgId))).limit(1);
+      extra = { diskNo: next.disk.diskNo, diskCount: next.diskCount, ...(t ? { title: t.title } : {}) };
+    }
+  }
+  await db.update(devices).set({ lastTapAt: now, lastTapOutcome: outcome })
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)));
+  return { outcome, ...extra };
 }
 
 /**
