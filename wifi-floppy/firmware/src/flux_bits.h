@@ -44,6 +44,21 @@
 #define FLUX_CAPTURE_MAX_MS     800u
 #define FLUX_CAPTURE_BUF_BYTES  32768u
 
+/**
+ * Below this many ns, no legal MFM cell fits (2 cells at the standard
+ * 2,000 ns/cell is 4,000 ns): the line glitched, not the disk. Seen on the
+ * bench 2026-09-27 (HD writes, HANDOFF 3ao step 3): one capture of 28 had a
+ * 1,640 ns interval among flux that otherwise never went below ~3,600 ns, and
+ * decoded to nothing. flux_capture.c's diagnostics count intervals against
+ * this threshold via flux_ns_is_glitch() below, and this file's tests use the
+ * same function, so the two cannot drift apart. See
+ * flux_capture_result_t.glitches.
+ */
+#define FLUX_GLITCH_NS 3000u
+
+/** True if an interval this short cannot be legal MFM flux. */
+static inline bool flux_ns_is_glitch(uint32_t ns) { return ns < FLUX_GLITCH_NS; }
+
 typedef struct {
     uint8_t *buf;
     size_t   cap_bits;

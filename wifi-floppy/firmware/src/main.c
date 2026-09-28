@@ -2490,10 +2490,11 @@ int main(void) {
                         (unsigned)d.first_id, (unsigned long)d.first_sync_bit,
                         (unsigned)d.last_id, (unsigned long)d.last_end_bit,
                         (unsigned long)cap.mfm_bytes * 8ul);
-                wf_logf(WF_INFO, "write: backlog %u/4096 gap %u ms ns %u-%u cells %u/%u/%u",
+                wf_logf(WF_INFO, "write: backlog %u/4096 gap %u ms ns %u-%u cells %u/%u/%u short %u",
                         (unsigned)cap.max_backlog, (unsigned)cap.max_poll_gap_ms,
                         (unsigned)cap.ns_min, (unsigned)cap.ns_max,
-                        (unsigned)cap.cells[0], (unsigned)cap.cells[1], (unsigned)cap.cells[2]);
+                        (unsigned)cap.cells[0], (unsigned)cap.cells[1], (unsigned)cap.cells[2],
+                        (unsigned)cap.glitches);
                 if (d.found && !d.track_no_consistent) {
                     wf_logf(WF_WARN, "write: sector headers disagree about the track");
                 } else if (d.found && d.track_no != wt) {

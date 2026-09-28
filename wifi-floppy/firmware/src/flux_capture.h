@@ -65,6 +65,9 @@ typedef struct {
     uint32_t max_poll_gap_ms; /* longest gap between polls while armed */
     uint32_t cells[3];        /* intervals classified as 2, 3, 4 cells */
     uint32_t ns_min, ns_max;
+    uint32_t glitches;        /* intervals below FLUX_GLITCH_NS (flux_bits.h): a
+                                * glitched line, not data -- see the bench note
+                                * at 3ao step 3 in HANDOFF.md */
 } flux_capture_result_t;
 
 /** True, once, after a capture ends: the bitstream is ready to decode.

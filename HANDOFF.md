@@ -2578,7 +2578,8 @@ separately.
     the SEA-1295Y can go in with bent legs and no resistor (~120 mA, within the BSS138's rating, just louder).
     PR #3 (R12 + double 6.5/5 mm BZ1 footprint) merged 2026-09-28 (`e2eb1f5`); later orders get it.
   - **PENDING TEST ON REV B (when the batch arrives):** rerun the large HD copy (HANDOFF 3ao step 3) and check that
-    no capture's `write: backlog ... ns <min>-<max>` shows a minimum below ~3,500 ns. On the rev A2 bench board
+    no capture's `write: backlog ... ns <min>-<max>` shows a minimum below ~3,500 ns -- and read the `short <N>`
+    field the same log line now carries (fw 1.5.1): it must be 0. On the rev A2 bench board
     with the A5000 (no floppy-line pull-ups on either side) one capture of 28 had a 1,640 ns spike and decoded to
     nothing (3ao bench notes); rev B's WDATA pull-up should remove it. Also re-check the A5000 bus reads idle-high.
   - **Buzzer change requested from Shanshe (2026-09-26):** BZ1 → magnetic passive 5 V S&S SEA-1295Y-0520-42Ω-38P6.5
@@ -4545,7 +4546,8 @@ What it does:
    from the `write: trk` lines here (the capture size; the buffer is 32,768 -- its margin rests on an estimated
    lead gap, so this figure tells us whether the estimate held). Also watch the `hd: track N encoded in X us (new
    max)` line while this write's close is hashing; record it if a new max appears well above the earlier tracks'
-   times (possible PSRAM contention between the hash and the next capture).
+   times (possible PSRAM contention between the hash and the next capture). Read the `short <N>` field on each
+   `write: backlog` line (fw 1.5.1): it must be 0 -- this is the rev B retest of the 1,640 ns WDATA glitch below.
 4. Offline: switch WiFi off, save to the HD disk, switch it back on. The version arrives.
 5. Memory: record the lowest `heap: free low-water` line during steps 2-4 here. 1.4.1 was 69,632 after TLS; this
    release adds ~22 KB of static buffers (+16,384 capture, +5,632 POST buffer), so expect around 47,000 and
