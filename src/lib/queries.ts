@@ -330,6 +330,14 @@ export interface DeviceListItem {
    * guessing a protection state for a drive that is empty.
    */
   mountedWriteProtected: boolean | null;
+  /**
+   * Feeds readNextForDevices and its preload verdict (multi-disk plan R3,
+   * nextInfo -- next-disk.ts), the same four fields liveStateRows carries.
+   */
+  trackMaxBytes: number | null;
+  playsHd: boolean;
+  preloadSha256: string | null;
+  preloadState: string | null;
 }
 
 /**
@@ -376,6 +384,8 @@ export async function listDevices(orgId: string): Promise<DeviceListItem[]> {
       mountedGame: mountedGame.title,
       mountedDiskNo: devices.mountedDiskNo,
       mountedWriteProtected: mountedDisk.writeProtected,
+      trackMaxBytes: devices.trackMaxBytes, playsHd: devices.playsHd,
+      preloadSha256: devices.preloadSha256, preloadState: devices.preloadState,
     })
     .from(devices)
     // Every join here is org-scoped in the ON clause itself, not just

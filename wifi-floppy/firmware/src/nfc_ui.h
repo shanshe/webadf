@@ -44,6 +44,13 @@
 // Never NULL: every verdict, the server's 1 s rate limit included, has words.
 const char *nfc_ui_tap_line(dc_tap_outcome_t o, const char *title, char *buf, int cap);
 
+// The detail line for dc_tap_next's verdict (multi-disk spec): the target disk
+// "N of M", or "Saving, then disk N" when the swap will wait for unsent
+// writes; SINGLE / NO_DISK have their own words; every other verdict reads as
+// nfc_ui_tap_line's. Never NULL.
+const char *nfc_ui_next_line(dc_tap_outcome_t o, uint32_t disk_no, uint32_t disk_count, bool saving,
+                             char *buf, int cap);
+
 // The line for an event core1 shows without asking the server: NOT_OURS,
 // UNREADABLE (by its `why`) and WRITE_DONE. NULL for the rest.
 const char *nfc_ui_event_line(const nfc_event_t *ev);

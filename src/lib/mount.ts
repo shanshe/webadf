@@ -272,6 +272,8 @@ export async function recordStatus(
     playsHd?: boolean;
     /** Whether the Si512 reader answered its init on the board's last check (spec §5). */
     nfcReader?: 'present' | 'absent';
+    /** What the board's idle slot holds (multi-disk spec §3.5). */
+    preload?: { sha256: string; state: 'loading' | 'ready' } | null;
   },
 ): Promise<void> {
   const db = getDb();
@@ -308,6 +310,15 @@ export async function recordStatus(
   // stop being sent HD disks.
   if (s.playsHd !== undefined) patch.playsHd = s.playsHd;
   else if (s.firmwareVersion !== undefined) patch.playsHd = false;
+  // Build-bound like trackMaxBytes: a report naming its firmware but silent on
+  // preload is a build without the field, and must not keep a newer build's claim.
+  if (s.preload !== undefined) {
+    patch.preloadSha256 = s.preload?.sha256 ?? null;
+    patch.preloadState = s.preload ? s.preload.state : 'none';
+  } else if (s.firmwareVersion !== undefined) {
+    patch.preloadSha256 = null;
+    patch.preloadState = null;
+  }
   // Plain absent-leaves-it-alone, unlike trackMaxBytes above: the reader's
   // presence is not tied to the firmware build, so there is no "drop to a
   // legacy default" case here -- a report that omits it simply has nothing

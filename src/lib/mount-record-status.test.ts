@@ -105,3 +105,35 @@ describe('recordStatus playsHd', () => {
     expect('playsHd' in patches[0]).toBe(false);
   });
 });
+
+// preload (multi-disk spec §3.5, plan ruling R3): what the board's idle slot
+// holds. Build-bound like trackMaxBytes/playsHd above -- a report naming its
+// firmware but silent on preload comes from a build without the field, and
+// must not keep a newer build's claim.
+describe('recordStatus preload', () => {
+  it('an object stores both columns', async () => {
+    await recordStatus('dev-1', { ...base, preload: { sha256: 'b'.repeat(64), state: 'ready' } });
+    expect(patches[0].preloadSha256).toBe('b'.repeat(64));
+    expect(patches[0].preloadState).toBe('ready');
+  });
+
+  it('null stores sha NULL and state "none"', async () => {
+    await recordStatus('dev-1', { ...base, preload: null });
+    expect(patches[0].preloadSha256).toBeNull();
+    expect(patches[0].preloadState).toBe('none');
+  });
+
+  it('absent with firmwareVersion present sets both NULL (a build that does not know the field)', async () => {
+    await recordStatus('dev-1', { ...base });
+    expect('preloadSha256' in patches[0]).toBe(true);
+    expect('preloadState' in patches[0]).toBe(true);
+    expect(patches[0].preloadSha256).toBeNull();
+    expect(patches[0].preloadState).toBeNull();
+  });
+
+  it('absent without firmwareVersion leaves both columns untouched', async () => {
+    await recordStatus('dev-1', { mountedSha256: null });
+    expect('preloadSha256' in patches[0]).toBe(false);
+    expect('preloadState' in patches[0]).toBe(false);
+  });
+});

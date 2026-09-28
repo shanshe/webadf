@@ -18,9 +18,24 @@ const base: LiveStateRow = {
   mountedDiskCount: 2, mountedImageFormat: 'adf', mountedSizeBytes: 901_120,
   desiredGameTitle: 'Turrican',
   macAddress: 'AA:BB:CC:DD:EE:FF',
+  trackMaxBytes: null, playsHd: false, preloadSha256: null, preloadState: null, next: null,
 };
 const other: LiveStateRow = { ...base, id: 'dev-b', name: 'Second' };
 const fp = (rows: LiveStateRow[], now = NOW) => liveFingerprint(rows, now, 0);
+
+describe('the next-disk fields', () => {
+  it('changes the fingerprint when the preload state changes', () => {
+    const loading = { ...base, next: { diskNo: 2, diskCount: 3, wraps: false, preload: 'loading' as const } };
+    const ready = { ...base, next: { diskNo: 2, diskCount: 3, wraps: false, preload: 'ready' as const } };
+    expect(fp([loading])).not.toBe(fp([ready]));
+  });
+
+  it('changes the fingerprint when the next disk number changes', () => {
+    const two = { ...base, next: { diskNo: 2, diskCount: 3, wraps: false, preload: null } };
+    const three = { ...base, next: { diskNo: 3, diskCount: 3, wraps: false, preload: null } };
+    expect(fp([two])).not.toBe(fp([three]));
+  });
+});
 
 describe('liveFingerprint', () => {
   it('is 16 hex characters and stable across row order', () => {

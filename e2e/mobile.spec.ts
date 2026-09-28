@@ -562,6 +562,29 @@ test('the Demozoo review queue does not overflow at 390px', async ({ page }) => 
   expect(overflow).toBeLessThanOrEqual(0);
 });
 
+/** Task 13 step 2: the Devices header's "Write a Next-disk card" button at 390px. */
+test('write-next-card is visible and fits the viewport on Devices', async ({ page, request }) => {
+  const { orgId } = await signUpFresh(page);
+  const { token } = await pairDevice(page, request);
+  await seedDisk(orgId, { title: `Mobile Next ${runTag()}`, diskNo: 1, sha256: sha(runTag()) });
+  // `preload: null`: a 1.6.0+ board, the only kind offered the Next-disk card.
+  expect((await request.post('/api/device/status', {
+    headers: authHeader(token), data: { mountedSha256: null, nfcReader: 'present', preload: null },
+  })).status()).toBe(204);
+
+  await page.goto('/devices');
+  const trigger = page.getByTestId('write-next-card');
+  await expect(trigger).toBeVisible();
+  const box = (await trigger.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
 test('a press-and-hold inside a card\'s dialog does not drag the card behind it', async ({ page, request }) => {
   // Both dialogs are portalled out of the card, but React bubbles their
   // events through the card anyway -- and dnd-kit's TouchSensor activates on

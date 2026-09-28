@@ -11,7 +11,10 @@ vi.mock('@/lib/device-auth', () => ({
 const tapDevice = vi.fn<
   (deviceId: string, orgId: string, diskId: string, now: Date) => Promise<{ outcome: TapOutcome; title?: string }>
 >(async () => ({ outcome: 'mounting', title: 'Turrican II' }));
-vi.mock('@/lib/nfc/store', () => ({ tapDevice }));
+const tapNext = vi.fn<
+  (deviceId: string, orgId: string, now: Date) => Promise<{ outcome: TapOutcome; diskNo?: number; diskCount?: number }>
+>(async () => ({ outcome: 'mounting', diskNo: 2, diskCount: 3 }));
+vi.mock('@/lib/nfc/store', () => ({ tapDevice, tapNext }));
 
 const ID = 'a1b2c3d4-e5f6-5a7b-8c9d-0e1f2a3b4c5d';
 const post = (body: unknown) => new Request('http://test/api/device/tap', {
@@ -40,5 +43,28 @@ describe('POST /api/device/tap', () => {
     const res = await POST(post({ diskId: ID }));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ outcome: 'not_found' });
+  });
+});
+
+describe('POST /api/device/tap {action:"next"}', () => {
+  it('advances through the store with the token org', async () => {
+    const { POST } = await import('./route');
+    const res = await POST(post({ action: 'next', orgId: 'org-EVIL' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: 'mounting', diskNo: 2, diskCount: 3 });
+    expect(tapNext).toHaveBeenCalledWith('dev-1', 'org-1', expect.any(Date));
+    expect(tapDevice).not.toHaveBeenCalled();
+  });
+  it('answers single and nothing_mounted as 200 outcomes', async () => {
+    const { POST } = await import('./route');
+    tapNext.mockResolvedValueOnce({ outcome: 'single' });
+    expect(await (await POST(post({ action: 'next' }))).json()).toEqual({ outcome: 'single' });
+    tapNext.mockResolvedValueOnce({ outcome: 'nothing_mounted' });
+    expect(await (await POST(post({ action: 'next' }))).json()).toEqual({ outcome: 'nothing_mounted' });
+  });
+  it.each([{ action: 'prev' }, { action: 'next', diskId: ID }])('refuses %j with 400', async (body) => {
+    const { POST } = await import('./route');
+    expect((await POST(post(body))).status).toBe(400);
+    expect(tapNext).not.toHaveBeenCalled();
   });
 });

@@ -14,8 +14,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Link } from '@/components/shell/link';
-import { requestEject, requestWriteProtect } from '@/components/devices/device-actions';
-import { chipSlots, diskText, protectTag, splitChips, type DriveChip } from '@/lib/drive-chips';
+import { requestEject, requestNextDisk, requestWriteProtect } from '@/components/devices/device-actions';
+import { chipSlots, diskText, preloadText, protectTag, splitChips, type DriveChip } from '@/lib/drive-chips';
 
 /**
  * Every paired wifi-floppy as a small chip in the header, each opening a menu
@@ -320,6 +320,28 @@ function DriveEntry({ chip }: { chip: DriveChip }) {
         <span className="flex-1">{protectLabel}</span>
         {protectHint && <span className="text-[11px]" style={{ color: 'var(--muted)' }}>{protectHint}</span>}
       </DropdownMenuItem>
+
+      {chip.next && (
+        <>
+          <DropdownMenuItem
+            data-testid={`drive-next-${chip.id}`}
+            className={ITEM_CLASS}
+            onClick={async () => { if (await requestNextDisk(chip.id)) start(() => router.refresh()); }}
+          >
+            <span className="flex-1">
+              Next disk: Disk {chip.next.diskNo} of {chip.next.diskCount}{chip.next.wraps ? ' (wraps)' : ''}
+            </span>
+          </DropdownMenuItem>
+          {/* A plain div, not a DropdownMenuLabel: a second group label
+              would rename the drive's menu group for screen readers. */}
+          {chip.next.preload && (
+            <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--muted)' }}
+                 data-testid={`drive-preload-${chip.id}`} data-preload={chip.next.preload}>
+              {preloadText(chip.next.diskNo, chip.next.preload)}
+            </div>
+          )}
+        </>
+      )}
 
       {/* The divider keeps Eject -- the one action that reaches out and pulls
           a disk from under a running Amiga -- from sitting flush against the

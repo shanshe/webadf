@@ -114,6 +114,14 @@ export const devices = pgTable('devices', {
   nfcWriteResultUid: text('nfc_write_result_uid'),
   lastTapAt: timestamp('last_tap_at', { withTimezone: true }),
   lastTapOutcome: text('last_tap_outcome'),
+  // What an armed NFC write puts on the tag (multi-disk spec §3.4): 'disk' =
+  // nfcWriteDiskId, 'next' = the universal Next-disk card (no disk id).
+  nfcWriteKind: text('nfc_write_kind').notNull().default('disk'),
+  // What the board says its idle slot holds (spec §3.5, plan R3): 'loading',
+  // 'ready', or 'none' (it reported nothing preloaded). NULL = firmware too
+  // old to report -- the UI then says nothing rather than guessing.
+  preloadSha256: text('preload_sha256'),
+  preloadState: text('preload_state'),
 
   /**
    * 'queued' | 'downloading' | 'applying' | 'failed', as the device reports.

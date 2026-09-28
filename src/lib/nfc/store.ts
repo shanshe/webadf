@@ -3,7 +3,10 @@ import { getDb } from '@/db';
 import { devices } from '@/db/schema/devices';
 import { disks, games } from '@/db/schema/catalog';
 import { setDesired } from '@/lib/mount';
-import { decideTap, NFC_WRITE_TTL_MS, shouldStoreWriteResult, tapRefusalOutcome, type TapOutcome } from '@/lib/nfc/rules';
+import {
+  decideTap, NFC_WRITE_TTL_MS, nextCardWriters, shouldStoreWriteResult, tapRefusalOutcome, type TapOutcome,
+} from '@/lib/nfc/rules';
+import { readNextForDevices } from '@/lib/next-disk';
 
 /**
  * One tap, end to end (spec §5.2). The org is the caller's -- the device's
@@ -39,6 +42,43 @@ export async function tapDevice(
 }
 
 /**
+ * The Next-disk card (multi-disk spec §3.1): the same guard and the same
+ * mount step as a disk tap, with the disk chosen by nextDisk. The card
+ * carries no disk and no org -- the board's own token bounds it.
+ */
+export async function tapNext(
+  deviceId: string, orgId: string, now: Date,
+): Promise<{ outcome: TapOutcome; diskNo?: number; diskCount?: number; title?: string }> {
+  const db = getDb();
+  const [row] = await db.select({
+    desiredDiskId: devices.desiredDiskId, mountedDiskId: devices.mountedDiskId, lastTapAt: devices.lastTapAt,
+    trackMaxBytes: devices.trackMaxBytes, playsHd: devices.playsHd,
+  }).from(devices).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).limit(1);
+  if (!row) return { outcome: 'not_found' };
+  // The burst rule only: 'already' cannot happen, since next is never the current disk.
+  if (decideTap({ desiredDiskId: null, lastTapAt: row.lastTapAt }, '', now) === 'ignored') return { outcome: 'ignored' };
+
+  const next = (await readNextForDevices(orgId, [{ id: deviceId, ...row }])).get(deviceId)!;
+  let outcome: TapOutcome;
+  let extra: { diskNo?: number; diskCount?: number; title?: string } = {};
+  if (next.kind !== 'disk') {
+    outcome = next.kind;
+  } else {
+    const r = await setDesired(orgId, deviceId, next.disk.id);
+    outcome = r.ok ? 'mounting' : tapRefusalOutcome(r.reason);
+    if (r.ok) {
+      const [t] = await db.select({ title: games.title }).from(disks)
+        .innerJoin(games, eq(games.id, disks.gameId))
+        .where(and(eq(disks.id, next.disk.id), eq(disks.orgId, orgId))).limit(1);
+      extra = { diskNo: next.disk.diskNo, diskCount: next.diskCount, ...(t ? { title: t.title } : {}) };
+    }
+  }
+  await db.update(devices).set({ lastTapAt: now, lastTapOutcome: outcome })
+    .where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId)));
+  return { outcome, ...extra };
+}
+
+/**
  * The write-request columns plus the disk's title, for the poll payload.
  *
  * `title` comes back RAW (unbounded) -- the poll route is the one that
@@ -47,7 +87,7 @@ export async function tapDevice(
  */
 export async function readNfcWriteRow(deviceId: string) {
   const [r] = await getDb().select({
-    nfcWriteSeq: devices.nfcWriteSeq, nfcWriteDiskId: devices.nfcWriteDiskId,
+    nfcWriteSeq: devices.nfcWriteSeq, nfcWriteDiskId: devices.nfcWriteDiskId, nfcWriteKind: devices.nfcWriteKind,
     nfcWriteExpiresAt: devices.nfcWriteExpiresAt, nfcWriteResultSeq: devices.nfcWriteResultSeq,
     title: games.title,
   }).from(devices)
@@ -92,7 +132,21 @@ export async function requestNfcWrite(
     .where(and(eq(disks.id, diskId), eq(disks.orgId, orgId))).limit(1);
   if (!disk) return null;
   const [r] = await db.update(devices).set({
-    nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: diskId,
+    nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: diskId, nfcWriteKind: 'disk',
+    nfcWriteExpiresAt: new Date(now.getTime() + NFC_WRITE_TTL_MS),
+    nfcWriteResultSeq: null, nfcWriteResult: null, nfcWriteResultUid: null,
+  }).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).returning({ seq: devices.nfcWriteSeq });
+  return r?.seq ?? null;
+}
+
+/**
+ * Arms the universal Next-disk card (multi-disk spec §3.4): no disk, kind
+ * 'next'. The board picks the disk itself (readNextForDevices) when it taps
+ * the card, the same as a fob tap; the write path only puts the card in play.
+ */
+export async function requestNfcNextWrite(orgId: string, deviceId: string, now: Date): Promise<number | null> {
+  const [r] = await getDb().update(devices).set({
+    nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: null, nfcWriteKind: 'next',
     nfcWriteExpiresAt: new Date(now.getTime() + NFC_WRITE_TTL_MS),
     nfcWriteResultSeq: null, nfcWriteResult: null, nfcWriteResultUid: null,
   }).where(and(eq(devices.id, deviceId), eq(devices.orgId, orgId))).returning({ seq: devices.nfcWriteSeq });
@@ -100,9 +154,11 @@ export async function requestNfcWrite(
 }
 
 /** Bumps the cursor and clears the disk, but only if `seq` is still the
- *  current request -- a stale cancel must not clobber a newer one. */
+ *  current request -- a stale cancel must not clobber a newer one. Resets
+ *  the kind to 'disk' too, so a disarm this produces (nfcWriteForPoll) is
+ *  never mistaken for a live Next-disk request. */
 export async function cancelNfcWrite(deviceId: string, seq: number): Promise<void> {
-  await getDb().update(devices).set({ nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: null })
+  await getDb().update(devices).set({ nfcWriteSeq: sql`${devices.nfcWriteSeq} + 1`, nfcWriteDiskId: null, nfcWriteKind: 'disk' })
     .where(and(eq(devices.id, deviceId), eq(devices.nfcWriteSeq, seq)));
 }
 
@@ -119,11 +175,14 @@ export async function readWriteResult(deviceId: string, seq: number): Promise<{ 
  * This org's boards and whether each has a reader, for the fob button: the
  * pages draw it only when one reports 'present', and /api/nfc/write chooses
  * among them (chooseNfcDevice). Org-scoped here, so a board of another org
- * never reaches either.
+ * never reaches either. `preloadState` rides along for the Next-disk card:
+ * NULL means a build too old to report `preload` (before 1.6.0), which is
+ * also a build that reads a Next-card request as a disarm.
  */
 export async function listNfcDevices(orgId: string) {
-  return getDb().select({ id: devices.id, name: devices.name, nfcReader: devices.nfcReader })
-    .from(devices).where(eq(devices.orgId, orgId)).orderBy(asc(devices.name), asc(devices.id));
+  return getDb().select({
+    id: devices.id, name: devices.name, nfcReader: devices.nfcReader, preloadState: devices.preloadState,
+  }).from(devices).where(eq(devices.orgId, orgId)).orderBy(asc(devices.name), asc(devices.id));
 }
 
 /** The disk's title and number, or null when it is not this org's -- the
@@ -163,4 +222,11 @@ export async function listNfcReaders(orgId: string): Promise<{ id: string; name:
   return (await listNfcDevices(orgId))
     .filter((d) => d.nfcReader === 'present')
     .map(({ id, name }) => ({ id, name }));
+}
+
+/** The boards the Next-disk card button can write with (nextCardWriters).
+ *  Separate from listNfcReaders, which the disk-tag fob uses and which every
+ *  reader board serves whatever its firmware. */
+export async function listNextCardWriters(orgId: string): Promise<{ id: string; name: string }[]> {
+  return nextCardWriters(await listNfcDevices(orgId));
 }

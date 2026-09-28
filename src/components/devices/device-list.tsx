@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import type { DeviceListItem } from '@/lib/queries';
 import type { FirmwareState, ReleaseRef } from '@/lib/firmware-state';
+import type { NextInfo } from '@/lib/next-disk';
 import { MAX_UPDATE_BATCH, overBatchCap } from '@/lib/firmware-update-rules';
 import { DeviceCard } from './device-card';
 
@@ -18,13 +19,14 @@ import { DeviceCard } from './device-card';
  * the server would refuse.
  */
 export function DeviceList({
-  devices, now, states, selectableIds, latest,
+  devices, now, states, selectableIds, latest, nextById,
 }: {
   devices: DeviceListItem[];
   now: number;
   states: FirmwareState[];
   selectableIds: string[];
   latest: ReleaseRef | null;
+  nextById: Record<string, NextInfo | null>;
 }) {
   const router = useRouter();
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -212,6 +214,7 @@ export function DeviceList({
               ? { selected: picked.has(d.id), onToggle: toggle }
               : undefined}
             onCancelUpdate={d.desiredFirmwareVersion ? cancel : undefined}
+            next={nextById[d.id] ?? null}
           />
         ))}
       </div>

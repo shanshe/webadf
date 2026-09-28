@@ -23,6 +23,7 @@ typedef enum {
     NFC_TAG_BAD_DATA,   // WFDK marker present, but version/length/CRC/shape
                          // don't check out: corrupt, foreign, or a tag pulled
                          // away mid-write
+    NFC_TAG_NEXT,       // a WFDK v2 "next" card (multi-disk spec §4.1)
 } nfc_tag_result_t;
 
 // CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection, no xorout.
@@ -37,6 +38,11 @@ bool nfc_disk_id_valid(const char *id);
 // shape -- nothing is ever written to a tag for an id that couldn't be
 // read back.
 bool nfc_tag_encode(const char *disk_id, uint8_t out[NFC_TAG_BYTES]);
+
+// Encodes the WFDK v2 "next" action card -- no disk id, just the marker
+// that means "advance to the next disk" (multi-disk spec §4.1). Always
+// succeeds.
+bool nfc_tag_encode_next(uint8_t out[NFC_TAG_BYTES]);
 
 // Decodes a 48-byte block-4..6 read into `disk_id` (NUL-terminated, so the
 // caller's buffer must be at least NFC_DISK_ID_LEN + 1 bytes). See

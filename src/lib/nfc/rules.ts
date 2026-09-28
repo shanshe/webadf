@@ -11,7 +11,7 @@ export const DISK_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{
 export const TAP_MIN_INTERVAL_MS = 1000;
 export const NFC_WRITE_TTL_MS = 120_000;
 
-export type TapOutcome = 'mounting' | 'already' | 'not_found' | 'too_long' | 'ignored';
+export type TapOutcome = 'mounting' | 'already' | 'not_found' | 'too_long' | 'ignored' | 'single' | 'nothing_mounted';
 
 /** D2: a different disk swaps, the desired one is a no-op, and a burst is ignored. */
 export function decideTap(
@@ -31,14 +31,19 @@ export function decideTap(
  * does not keep releasing forever.
  */
 export function nfcWriteForPoll(
-  row: { nfcWriteSeq: number; nfcWriteDiskId: string | null; nfcWriteExpiresAt: Date | null; nfcWriteResultSeq: number | null },
+  row: {
+    nfcWriteSeq: number; nfcWriteDiskId: string | null; nfcWriteKind: string;
+    nfcWriteExpiresAt: Date | null; nfcWriteResultSeq: number | null;
+  },
   ack: number, now: Date,
-): { seq: number; diskId: string | null } | null {
+): { seq: number; diskId: string | null; kind: 'disk' | 'next' } | null {
   if (row.nfcWriteSeq <= ack) return null;
-  const live = row.nfcWriteDiskId !== null
+  const next = row.nfcWriteKind === 'next';
+  const live = (next || row.nfcWriteDiskId !== null)
     && row.nfcWriteExpiresAt !== null && now.getTime() <= row.nfcWriteExpiresAt.getTime()
     && row.nfcWriteResultSeq !== row.nfcWriteSeq;
-  return { seq: row.nfcWriteSeq, diskId: live ? row.nfcWriteDiskId : null };
+  if (!live) return { seq: row.nfcWriteSeq, diskId: null, kind: 'disk' };
+  return next ? { seq: row.nfcWriteSeq, diskId: null, kind: 'next' } : { seq: row.nfcWriteSeq, diskId: row.nfcWriteDiskId, kind: 'disk' };
 }
 
 /** Only the first answer to the CURRENT request counts. */
@@ -69,6 +74,19 @@ export function chooseNfcDevice<D extends { id: string; name: string; nfcReader:
   // standing at; the dialog asks instead.
   if (readers.length > 1) return { ok: false, error: 'device_required' };
   return { ok: true, device: readers[0] };
+}
+
+/** The boards that can write a Next-disk card: a reader present AND a build
+ *  that reports `preload` (1.6.0+, preloadState NOT NULL -- a 1.6.0 board with
+ *  nothing preloaded reports null, stored as 'none'). Firmware 1.3.0 to 1.5.1
+ *  has a reader but reads the card's request (diskId: null) as a disarm, so
+ *  offering it there would only count down to "expired". */
+export function nextCardWriters<D extends { id: string; name: string; nfcReader: string | null; preloadState: string | null }>(
+  devs: D[],
+): { id: string; name: string }[] {
+  return devs
+    .filter((d) => d.nfcReader === 'present' && d.preloadState !== null)
+    .map(({ id, name }) => ({ id, name }));
 }
 
 export type NfcWriteStatus =

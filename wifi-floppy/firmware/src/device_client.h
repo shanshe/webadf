@@ -133,8 +133,13 @@ typedef bool (*dc_hold_fn)(void *ctx);
 // firmwareInstructionAck): worst case adds ~
 // ,"updateProtocol":1,"firmwareUpdateState":"downloading","firmwareUpdateError":"<200>","firmwareInstructionAck":4294967295
 // -- about 300 bytes.
-#define DC_STATUS_BODY_BYTES  1024
-#define DC_STATUS_REQ_BYTES   1536
+// Raised again for multi-disk's preload record (spec 2026-09-28 §4.3), which
+// adds up to ,"preload":{"sha256":"<64 hex>","state":"loading"} -- 106 bytes --
+// and pushed the maximal body past 1024 (test_status_body_fits_at_maximum
+// failed at the old budget). Measured with a ready record: body 1053 bytes,
+// whole request 1187.
+#define DC_STATUS_BODY_BYTES  1280
+#define DC_STATUS_REQ_BYTES   1792
 // `err` is firmware-authored (a short static string or errno-derived text,
 // never network input), but it still has to survive being embedded in a
 // JSON string unescaped -- truncated well short of DC_STATUS_BODY_BYTES so
@@ -183,6 +188,34 @@ typedef struct {
     const char *error;             // NULL => JSON null
     uint32_t    instruction_ack;
 } dc_fw_report_t;
+
+// Multi-disk spec 2026-09-28 §4.3: what the idle PSRAM slot holds, and what
+// the server says comes next. `next_*` is the server's word, lifted out of the
+// poll's `next` object; `slot`/`sha256` is what dc_preload_step actually put in
+// the idle slot and verified. The two are separate on purpose: the poll that
+// swaps to the preloaded disk also names the NEXT next, so the record must
+// survive a change of `next_sha256` long enough for dc_handle_poll_body to use it.
+//
+// The record is trusted only while `slot == psram_inactive_slot()`, and it is
+// dropped by every regular fetch (which overwrites that slot), by `next: null`,
+// and by the swap that consumes it.
+typedef struct {
+    bool     known;              // a `next` came with a delivered poll
+    char     next_sha256[65];    // what the server says comes next ("" = none)
+    char     next_disk_id[37];
+    uint32_t next_disk_no;
+    int      slot;               // SLOT_NONE = nothing preloaded
+    char     sha256[65];         // what `slot` holds, verified
+    bool     loading;            // a preload fetch is in progress
+    // Set by dc_preload_step when the record the status report carries
+    // changed -- a preload verified, or a "ready" record dropped to make room
+    // -- and cleared by the caller once it owes the server that report. A
+    // failed preload that had no record to drop changes nothing reported.
+    bool     changed;
+    // The last dc_preload_step was cut short by the poll-interrupt (a tap
+    // waiting): no record, no backoff, state as on entry. Cleared on entry.
+    bool     interrupted;
+} dc_preload_t;
 
 typedef struct {
     transport_t *t;
@@ -268,6 +301,9 @@ typedef struct {
     // be read back as a disk.
     char     nfc_write_disk_id[37];
     char     nfc_write_title[DC_TITLE_MAX + 1];
+    // Multi-disk: the armed write is the Next-disk card (nfcWrite.kind ==
+    // "next"), not a disk. Only ever true with nfc_write_disk_id == "".
+    bool     nfc_write_next;
     // True when the LAST dc_step ended because the poll-interrupt predicate
     // said so (see dc_set_poll_interrupt). Nothing else about the client
     // changed on that step -- not state, not backoff, not since.
@@ -286,6 +322,11 @@ typedef struct {
     char     _nfc_reader[8];
     // dc_set_plays_hd: "playsHd":true in every status report.
     bool     _plays_hd;
+
+    // --- multi-disk Next disk (spec 2026-09-28 §4.3-4.4) ---
+    dc_preload_t preload;
+    bool (*_preload_ok)(void *ctx);   // dc_set_preload_gate
+    void  *_preload_ok_ctx;
 } device_client_t;
 
 void dc_init(device_client_t *c, transport_t *t, clock_ms_fn now,
@@ -456,6 +497,9 @@ typedef enum {
     DC_TAP_IGNORED,     // within the server's 1 s per-device tap rate limit
     DC_TAP_FAILED,      // no usable answer: offline, non-2xx, or a body we
                         // could not read. The tap is NOT queued (spec §6).
+    // Multi-disk (dc_tap_next only). Appended, so existing values keep theirs.
+    DC_TAP_SINGLE,      // the mounted title has one disk: nothing to move to
+    DC_TAP_NO_DISK,     // nothing is mounted, so there is no "next"
 } dc_tap_outcome_t;
 
 // POST /api/device/tap {"diskId":"<disk_id>"} and returns the server's
@@ -464,6 +508,31 @@ typedef enum {
 // halts, as everywhere, and reads as DC_TAP_FAILED. Call between dc_steps,
 // never from inside one (see the STACK note in device_client.c).
 dc_tap_outcome_t dc_tap(device_client_t *c, const char *disk_id, char *title_out, int title_cap);
+
+// POST /api/device/tap {"action":"next"} -- the Next-disk card (multi-disk
+// spec §4.2). Same rules as dc_tap. On DC_TAP_MOUNTING, `disk_no`/`disk_count`
+// (each may be NULL) receive the disk being moved to and the title's disk
+// count, and `title_out` its title; all are 0/"" when the answer carries none.
+dc_tap_outcome_t dc_tap_next(device_client_t *c, uint32_t *disk_no, uint32_t *disk_count,
+                             char *title_out, int title_cap);
+
+// Multi-disk preload gate: `fn(ctx)` true means the idle slot may be used for a
+// preload right now -- no dirty or unsent tracks, no firmware staging (spec
+// §4.3). NULL (dc_init's default) means never preload.
+void dc_set_preload_gate(device_client_t *c, bool (*fn)(void *ctx), void *ctx);
+
+// Fetches the server's `next` into the inactive slot WITHOUT publishing it, if
+// the client is idle, the gate allows, the digest is not blocked, and it is
+// neither mounted nor already preloaded, and no forced refetch is pending.
+// Returns true if it did any work (a request went out and was answered or
+// failed), whatever the result. A failure leaves no record and backs off;
+// 400/404/422 or an invalid container block the digest, exactly as a fetch
+// does; 401 halts. The poll-interrupt (dc_set_poll_interrupt) is installed for
+// the transfer: when it fires, the fetch is abandoned, `preload.interrupted`
+// is set, no record is left, NO backoff is entered, and this returns false.
+// `preload.changed` says whether the record the status report carries moved.
+// Call between dc_steps, never from inside one.
+bool dc_preload_step(device_client_t *c);
 
 // POST /api/device/tap-write {"seq":N,"ok":true|false,"uid":"..","reason":".."}
 // -- the read-back verdict of a tag write. `why` is sent only when !ok (and

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DISK_ID_RE, decideTap, nfcWriteForPoll, shouldStoreWriteResult, NFC_WRITE_TTL_MS,
-  chooseNfcDevice, nfcWriteStatus, formatTagUid, writeFailureText, tapRefusalOutcome,
+  chooseNfcDevice, nfcWriteStatus, formatTagUid, writeFailureText, tapRefusalOutcome, nextCardWriters,
 } from './rules';
 
 const ID = 'a1b2c3d4-e5f6-5a7b-8c9d-0e1f2a3b4c5d';
@@ -28,21 +28,43 @@ describe('decideTap', () => {
 });
 
 describe('nfcWriteForPoll', () => {
-  const live = { nfcWriteSeq: 3, nfcWriteDiskId: ID, nfcWriteExpiresAt: t(NFC_WRITE_TTL_MS), nfcWriteResultSeq: null };
+  const live = {
+    nfcWriteSeq: 3, nfcWriteDiskId: ID, nfcWriteKind: 'disk',
+    nfcWriteExpiresAt: t(NFC_WRITE_TTL_MS), nfcWriteResultSeq: null,
+  };
   it('offers a live request the board has not acked', () =>
-    expect(nfcWriteForPoll(live, 2, t(0))).toEqual({ seq: 3, diskId: ID }));
+    expect(nfcWriteForPoll(live, 2, t(0))).toEqual({ seq: 3, diskId: ID, kind: 'disk' }));
   it('says nothing once the board has acked this seq', () =>
     expect(nfcWriteForPoll(live, 3, t(0))).toBeNull());
   it('says nothing to a board AHEAD of the server (restore): no wake loop', () =>
     expect(nfcWriteForPoll(live, 9, t(0))).toBeNull());
   it('turns an expired request into a disarm', () =>
-    expect(nfcWriteForPoll(live, 2, t(NFC_WRITE_TTL_MS + 1))).toEqual({ seq: 3, diskId: null }));
+    expect(nfcWriteForPoll(live, 2, t(NFC_WRITE_TTL_MS + 1))).toEqual({ seq: 3, diskId: null, kind: 'disk' }));
   it('turns a cancelled request (no disk) into a disarm', () =>
-    expect(nfcWriteForPoll({ ...live, nfcWriteDiskId: null }, 2, t(0))).toEqual({ seq: 3, diskId: null }));
+    expect(nfcWriteForPoll({ ...live, nfcWriteDiskId: null }, 2, t(0))).toEqual({ seq: 3, diskId: null, kind: 'disk' }));
   it('turns an answered request into a disarm', () =>
-    expect(nfcWriteForPoll({ ...live, nfcWriteResultSeq: 3 }, 2, t(0))).toEqual({ seq: 3, diskId: null }));
+    expect(nfcWriteForPoll({ ...live, nfcWriteResultSeq: 3 }, 2, t(0))).toEqual({ seq: 3, diskId: null, kind: 'disk' }));
   it('says nothing when there has never been a request', () =>
     expect(nfcWriteForPoll({ ...live, nfcWriteSeq: 0, nfcWriteDiskId: null }, 0, t(0))).toBeNull());
+});
+
+describe('nfcWriteForPoll with a Next-disk request', () => {
+  const now = new Date('2026-09-28T12:00:00Z');
+  const live = {
+    nfcWriteSeq: 5, nfcWriteDiskId: null, nfcWriteKind: 'next',
+    nfcWriteExpiresAt: new Date(now.getTime() + 60_000), nfcWriteResultSeq: null,
+  };
+  it('delivers a live next request with kind next and no disk', () => {
+    expect(nfcWriteForPoll(live, 4, now)).toEqual({ seq: 5, diskId: null, kind: 'next' });
+  });
+  it('delivers an expired one as a plain disarm', () => {
+    expect(nfcWriteForPoll({ ...live, nfcWriteExpiresAt: new Date(now.getTime() - 1) }, 4, now))
+      .toEqual({ seq: 5, diskId: null, kind: 'disk' });
+  });
+  it('keeps disk requests as they were', () => {
+    expect(nfcWriteForPoll({ ...live, nfcWriteKind: 'disk', nfcWriteDiskId: 'x' }, 4, now))
+      .toEqual({ seq: 5, diskId: 'x', kind: 'disk' });
+  });
 });
 
 describe('shouldStoreWriteResult', () => {
@@ -54,6 +76,20 @@ describe('shouldStoreWriteResult', () => {
     expect(shouldStoreWriteResult({ nfcWriteSeq: 3, nfcWriteResultSeq: 3 }, 3)).toBe(false));
   it('refuses a seq from the future', () =>
     expect(shouldStoreWriteResult({ nfcWriteSeq: 3, nfcWriteResultSeq: null }, 4)).toBe(false));
+});
+
+describe('nextCardWriters', () => {
+  const dev = (id: string, nfcReader: string | null, preloadState: string | null) =>
+    ({ id, name: `Board ${id}`, nfcReader, preloadState });
+  it('keeps only reader boards that report preload (1.6.0+)', () => {
+    expect(nextCardWriters([
+      dev('new-none', 'present', 'none'), dev('new-ready', 'present', 'ready'),
+      dev('old', 'present', null), dev('absent', 'absent', 'none'), dev('unknown', null, 'loading'),
+    ])).toEqual([{ id: 'new-none', name: 'Board new-none' }, { id: 'new-ready', name: 'Board new-ready' }]);
+  });
+  it('is empty when every reader board is too old', () => {
+    expect(nextCardWriters([dev('old', 'present', null)])).toEqual([]);
+  });
 });
 
 describe('chooseNfcDevice', () => {

@@ -313,10 +313,14 @@ void psram_publish_slot(int slot) {
     // slot can never be mistaken for a later one that reuses it.
     //
     // Given the caller's obligation that `slot` names a COMPLETE, VERIFIED
-    // image (or SLOT_NONE for an eject) -- device_client.c's dc_fetch_image
-    // only calls this once a fetch's body is known to have arrived in full
-    // -- every word this function ever produces names either a real,
-    // playable disk or "no disk", never a slot mid-fetch.
+    // image (or SLOT_NONE for an eject) -- and device_client.c's two
+    // publishers both keep it: dc_fetch_image calls this only once a fetch's
+    // body is known to have arrived in full and parsed clean, and the
+    // multi-disk preload swap (dc_handle_poll_body) only for the idle slot a
+    // preload verified the same way (dc_preload_step's DC_FETCH_OK), whose
+    // record every later write to that slot drops first -- every word this
+    // function ever produces names either a real, playable disk or "no disk",
+    // never a slot mid-fetch.
     g_gen++;
     active_word = pack_word(g_gen, slot);
 }

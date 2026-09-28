@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MAX_CHIPS, chipSlots, diskText, driveChips, protectTag, splitChips, toDriveChip } from './drive-chips';
+import { MAX_CHIPS, chipSlots, diskText, driveChips, preloadText, protectTag, splitChips, toDriveChip } from './drive-chips';
 import { STALE_AFTER_MS } from './device-state';
 import type { LiveStateRow } from './live-state';
 
@@ -23,6 +23,7 @@ const loaded: LiveStateRow = {
   mountedDiskCount: 2, mountedImageFormat: 'adf', mountedSizeBytes: 901_120,
   desiredGameTitle: 'Turrican',
   macAddress: 'AA:BB:CC:DD:EE:FF',
+  trackMaxBytes: null, playsHd: false, preloadSha256: null, preloadState: null, next: null,
 };
 
 const empty: LiveStateRow = {
@@ -36,6 +37,8 @@ const empty: LiveStateRow = {
 };
 
 const chip = (r: LiveStateRow, now = NOW) => toDriveChip(r, now);
+
+const NEXT = { diskNo: 3, diskCount: 4, wraps: false, preload: 'ready' as const };
 
 describe('toDriveChip', () => {
   it('an empty drive says "empty" and offers nothing but a disabled menu', () => {
@@ -123,6 +126,13 @@ describe('toDriveChip', () => {
     expect(diskText(c)).toBe('a disk');
     expect([c.canGoTo, c.canToggleProtect, c.canEject]).toEqual([false, false, true]);
   });
+
+  it('carries next disk info through only when loaded', () => {
+    expect(chip({ ...loaded, next: NEXT }).next).toEqual(NEXT);
+    const loading = chip({ ...loaded, next: NEXT, desiredDiskId: 'disk-2', desiredSha256: B, desiredGameTitle: 'Lotus' });
+    expect(loading.phase).toBe('loading');
+    expect(loading.next).toBeNull();
+  });
 });
 
 describe('shortName', () => {
@@ -171,5 +181,13 @@ describe('splitChips', () => {
 
   it('shows three and puts the rest behind "+k"', () => {
     expect(splitChips([1, 2, 3, 4, 5])).toEqual({ shown: [1, 2, 3], rest: [4, 5] });
+  });
+});
+
+describe('preloadText', () => {
+  it('words each state of the preload line', () => {
+    expect(preloadText(2, 'ready')).toBe('Disk 2 ready (instant swap)');
+    expect(preloadText(2, 'loading')).toBe('Disk 2 loading…');
+    expect(preloadText(2, 'waiting')).toBe('Disk 2 not preloaded yet');
   });
 });

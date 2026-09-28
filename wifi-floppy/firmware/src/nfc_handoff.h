@@ -96,12 +96,15 @@ void nfc_report_supersede(nfc_report_t *r, uint32_t request_seq);
 bool nfc_report_turn(nfc_report_t *r, uint32_t now, bool tapped, nfc_event_t *out);
 
 // A write request as core1 hands it to core0: arm `disk_id` under the server's
-// `seq`, showing `title` on the title line while armed; disk_id "" = disarm.
+// `seq`, showing `title` on the title line while armed; disk_id "" and !next
+// = disarm. `next` (multi-disk): arm the WFDK v2 Next-disk card instead of a
+// disk -- disk_id is "" then, and it is NOT a disarm.
 #define NFC_WREQ_TITLE_BYTES (DISP_TITLE_MAX + 1)
 typedef struct {
     uint32_t seq;
     char     disk_id[37];
     char     title[NFC_WREQ_TITLE_BYTES];
+    bool     next;
 } nfc_wreq_t;
 
 typedef struct {

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { requireOrg } from '@/lib/session';
 import { chooseNfcDevice, DISK_ID_RE, nfcWriteStatus } from '@/lib/nfc/rules';
 import {
-  cancelNfcWrite, listNfcDevices, readDiskForNfc, readNfcWriteState, requestNfcWrite,
+  cancelNfcWrite, listNfcDevices, readDiskForNfc, readNfcWriteState, requestNfcNextWrite, requestNfcWrite,
 } from '@/lib/nfc/store';
 
 export const maxDuration = 60;
@@ -24,10 +24,12 @@ const NO_STORE = { 'cache-control': 'no-store' };
 
 // The tag carries this id and the tap endpoint accepts only DISK_ID_RE's
 // shape, so a disk id outside it would make a tag that can never mount.
-const postBody = z.object({
-  diskId: z.string().regex(DISK_ID_RE),
-  deviceId: z.string().min(1).max(64).optional(),
-});
+// {kind: 'next'} arms the universal Next-disk card instead (multi-disk spec
+// §3.4): no disk id -- the board picks one itself when the card is tapped.
+const postBody = z.union([
+  z.object({ diskId: z.string().regex(DISK_ID_RE), deviceId: z.string().min(1).max(64).optional() }),
+  z.object({ kind: z.literal('next'), deviceId: z.string().min(1).max(64).optional() }),
+]);
 const cancelBody = z.object({ deviceId: z.string().min(1).max(64), seq: z.number().int().min(1) });
 const statusQuery = z.object({ deviceId: z.string().min(1).max(64), seq: z.coerce.number().int().min(1) });
 
@@ -38,12 +40,12 @@ async function json(request: Request): Promise<unknown> {
   try { return await request.json(); } catch { return null; }
 }
 
-/** Arm a board: {diskId, deviceId?} -> {seq, deviceId, deviceName, title}. */
+/** Arm a board: {diskId, deviceId?} or {kind: 'next', deviceId?} -> {seq, deviceId, deviceName, title}. */
 export async function POST(request: Request) {
   const { orgId } = await requireOrg();
   const parsed = postBody.safeParse(await json(request));
   if (!parsed.success) return invalid();
-  const { diskId, deviceId } = parsed.data;
+  const { deviceId } = parsed.data;
 
   const choice = chooseNfcDevice(await listNfcDevices(orgId), deviceId);
   if (!choice.ok) {
@@ -53,6 +55,20 @@ export async function POST(request: Request) {
     return Response.json({ error: 'device_required' }, { status: 400, headers: NO_STORE });
   }
   const { device } = choice;
+
+  if ('kind' in parsed.data) {
+    // A board that has never reported `preload` runs firmware before 1.6.0,
+    // which reads the card's request (diskId: null) as a disarm -- the dialog
+    // would only count down to "expired". 409, like no_reader: the board is
+    // real and yours, it just cannot do this yet.
+    if (device.preloadState === null) {
+      return Response.json({ error: 'firmware_too_old' }, { status: 409, headers: NO_STORE });
+    }
+    const seq = await requestNfcNextWrite(orgId, device.id, new Date());
+    if (seq === null) return notFound();
+    return Response.json({ seq, deviceId: device.id, deviceName: device.name, title: 'Next-disk card' }, { headers: NO_STORE });
+  }
+  const { diskId } = parsed.data;
 
   const disk = await readDiskForNfc(orgId, diskId);
   if (!disk) return notFound();

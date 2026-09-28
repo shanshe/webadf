@@ -14,6 +14,13 @@
 // without invalidating every tag already in the field -- not used yet, but
 // zero is a value worth being deliberate about rather than "whatever CRC
 // happened to be").
+//
+// WFDK v2 is the "next" action card (multi-disk spec §4.1): the same
+// [0..3] marker, version 2, length 4, and the literal ASCII "next" at
+// [6..9]. It carries no disk id -- there is nothing else it could yet be,
+// but the version/length fields leave room for a v2 payload other than
+// "next" without colliding with v1. Older firmware that only understands
+// v1 reads any v2 tag as BAD_DATA -- the safe failure.
 #define NFC_CONTENT_BYTES 42
 
 uint16_t nfc_crc16(const uint8_t *b, int n) {
@@ -63,13 +70,31 @@ bool nfc_tag_encode(const char *disk_id, uint8_t out[NFC_TAG_BYTES]) {
     return true;
 }
 
+bool nfc_tag_encode_next(uint8_t out[NFC_TAG_BYTES]) {
+    memset(out, 0, NFC_TAG_BYTES);
+    memcpy(out, "WFDK", 4);
+    out[4] = 2;
+    out[5] = 4;
+    memcpy(out + 6, "next", 4);
+
+    uint16_t crc = nfc_crc16(out, NFC_CONTENT_BYTES);
+    out[42] = (uint8_t)(crc >> 8);
+    out[43] = (uint8_t)crc;
+    // out[44..47] are already zero from the memset above.
+    return true;
+}
+
 nfc_tag_result_t nfc_tag_decode(const uint8_t in[NFC_TAG_BYTES], char disk_id[NFC_DISK_ID_LEN + 1]) {
     // 1. No marker at all: a blank tag, or someone else's -- not an error,
     //    just not ours.
     if (memcmp(in, "WFDK", 4) != 0) return NFC_TAG_NOT_OURS;
 
-    // 2. Our marker, but a version or length we don't understand.
-    if (in[4] != 1 || in[5] != NFC_DISK_ID_LEN) return NFC_TAG_BAD_DATA;
+    // 2. Our marker, but a version/length we don't understand. v2 is the
+    //    action card: only "next" exists, and older firmware reads it as
+    //    BAD_DATA -- the safe failure (multi-disk spec §4.1).
+    bool v1 = in[4] == 1 && in[5] == NFC_DISK_ID_LEN;
+    bool v2 = in[4] == 2 && in[5] == 4;
+    if (!v1 && !v2) return NFC_TAG_BAD_DATA;
 
     // 3. Integrity: catches a flipped bit, and a tag pulled away mid-write
     //    (block 4 of one id over blocks 5-6 of another -- the CRC was
@@ -78,6 +103,9 @@ nfc_tag_result_t nfc_tag_decode(const uint8_t in[NFC_TAG_BYTES], char disk_id[NF
     uint16_t crc = nfc_crc16(in, NFC_CONTENT_BYTES);
     uint16_t stored = ((uint16_t)in[42] << 8) | in[43];
     if (crc != stored) return NFC_TAG_BAD_DATA;
+
+    // 3b. v2: the only content is the literal "next" marker at [6..9].
+    if (v2) return memcmp(in + 6, "next", 4) == 0 ? NFC_TAG_NEXT : NFC_TAG_BAD_DATA;
 
     // 4. The CRC covers only that the bytes weren't corrupted in transit --
     //    it says nothing about whether they were ever a valid disk id in the

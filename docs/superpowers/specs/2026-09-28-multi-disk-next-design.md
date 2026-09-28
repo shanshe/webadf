@@ -33,7 +33,7 @@ its disk numbers; one has two disks with the same disk number.
   board-capacity check needs), and the current disk id.
 - **"Current" is the WANTED disk** (`devices.desiredDiskId`), not the mounted one, so a second tap during a swap
   moves one further instead of repeating the same swap. With no wanted disk it falls back to the mounted disk.
-- **Duplicates:** disks sharing a `diskNo` collapse to the oldest (`createdAt`, then `id`), consistently. If the
+- **Duplicates:** disks sharing a `diskNo` collapse to the lowest `id`, consistently (amended 2026-09-28: `disks` has no timestamp column, plan R5). If the
   current disk is a non-canonical duplicate, "next" still counts from its `diskNo`.
 - **Capacity:** a disk the board cannot hold (the existing mount check: HD on a board that cannot take HD, tracks
   longer than its reported `trackMaxBytes`) is skipped.
@@ -115,8 +115,10 @@ its disk numbers; one has two disks with the same disk number.
   except that it **does not call `psram_publish_slot()`**. On a complete, verified body it records
   `preload = { slot, sha256, ready }`. An incomplete body leaves no preload record, with no retry storm: the next
   poll retries under the existing backoff.
-- **Invalidation:** a different `next` sha256, `next: null`, or any fetch that reuses the idle slot drops the
-  record.
+- **Invalidation (amended 2026-09-28):** `next: null`, an eject, or any fetch that reuses the idle slot drops the
+  record. A *changed* `next` does not drop it on arrival: the poll that swaps to B also names C as next, and
+  dropping B's record then would make every Next tap a full fetch. The record is replaced when the new next is
+  preloaded, and the swap-time sha256 comparison means a stale record can never be published.
 - **Never touches the active slot.** Rule 2 of `device_client.c` (no diskless gap) is unaffected.
 - HD disks preload in their ADF_HD slot kind exactly as a normal HD fetch does.
 
@@ -139,9 +141,12 @@ its disk numbers; one has two disks with the same disk number.
 - **Drive menu** (the floppy chip beside the top menu, and the device card on the Devices page):
   - A "Next disk: Disk N of M" item, shown only when the mounted title has more than one usable disk. On the last
     disk it reads "Next disk: Disk 1 of M (wraps)". It calls 3.2.
-  - A preload line in both states: "Disk N ready (instant swap)" or "Disk N loading…". It is hidden when the
-    board does not report preload state.
-- **Devices page header:** a "Write a Next-disk card" button, shown when any board reports an NFC reader. It
+  - A preload line (amended 2026-09-28): "Disk N ready (instant swap)" when the preloaded sha256 is the next
+    disk, "Disk N loading…" while the board reports loading, and "Disk N not preloaded yet" for any other
+    reported state. It is hidden when the board does not report preload state (firmware before 1.6.0). The card
+    shows it only once the board has converged, like the chip.
+- **Devices page header:** a "Write a Next-disk card" button, shown when any board reports an NFC reader and runs firmware 1.6.0 or newer
+  (it reports preload state; older boards cannot write the card, and the write route refuses them with 409). It
   opens the existing write dialog with the board picker. The disk picker is replaced by the line "This card
   switches whatever is mounted to its next disk."
 - Disk and title pages are unchanged; each disk's own NFC button still writes that disk.
