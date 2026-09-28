@@ -2157,11 +2157,17 @@ separately.
   `NOTICE.md`), applied 2026-09-28 after Shanshe's grant on PR #3
   (https://github.com/stefanskotte/webadf/pull/3#issuecomment-5864414711). Still open: move the firmware to
   cyw43-driver v2.0.0 (MIT) once a pico-sdk release bundles it, then drop the RP-only note in THIRD-PARTY-NOTICES.md.
-- **Redesign the create-ADF menu** (operator, 2026-09-27): choose OFS/FFS and 880 KB (DD) / 1.76 MB (HD) in a
-  UX-friendly way that works on mobile. Today `src/components/library/create-adf.tsx` offers FFS/OFS only; blank HD
-  disks also need the adffs geometry work (spec 2026-09-26 §9 item 1).
+- ~~**Redesign the create-ADF menu**~~ DONE 2026-09-28 (`33d852c`): a "New disk" panel with Size (880 KB | 1.76 MB)
+  and Filesystem (FFS | OFS) switches plus a Create button. Popover on desktop, bottom sheet under 640 px; both
+  switches reset to 880 KB / FFS on every open. Full e2e 389/389 (one ECONNRESET flake in tosec-scan passed on rerun).
 - **Passthrough to a physical DF0 on the same cable** (operator, 2026-09-28): let a real floppy drive share the
   ribbon with the board so the Amiga can use it too (the board answers only when its own disk is selected).
+  Feasibility study 2026-09-28 (read-only, nothing measured): `docs/superpowers/research/2026-09-28-df0-passthrough.md`.
+  In short: rev B can step aside in FIRMWARE ONLY (all six outputs are open-drain FETs; it never drives a host line),
+  but passthrough must also switch OFF write capture, or the physical drive's writes land in the mounted image as
+  a new library version. It is one-way: a physical drive on SEL0 (even empty) spoils the board's DF0, so a true
+  toggle needs an SPDT on the drive's pin 10 (second pole to GP26 so firmware follows it), or a rev C header.
+  Bench items owed: SEL1 on pin 12 of the A500/A5000 cables, VOL with two terminated devices, unflashed-board boot.
 - **An NFC card for swapping disks within the mounted game or utility** (operator, 2026-09-27): a dedicated tag
   that, when tapped, advances the drive to the next disk of the title that is mounted (rather than naming one disk).
   Relates to the multi-disk item below.
