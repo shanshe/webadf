@@ -107,6 +107,29 @@ describe('suggestFromUpload', () => {
     ]);
   });
 
+  it('hands suggestSet the rows in the order the client sent the hashes, tie-broken by disk id (I2)', async () => {
+    const [a, b, c] = ['a', 'b', 'c'].map((x) => x.repeat(64));
+    // The database answers in its own order; the drop order was c, a, b.
+    answer(disks, [
+      { diskId: 'da', gameId: 'ga', sha256: a, sourceFilename: 'A.adf', tosecName: null },
+      { diskId: 'db2', gameId: 'gb2', sha256: b, sourceFilename: 'B.adf', tosecName: null },
+      { diskId: 'dc', gameId: 'gc', sha256: c, sourceFilename: 'C.adf', tosecName: null },
+      { diskId: 'db1', gameId: 'gb1', sha256: b, sourceFilename: 'B.adf', tosecName: null },
+    ]);
+    suggestSet.mockReturnValue(null);
+    await suggestFromUpload('org-1', [c, a, b], new Date(), undefined);
+    expect(suggestSet.mock.calls[0][0].map((i: { diskId: string }) => i.diskId)).toEqual(['dc', 'da', 'db1', 'db2']);
+  });
+
+  it('compares created_at against since minus 5 minutes of slack for client clock skew (m3)', async () => {
+    answer(disks, []);
+    const since = new Date('2026-09-28T12:00:00.000Z');
+    await suggestFromUpload('org-1', ['a'.repeat(64)], since, undefined);
+    const where = render(selects[0].where!);
+    const floor = where.params.find((p) => p instanceof Date || (typeof p === 'string' && /^2026-09-28T/.test(p)));
+    expect(new Date(floor as string | Date).toISOString()).toBe('2026-09-28T11:55:00.000Z');
+  });
+
   it('a disk whose image cannot be read gets a null volume name, never a throw', async () => {
     const sha = 'd'.repeat(64);
     read.mockRejectedValueOnce(new Error('store unavailable'));

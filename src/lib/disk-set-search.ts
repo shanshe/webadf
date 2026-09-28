@@ -34,6 +34,13 @@ async function readVolumeName(sha256: string): Promise<string | null> {
 }
 
 /**
+ * Slack taken off the client's `since` before it is compared with
+ * games.created_at (server clock): a browser clock a few minutes fast would
+ * otherwise put this very upload's titles "before" the drop (final review m3).
+ */
+export const SINCE_SLACK_MS = 5 * 60 * 1000;
+
+/**
  * The org's disks that just landed with the given hashes, whose game (a) was
  * created no earlier than `since` (P3 -- this call's own batch, not the
  * org's whole history), (b) has exactly one disk in total, not merely one
@@ -45,8 +52,9 @@ export async function suggestFromUpload(
   orgId: string, sha256s: string[], since: Date, paths: Record<string, string> | undefined,
 ): Promise<Suggestion> {
   const db = getDb();
+  const floor = new Date(since.getTime() - SINCE_SLACK_MS);
 
-  const rows = await db.select({
+  const found = await db.select({
     diskId: disks.id, gameId: disks.gameId, sha256: disks.sha256,
     sourceFilename: entitlements.sourceFilename, tosecName: disks.tosecName,
   })
@@ -56,10 +64,17 @@ export async function suggestFromUpload(
     .where(and(
       eq(disks.orgId, orgId),
       inArray(disks.sha256, sha256s),
-      gte(games.createdAt, since),
+      gte(games.createdAt, floor),
       isNull(games.diskOrderSource),
       sql`(select count(*) from disks d2 where d2.game_id = ${games.id} and d2.org_id = ${orgId}) = 1`,
     ));
+
+  // suggestSet reads row order as upload order, and the query has none: put
+  // the rows back in the order the client sent the hashes (its drop order),
+  // tie-broken by disk id for the same bytes under two titles (I2).
+  const pos = new Map(sha256s.map((s, i) => [s, i]));
+  const rows = [...found].sort((a, b) =>
+    (pos.get(a.sha256) ?? Infinity) - (pos.get(b.sha256) ?? Infinity) || (a.diskId < b.diskId ? -1 : a.diskId > b.diskId ? 1 : 0));
 
   // sha256s is capped at 32 by the route, but disks.sha256 is not unique per
   // game: stableId('disk', gameId, sha256) means the same bytes uploaded
