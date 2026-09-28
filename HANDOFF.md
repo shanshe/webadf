@@ -2199,6 +2199,15 @@ separately.
   - **Operator requirements if groups are suggested:** a group must have a NAME the person can set (e.g. "AmigaOS
     3.1.4"), and a wrong suggestion must be fixable by hand: move a disk in or out, break a disk out of the group,
     and reorder (Install first).
+  - **Not the same thing as the higher-level grouping (operator, 2026-09-28).** The library already groups at a higher
+    level: the type (Games, Demos, Utilities) and user collections. A disk group is a lower level: the disks that
+    make up ONE thing (an OS release, an install set), mounted and swapped together. The UX must keep the two
+    clearly apart and be intuitive:
+    - a distinct name in the UI ("disk set" rather than "group", so it can't be read as a collection);
+    - it lives where a title's disks already live (the title page and card: "Disk 2 of 7" style), not in the
+      collections rail;
+    - a set sits INSIDE a type and can be filed in collections like any title.
+    Design this with mockups (visual companion) before any code.
 - **Multi-disk games while playing: a smart way to advance to the next disk.** Ideas 1 (Next disk) and 2 (preload) DONE 2026-09-28, see 3ap; ideas 3 (answer as DF0+DF1) and 4 (detect "insert disk 2") still open. Requested by the operator
   2026-09-26. What the board already has to build on:
   - it knows the set: every mount carries diskNo/diskCount ("disk 1 of 2" on the OLED);
