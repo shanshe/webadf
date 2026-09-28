@@ -100,6 +100,24 @@ describe('addDisksToSet', () => {
     ]);
   });
 
+  it('appends the picked titles in the order the caller sent, not the order the read returned', async () => {
+    answer(games, [{ id: 'G' }], [game('P'), game('Q')]);
+    answer(disks,
+      [{ id: 'd1', gameId: 'G', diskNo: 1 }],
+      // The IN (...) read answers Q's disk first; the caller asked for P then Q.
+      [{ id: 'q1', gameId: 'Q', diskNo: 1 }, { id: 'p1', gameId: 'P', diskNo: 1 }],
+      [{ id: 'q1', gameId: 'Q', diskNo: 1 }, { id: 'p1', gameId: 'P', diskNo: 1 }],
+    );
+    answer(collectionGames, []);
+    answer(devices, []);
+    await addDisksToSet('org-1', 'G', ['p1', 'q1']);
+    const moves = only().filter((s) => /^update "disks"/.test(s.sql));
+    expect(moves.map((m) => m.params)).toEqual([
+      ['G', 2, 'p1', 'org-1'],
+      ['G', 3, 'q1', 'org-1'],
+    ]);
+  });
+
   it('updates a device whose mountedDiskId is a moved disk (Review Focus 1), org- and id-scoped', async () => {
     addScenario();
     await addDisksToSet('org-1', 'G', ['s2']);

@@ -127,8 +127,14 @@ export async function addDisksToSet(
 
   await requireGame(db, orgId, gameId);
   const targetDisks = await disksOf(db, orgId, gameId);
-  const picked = await db.select(setDisk).from(disks)
-    .where(and(inArray(disks.id, ids), eq(disks.orgId, orgId)));
+  // Back in the order the caller sent: planAddDisks appends source titles in
+  // the order it meets them, and an IN (...) read comes back in whatever
+  // order the database likes -- which put a suggestion's disks in a random
+  // order instead of the one the person arranged in the panel.
+  const rank = new Map(ids.map((id, i) => [id, i]));
+  const picked = (await db.select(setDisk).from(disks)
+    .where(and(inArray(disks.id, ids), eq(disks.orgId, orgId))))
+    .sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
   if (picked.length !== ids.length) throw new NotFound();
   if (picked.some((d) => d.gameId === gameId)) throw new PlanError('same_title');
 
