@@ -2191,6 +2191,14 @@ separately.
     and volume names (Install3.1:, Workbench3.1:, Extras3.1:...) are recognisable;
   - an install asks for a disk by VOLUME NAME, so "insert Extras3.1:" could one day pick the right disk of the
     mounted group automatically (relates to multi-disk idea 4, detecting "insert disk 2").
+  - **Real example (operator, 2026-09-28): the official AmigaOS 3.1.4 release** ships as `Install3_1_4.adf`,
+    `Workbench3_1_4.adf`, `Extras3_1_4.adf`, `Storage3_1_4.adf`, `Fonts.adf`, `Locale.adf`,
+    `ModulesA1200_3.1.4.adf` (plus Documentation/ and ROMs/ folders). No disk numbers, no TOSEC name, and only some
+    files share the `3_1_4` suffix, so filename matching alone would miss Fonts and Locale. Better signals: the
+    disks were uploaded together in one batch, and their VOLUME names (read with adffs) belong to one release.
+  - **Operator requirements if groups are suggested:** a group must have a NAME the person can set (e.g. "AmigaOS
+    3.1.4"), and a wrong suggestion must be fixable by hand: move a disk in or out, break a disk out of the group,
+    and reorder (Install first).
 - **Multi-disk games while playing: a smart way to advance to the next disk.** Ideas 1 (Next disk) and 2 (preload) DONE 2026-09-28, see 3ap; ideas 3 (answer as DF0+DF1) and 4 (detect "insert disk 2") still open. Requested by the operator
   2026-09-26. What the board already has to build on:
   - it knows the set: every mount carries diskNo/diskCount ("disk 1 of 2" on the OLED);
