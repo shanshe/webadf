@@ -185,4 +185,14 @@ independent implementation:
 
 ## Licence
 
-Not yet chosen. Until one is added, all rights reserved.
+- **Software** (the web app, scripts and the wifi-floppy firmware source): [MIT](LICENSE).
+- **Hardware** (`wifi-floppy/hardware/`, the board design): [CERN-OHL-P-2.0](wifi-floppy/hardware/LICENSE), the
+  permissive open-hardware licence, so anyone can build, modify and sell their own boards. The rev B PCB layout is
+  Shanshe's work, licensed this way with Shanshe's agreement; see
+  [wifi-floppy/hardware/NOTICE.md](wifi-floppy/hardware/NOTICE.md).
+- **Third-party code, the libraries in the firmware image, and acknowledgements**: see
+  [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The Wi-Fi driver bundled with the Pico SDK is licensed for use
+  on Raspberry Pi chips (which this board is).
+
+This project builds on Nano-Tek, OpenFlops, Keir Fraser's FlashFloppy and Greaseweazle, and the other work credited
+in the notices file.
