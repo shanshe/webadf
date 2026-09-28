@@ -105,6 +105,10 @@ static long g_img_next;
 // at dc_fetch_image's own `static` response, whose storage outlives the call.
 static const http_resp_t *g_img_resp;
 static uint32_t g_img_t0;   // fetch start, for the throughput line
+// True for a preload: the sink still times and logs the transfer, but emits no
+// progress observations -- the OLED shows the mounted disk, not a background
+// fetch nobody asked to watch. Set by dc_fetch_into before every transfer.
+static bool g_img_quiet;
 static uint32_t g_ms_read;  // ms inside transport read (network + TLS decrypt)
 static uint32_t g_ms_feed;  // ms inside http parse + sink (PSRAM writes)
 
@@ -150,7 +154,7 @@ static void dc_image_sink(void *ctx, const uint8_t *b, int n) {
     // Throttled to whole percent changes. This sink runs once per 4 KB read,
     // so ~500 times for a 2 MB image; an observation per call would be ~400
     // wasted publishes, all of them rendering the identical frame.
-    if (ctx) {
+    if (ctx && !g_img_quiet) {
         device_client_t *c = ctx;
         uint32_t total = (g_img_resp && g_img_resp->content_length > 0)
                        ? (uint32_t)g_img_resp->content_length : 0u;
@@ -490,41 +494,49 @@ static void dc_complete_transition(device_client_t *c, uint32_t version,
     c->_refetch = false;
 }
 
-// Fetches `d->sha256` from the image endpoint. Only reached once the poll
-// has named a digest that is neither already mounted nor already known
-// bad. On any failure -- transport-level, or a dropped/incomplete body --
-// this touches nothing: rule 2 (never release the current disk before the
-// replacement is fetched *and* verified) means an incomplete fetch is not
-// a partial success, it is simply not a swap.
-static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
+// What dc_fetch_into saw. The caller decides what each one means -- block,
+// back off, halt, publish or record a preload -- so the fetch itself is shared
+// by the swap path and the preload path without either inheriting the other's
+// verdicts.
+typedef enum {
+    DC_FETCH_OK,          // 200, whole body, image_parse_end() true: `target` is verified
+    DC_FETCH_NO_REQUEST,  // the request did not fit its buffer; nothing went out
+    DC_FETCH_INCOMPLETE,  // transport/framing failure or a body that stopped short
+    DC_FETCH_INVALID,     // 200 and whole, but not a valid WFMF/WFAD container
+    DC_FETCH_STATUS,      // a whole non-200 response; *status_out says which
+} dc_fetch_result_t;
+
+// Streams /api/device/image/<sha256> into PSRAM slot `target` and verifies it.
+// NEVER publishes anything: `target` is written, the active slot is not
+// referenced at all. `observe` false keeps it off the OLED (a preload is not
+// something the person at the Amiga asked for).
+//
+// Task 8: a fetch always targets the slot that is NOT the one core0 is
+// currently streaming from -- the caller passes psram_inactive_slot().
+// image_parse_begin() resets that slot up front (so stale data from an earlier
+// aborted fetch can never be mistaken for this one) and points the incremental
+// parser at it; dc_image_sink below feeds it body bytes straight off the wire
+// as dc_exchange's read loop hands them over -- there is no SRAM buffer big
+// enough to hold a whole image (up to ~2 MB, psram_image.h) first.
+static dc_fetch_result_t dc_fetch_into(device_client_t *c, const char *sha256, int target,
+                                       bool observe, int *status_out) {
+    *status_out = 0;
     // static: see the STACK note above.
     static char path[DC_REQ_BUF_BYTES];
-    snprintf(path, sizeof path, "/api/device/image/%s", d->sha256);
+    snprintf(path, sizeof path, "/api/device/image/%s", sha256);
 
     static char req[DC_REQ_BUF_BYTES];
     int req_len = http_build_request(req, sizeof req, "GET", path, c->host, c->token, NULL);
-    if (req_len < 0) return dc_enter_backoff(c); // path too long: unexpected, treat as transient
+    if (req_len < 0) return DC_FETCH_NO_REQUEST;
 
-    // Task 8: a fetch always targets the slot that is NOT the one core0 is
-    // currently streaming from -- psram_inactive_slot(). image_parse_begin()
-    // resets that slot up front (so stale data from an earlier aborted
-    // fetch can never be mistaken for this one) and points the incremental
-    // parser at it; dc_image_sink below feeds it body bytes straight off
-    // the wire as dc_exchange's read loop hands them over -- there is no
-    // SRAM buffer big enough to hold a whole image (up to ~2 MB,
-    // psram_image.h) first. Nothing below this line may touch the active
-    // slot except the single psram_publish_slot() call in the 200 case,
-    // and only after the body is known to have arrived whole AND parsed
-    // clean: that ordering is rule 2 (never release the current disk
-    // before the replacement is fetched *and* verified) made concrete.
-    int target = psram_inactive_slot();
     // Digests are not secret here -- /api/ingest/check is a deliberate global
     // existence oracle and TOSEC publishes thousands of them -- so a prefix is
     // safe to print and is what makes a fetch traceable against the server side.
     g_img_got = 0;
     g_img_next = 262144;
     g_img_t0 = 0;   // set by the sink on the first body byte
-    wf_logf(WF_INFO, "fetch: %.12s -> slot %d (psram %s)", d->sha256, target,
+    g_img_quiet = !observe;
+    wf_logf(WF_INFO, "fetch: %.12s -> slot %d (psram %s)", sha256, target,
             psram_image_available() ? "ok" : "MISSING");
     image_parse_begin(target);
 
@@ -532,8 +544,9 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
     static http_resp_t r;   // static: see the STACK note above
     g_img_resp = &r;
     c->_fetch_pct = -1;     // a fresh transfer reports 0% again
-    dc_emit(c, DC_OBS_FETCH_BEGIN, 0, 0);
+    if (observe) dc_emit(c, DC_OBS_FETCH_BEGIN, 0, 0);
     bool ok = dc_exchange(c, req, req_len, dc_image_sink, c, &r, /*retryable=*/true);
+    *status_out = r.status;
 
     if (!ok || !r.body_complete) {
         // Deliberately detailed: this branch NEVER blocks the digest, so it
@@ -548,6 +561,46 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
                 ok ? "ok" : "FAILED", r.status,
                 r.body_complete ? "yes" : "no",
                 r._body_got, r.content_length);
+        return DC_FETCH_INCOMPLETE;
+    }
+    if (r.status != 200) return DC_FETCH_STATUS;
+
+    // DC_VERIFYING: image_parse_end() is "fill, then verify" -- it
+    // returns true only if the parser reached a clean end-of-container
+    // AND every track in it landed in PSRAM (image_loader.c). That,
+    // together with "the whole body arrived intact" already checked
+    // above, is the verification this layer does; there is no
+    // separate state to hold for it once control reaches here.
+    if (observe) dc_emit(c, DC_OBS_VERIFY, (uint32_t)g_img_got, (uint32_t)g_img_got);
+    if (!image_parse_end()) return DC_FETCH_INVALID;
+    return DC_FETCH_OK;
+}
+
+// Fetches `d->sha256` from the image endpoint. Only reached once the poll
+// has named a digest that is neither already mounted nor already known
+// bad. On any failure -- transport-level, or a dropped/incomplete body --
+// this touches nothing: rule 2 (never release the current disk before the
+// replacement is fetched *and* verified) means an incomplete fetch is not
+// a partial success, it is simply not a swap.
+static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
+    // Multi-disk §4.3: this fetch is about to overwrite the idle slot, so
+    // whatever a preload left there is no longer what the record says --
+    // dropped FIRST, before a byte is written, and whatever the outcome.
+    c->preload.slot = SLOT_NONE;
+    c->preload.sha256[0] = '\0';
+
+    // Nothing below this line may touch the active slot except the single
+    // psram_publish_slot() call in the 200 case, and only after the body is
+    // known to have arrived whole AND parsed clean: that ordering is rule 2
+    // (never release the current disk before the replacement is fetched
+    // *and* verified) made concrete.
+    int target = psram_inactive_slot();
+    int status = 0;
+    switch (dc_fetch_into(c, d->sha256, target, /*observe=*/true, &status)) {
+    case DC_FETCH_NO_REQUEST:
+        return dc_enter_backoff(c); // path too long: unexpected, treat as transient
+
+    case DC_FETCH_INCOMPLETE:
         // Connect/write/read failure, a response that never parsed as HTTP
         // at all, or a connection dropped before the body finished -- all
         // treated alike. Never block the digest for these: none of them
@@ -558,39 +611,30 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
         // referenced above, so psram_active_slot() is exactly what it was
         // on entry -- the Amiga keeps the disk it had.
         return dc_enter_backoff(c);
-    }
 
-    switch (r.status) {
-    case 200: {
-        // DC_VERIFYING: image_parse_end() is "fill, then verify" -- it
-        // returns true only if the parser reached a clean end-of-container
-        // AND every track in it landed in PSRAM (image_loader.c). That,
-        // together with "the whole body arrived intact" already checked
-        // above, is the verification this layer does; there is no
-        // separate state to hold for it once control reaches here.
-        dc_emit(c, DC_OBS_VERIFY, (uint32_t)g_img_got, (uint32_t)g_img_got);
-        if (!image_parse_end()) {
-            // Content-Length matched what arrived, but the bytes
-            // themselves are not a well-formed, complete WFMF or WFAD
-            // container. Resending the exact same bytes under this digest
-            // would fail the same way every time, so this digest is
-            // treated like the 400/404/422 cases below rather than backed
-            // off forever.
-            wf_logf(WF_WARN, "fetch: %.12s arrived complete but is not a "
-                    "valid WFMF or WFAD container -- digest blocked", d->sha256);
-            dc_block_digest(c, d->sha256);
-            // Review (final), Important 2: `since` has NOT advanced -- only
-            // dc_complete_transition moves it, and no transition happened
-            // here. The server answers a poll with `version > since`
-            // immediately (src/app/api/device/poll/route.ts), so returning
-            // DC_IDLE_POLL would send main.c straight back into another
-            // full TLS handshake with no delay at all, forever, for as long
-            // as this digest stays desired. Backing off is the floor that
-            // turns a permanently-unfetchable disk into a slow retry rather
-            // than a request storm; the poll loop keeps running, which is
-            // what spec 4.2 asks for.
-            return dc_enter_backoff(c);
-        }
+    case DC_FETCH_INVALID:
+        // Content-Length matched what arrived, but the bytes
+        // themselves are not a well-formed, complete WFMF or WFAD
+        // container. Resending the exact same bytes under this digest
+        // would fail the same way every time, so this digest is
+        // treated like the 400/404/422 cases below rather than backed
+        // off forever.
+        wf_logf(WF_WARN, "fetch: %.12s arrived complete but is not a "
+                "valid WFMF or WFAD container -- digest blocked", d->sha256);
+        dc_block_digest(c, d->sha256);
+        // Review (final), Important 2: `since` has NOT advanced -- only
+        // dc_complete_transition moves it, and no transition happened
+        // here. The server answers a poll with `version > since`
+        // immediately (src/app/api/device/poll/route.ts), so returning
+        // DC_IDLE_POLL would send main.c straight back into another
+        // full TLS handshake with no delay at all, forever, for as long
+        // as this digest stays desired. Backing off is the floor that
+        // turns a permanently-unfetchable disk into a slow retry rather
+        // than a request storm; the poll loop keeps running, which is
+        // what spec 4.2 asks for.
+        return dc_enter_backoff(c);
+
+    case DC_FETCH_OK:
         // DC_SWAPPING is the moment right here: the single word-aligned
         // store psram_publish_slot() makes -- see its comment in
         // psram_image.c for why moving between two complete, verified
@@ -611,8 +655,12 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
         c->state = DC_IDLE_POLL;
         dc_backoff_reset(c);
         return c->state;
+
+    case DC_FETCH_STATUS:
+        break;
     }
 
+    switch (status) {
     case 400: // malformed digest: will not become valid by resending
     case 404: // not entitled / no longer exists
     case 422: // permanently unencodable
@@ -622,7 +670,7 @@ static dc_state_t dc_fetch_image(device_client_t *c, const dc_desired_t *d) {
         // parse-failure case above: `since` did not advance, so an
         // immediate re-poll is answered immediately and the loop spins.
         wf_logf(WF_WARN, "fetch: server said %d -- digest blocked, not retried",
-                r.status);
+                status);
         dc_block_digest(c, d->sha256);
         return dc_enter_backoff(c);
 
@@ -698,7 +746,77 @@ static void dc_take_nfc_write(device_client_t *c, char *json) {
              (int)(sizeof c->nfc_write_disk_id - 1), id);
     c->nfc_write_title[0] = '\0';
     if (id[0]) json_str(obj, "title", c->nfc_write_title, sizeof c->nfc_write_title);
+    // Multi-disk §4.5: kind "next" (with no disk) is the Next-disk card. A
+    // null diskId WITHOUT it is a disarm, as it always was -- and a kind that
+    // came with a disk id is not a Next card, since there is one thing to write.
+    char kind[8];
+    kind[0] = '\0';
+    if (!json_str(obj, "kind", kind, sizeof kind)) kind[0] = '\0';
+    c->nfc_write_next = strcmp(kind, "next") == 0 && id[0] == '\0';
     c->nfc_write_new = true;
+}
+
+// Drops the preload record: the idle slot is no longer trusted to hold it.
+static void dc_preload_drop(device_client_t *c) {
+    c->preload.slot = SLOT_NONE;
+    c->preload.sha256[0] = '\0';
+}
+
+// A 64-character lowercase-or-uppercase hex digest, and nothing else. `next`
+// goes into an image URL and is compared against desired's digest; anything
+// that is not the shape of a digest is not a disk worth preloading.
+static bool dc_is_sha256_hex(const char *s) {
+    int n = 0;
+    for (; s[n]; n++) {
+        char ch = s[n];
+        bool hex = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+        if (!hex || n >= 64) return false;
+    }
+    return n == 64;
+}
+
+// Multi-disk §4.3: lifts `next` out of a 200 poll body BEFORE the disk logic
+// reads it, for the reason dc_take_nfc_write lifts `nfcWrite`: its sha256,
+// diskId and diskNo would otherwise be found by dc_handle_poll_body's flat
+// scans -- and with `next` ahead of `desired` in a body, next's digest would
+// be FETCHED AND MOUNTED as the desired disk. The server emits it after
+// `desired`, but nothing here may depend on that.
+//
+// Absent: changes nothing (an older server, or desired: null). `next: null`:
+// no next disk, and the preload record is dropped. A present `next` does NOT
+// drop the record even when it names a different disk: the poll that swaps to
+// the preloaded disk B is the same poll that names C as the new next, and
+// dropping B here -- before dc_handle_poll_body sees desired == B -- would make
+// every Next tap a full fetch. dc_preload_step replaces the record when it
+// fetches C, and the swap check compares digests, so a record that is merely
+// no longer "next" can never be published as the wrong disk.
+//
+// The copy buffer is DC_POLL_BODY_BYTES, the size of the body itself, for the
+// reason dc_take_nfc_write's is: a well-formed object can then never be too big
+// to lift, and a lift that failed for size would leave it un-blanked.
+static void dc_take_next(device_client_t *c, char *json) {
+    static char obj[DC_POLL_BODY_BYTES];   // static: see the STACK note above
+    if (json_object(json, "next", obj, sizeof obj, true)) {
+        char sha[72];
+        sha[0] = '\0';
+        if (!json_str(obj, "sha256", sha, sizeof sha) || !dc_is_sha256_hex(sha)) sha[0] = '\0';
+        c->preload.known = true;
+        snprintf(c->preload.next_sha256, sizeof c->preload.next_sha256, "%.*s",
+                 (int)(sizeof c->preload.next_sha256 - 1), sha);
+        c->preload.next_disk_id[0] = '\0';
+        json_str(obj, "diskId", c->preload.next_disk_id, sizeof c->preload.next_disk_id);
+        c->preload.next_disk_no = 0;
+        json_u32(obj, "diskNo", &c->preload.next_disk_no);
+        return;
+    }
+    if (json_is_null(json, "next")) {
+        c->preload.known = true;
+        c->preload.next_sha256[0] = '\0';
+        c->preload.next_disk_id[0] = '\0';
+        c->preload.next_disk_no = 0;
+        dc_preload_drop(c);
+    }
+    // Anything else (absent, or not an object) says nothing about next.
 }
 
 void dc_force_refetch(device_client_t *c) {
@@ -820,6 +938,31 @@ static dc_state_t dc_handle_poll_body(device_client_t *c, const char *json) {
 
     if (dc_held(c)) { c->state = DC_IDLE_POLL; return c->state; }
 
+    // Multi-disk §4.4: the disk wanted is the one already verified in the idle
+    // slot -- publish it, with no fetch. All three conditions, never fewer:
+    //   * a record exists;
+    //   * it is for THE slot a fetch would have written (psram_inactive_slot()),
+    //     so the active slot -- what the Amiga reads now -- is never the one
+    //     "swapped in", and a record left over from before an eject or a
+    //     second swap cannot name a slot that has since changed role;
+    //   * its digest is DESIRED's digest, not next's (R2).
+    // A forced refetch means the server's copy must be fetched afresh, so it
+    // never takes this path. The hold was checked just above: a held swap
+    // waits here exactly as a fetch would, and happens on a later poll.
+    if (!c->_refetch && c->preload.slot != SLOT_NONE &&
+        c->preload.slot == psram_inactive_slot() &&
+        strcmp(c->preload.sha256, d.sha256) == 0) {
+        wf_logf(WF_INFO, "swap: %.12s from preloaded slot %d", d.sha256, c->preload.slot);
+        c->state = DC_SWAPPING;
+        psram_publish_slot(c->preload.slot);
+        dc_preload_drop(c);
+        dc_complete_transition(c, d.version, d.sha256, d.disk_id, d.write_protected);
+        dc_emit(c, DC_OBS_MOUNTED, 0, 0);
+        c->state = DC_IDLE_POLL;
+        dc_backoff_reset(c);
+        return c->state;
+    }
+
     return dc_fetch_image(c, &d);
 }
 
@@ -833,6 +976,7 @@ void dc_init(device_client_t *c, transport_t *t, clock_ms_fn now,
     // since is always 0 at boot and lives only in RAM -- see device_client.h
     // and spec §4.1. Nothing here persists it.
     c->state = (token && token[0]) ? DC_IDLE_POLL : DC_UNPROVISIONED;
+    c->preload.slot = SLOT_NONE;   // 0 is a real slot; memset's zero is not "none"
 }
 
 // Escapes `"` and `\` (the two bytes that would break out of a JSON string)
@@ -1090,13 +1234,27 @@ bool dc_report_status(device_client_t *c, int psram_free, int rssi, const char *
     // long-track format) instead of sending an image image_loader.c would
     // reject whole. A board built before this field existed sends nothing,
     // and the server assumes 13312, which is what those builds held.
+    // preload (multi-disk §4.3): always sent, null when the idle slot holds
+    // nothing -- "show both values of a state". Loading names the digest being
+    // fetched (next's); ready names the digest verified in the slot.
+    static char preload_tail[128];   // 106 at most: 22 + 64 hex + 20
+    if (c->preload.loading || c->preload.slot != SLOT_NONE) {
+        snprintf(preload_tail, sizeof preload_tail,
+                 ",\"preload\":{\"sha256\":\"%s\",\"state\":\"%s\"}",
+                 c->preload.loading ? c->preload.next_sha256 : c->preload.sha256,
+                 c->preload.loading ? "loading" : "ready");
+    } else {
+        snprintf(preload_tail, sizeof preload_tail, ",\"preload\":null");
+    }
+
     static char body[DC_STATUS_BODY_BYTES];
     int body_len = snprintf(body, sizeof body,
         "{\"mountedSha256\":%s,\"mountedDiskId\":%s,\"version\":%lu,"
         "\"error\":%s,\"psramFree\":%d,\"firmwareVersion\":%s,\"rssi\":%d,"
-        "\"trackMaxBytes\":%u%s%s%s}",
+        "\"trackMaxBytes\":%u%s%s%s%s}",
         sha_field, disk_field, (unsigned long)c->mounted_version,
         err_field, psram_free, ver_field, rssi, (unsigned)TRACK_MAX_BYTES, fw_tail, nfc_tail,
+        preload_tail,
         // playsHd: only from a build with the drive-ID responder (HD spec §5.5).
         c->_plays_hd ? ",\"playsHd\":true" : "");
     if (body_len < 0 || body_len >= (int)sizeof body) return false; // should never happen; give up quietly
@@ -1294,6 +1452,7 @@ dc_state_t dc_step(device_client_t *c) {
         }
         dc_take_fw_fields(c, body.buf);
         dc_take_nfc_write(c, body.buf);
+        dc_take_next(c, body.buf);
         return dc_handle_poll_body(c, body.buf);
 
     default:
@@ -1381,4 +1540,97 @@ bool dc_tap_write_report(device_client_t *c, uint32_t seq, bool ok, const char *
     if (n < 0 || n >= (int)sizeof body) return false;
     int st = dc_post(c, DC_TAP_WRITE_PATH, DC_JSON, (const uint8_t *)body, n, NULL, 0);
     return st >= 200 && st < 300;
+}
+
+// Multi-disk §4.2: the Next-disk card. The server decides what "next" is (the
+// same rule its poll `next` uses), so the board sends only the intent.
+dc_tap_outcome_t dc_tap_next(device_client_t *c, uint32_t *disk_no, uint32_t *disk_count,
+                             char *title_out, int title_cap) {
+    if (title_out && title_cap > 0) title_out[0] = '\0';
+    if (disk_no) *disk_no = 0;
+    if (disk_count) *disk_count = 0;
+
+    static const char body[] = "{\"action\":\"next\"}";
+    static char resp[256];   // static: see the STACK note above
+    int st = dc_post(c, DC_TAP_PATH, DC_JSON, (const uint8_t *)body, (int)sizeof body - 1,
+                     resp, sizeof resp);
+    if (st < 200 || st >= 300) return DC_TAP_FAILED;
+
+    char outcome[20];
+    if (!json_str(resp, "outcome", outcome, sizeof outcome)) return DC_TAP_FAILED;
+    dc_tap_outcome_t o;
+    if      (strcmp(outcome, "mounting")        == 0) o = DC_TAP_MOUNTING;
+    else if (strcmp(outcome, "single")          == 0) o = DC_TAP_SINGLE;
+    else if (strcmp(outcome, "nothing_mounted") == 0) o = DC_TAP_NO_DISK;
+    else if (strcmp(outcome, "already")         == 0) o = DC_TAP_ALREADY;
+    else if (strcmp(outcome, "not_found")       == 0) o = DC_TAP_NOT_FOUND;
+    else if (strcmp(outcome, "too_long")        == 0) o = DC_TAP_TOO_LONG;
+    else if (strcmp(outcome, "ignored")         == 0) o = DC_TAP_IGNORED;
+    else return DC_TAP_FAILED;   // a word this build does not know is not a verdict
+    if (disk_no) json_u32(resp, "diskNo", disk_no);
+    if (disk_count) json_u32(resp, "diskCount", disk_count);
+    if (title_out && title_cap > 0) json_str(resp, "title", title_out, title_cap);
+    return o;
+}
+
+void dc_set_preload_gate(device_client_t *c, bool (*fn)(void *ctx), void *ctx) {
+    c->_preload_ok = fn;
+    c->_preload_ok_ctx = ctx;
+}
+
+// Multi-disk §4.3. The same fetch as a swap (dc_fetch_into), minus the
+// publish: rule 2 is untouched because the active slot is never referenced,
+// and rule 1 because nothing here changes what is mounted. The gate is asked
+// LAST, after every cheap check, and nothing is written before it says yes.
+bool dc_preload_step(device_client_t *c) {
+    dc_preload_t *p = &c->preload;
+    if (c->state != DC_IDLE_POLL) return false;
+    if (p->next_sha256[0] == '\0') return false;
+    if (strcmp(p->next_sha256, c->mounted_sha256) == 0) return false;
+    if (p->slot != SLOT_NONE && p->slot == psram_inactive_slot() &&
+        strcmp(p->sha256, p->next_sha256) == 0) return false;   // already there
+    if (dc_digest_is_blocked(c, p->next_sha256)) return false;
+    if (!c->_preload_ok || !c->_preload_ok(c->_preload_ok_ctx)) return false;
+
+    // From here the idle slot is being overwritten: no record survives it.
+    dc_preload_drop(c);
+    p->loading = true;
+    int target = psram_inactive_slot();
+    // A copy: dc_fetch_into reads it for the whole transfer, and the log below
+    // must name what was fetched even if something ever changes next_sha256.
+    char sha[65];
+    snprintf(sha, sizeof sha, "%s", p->next_sha256);
+    wf_logf(WF_INFO, "preload: %.12s -> slot %d", sha, target);
+    int status = 0;
+    dc_fetch_result_t res = dc_fetch_into(c, sha, target, /*observe=*/false, &status);
+    p->loading = false;
+
+    switch (res) {
+    case DC_FETCH_OK:
+        p->slot = target;
+        snprintf(p->sha256, sizeof p->sha256, "%s", sha);
+        wf_logf(WF_INFO, "preload: %.12s verified in slot %d", sha, target);
+        c->state = DC_IDLE_POLL;
+        return true;
+    case DC_FETCH_INVALID:
+        wf_logf(WF_WARN, "preload: %.12s is not a valid WFMF or WFAD container -- digest blocked", sha);
+        dc_block_digest(c, sha);
+        dc_enter_backoff(c);
+        return true;
+    case DC_FETCH_STATUS:
+        if (status == 401) { c->state = DC_HALTED; return true; }   // 401 anywhere halts
+        if (status == 400 || status == 404 || status == 422) {
+            wf_logf(WF_WARN, "preload: server said %d -- digest blocked, not retried", status);
+            dc_block_digest(c, sha);
+        }
+        dc_enter_backoff(c);
+        return true;
+    case DC_FETCH_NO_REQUEST:
+    case DC_FETCH_INCOMPLETE:
+    default:
+        // No record, and the existing backoff paces the retry (spec §4.3: no
+        // retry storm). The next poll that finds the client idle tries again.
+        dc_enter_backoff(c);
+        return true;
+    }
 }

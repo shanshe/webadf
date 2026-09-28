@@ -458,6 +458,10 @@ static void test_status_body_fits_at_maximum(void) {
     dc_set_fw_report(&c, &fr);
     dc_set_nfc_reader(&c, "present");   // the longer of the two words
     dc_set_plays_hd(&c, true);
+    // Multi-disk: the longer of the two preload forms ("ready" vs "loading"
+    // differ by 2; both carry a 64-hex digest) -- a ready record.
+    c.preload.slot = 1;
+    memset(c.preload.sha256, 'd', 64); c.preload.sha256[64] = '\0';
 
     fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
     CHECK(dc_report_status(&c, 2147483647, -200, long_err, long_ver),
@@ -471,6 +475,8 @@ static void test_status_body_fits_at_maximum(void) {
           "the last firmware field survives");
     CHECK(strstr(r, "\"nfcReader\":\"present\"") != NULL,
           "and so does the reader");
+    CHECK(strstr(r, "\"state\":\"ready\"}") != NULL,
+          "the preload record survives a maximal body");
     CHECK(strstr(r, "\"playsHd\":true}") != NULL,
           "playsHd survives a maximal body, the very last field");
 }
@@ -1677,6 +1683,291 @@ static void test_status_reports_plays_hd_only_when_set(void) {
     CHECK(strstr(fake_last_request(), "\"playsHd\":true") != NULL, "set: says so");
 }
 
+// --- Multi-disk "Next disk" (spec 2026-09-28 §4): next, preload, swap ------
+//
+// Real 64-hex digests throughout: dc_take_next refuses anything else, and a
+// short fixture digest would test the refusal instead of the preload.
+static char SHA_A[65], SHA_B[65], SHA_C[65];
+#define NEXT_ID2 "22222222-2222-4222-8222-222222222222"
+static void init_shas(void) {
+    memset(SHA_A, 'a', 64); SHA_A[64] = '\0';
+    memset(SHA_B, 'b', 64); SHA_B[64] = '\0';
+    memset(SHA_C, 'c', 64); SHA_C[64] = '\0';
+}
+
+// A 200 poll naming `desired_sha` as desired. `next_sha`: NULL => "next":null,
+// "" => no next key at all, else a next object. `next_first` puts the next
+// object BEFORE desired, which is the order the flat scans are most exposed to.
+static void push_poll_next(uint32_t version, const char *desired_sha, const char *next_sha,
+                           bool next_first) {
+    char next[200] = "";
+    if (next_sha == NULL) snprintf(next, sizeof next, "\"next\":null,");
+    else if (next_sha[0]) snprintf(next, sizeof next,
+             "\"next\":{\"diskId\":\"" NEXT_ID2 "\",\"sha256\":\"%s\",\"diskNo\":2},", next_sha);
+    char desired[300];
+    snprintf(desired, sizeof desired,
+             "\"desired\":{\"sha256\":\"%s\",\"diskId\":\"d1\",\"gameId\":\"g\",\"game\":\"G\","
+             "\"diskNo\":1,\"diskCount\":3,\"writeProtected\":false}", desired_sha);
+    char body[512];
+    if (next_first) snprintf(body, sizeof body, "{\"version\":%lu,%s%s}", (unsigned long)version, next, desired);
+    else {
+        // Server order: desired, then next. Drop the trailing comma of `next`.
+        size_t n = strlen(next);
+        if (n) next[n - 1] = '\0';
+        snprintf(body, sizeof body, "{\"version\":%lu,%s%s%s}", (unsigned long)version, desired,
+                 n ? "," : "", next);
+    }
+    push_ok_json(body);
+}
+
+static bool gate_yes(void *ctx) { (void)ctx; return true; }
+static bool gate_no(void *ctx)  { (void)ctx; return false; }
+
+// A: mounted by a real fetch, with `next` = B named by the same poll.
+static void mount_a_with_next_b(void) {
+    boot(); init_shas();
+    push_poll_next(5, SHA_A, SHA_B, false);
+    push_image_response();
+    CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "precondition: A mounted");
+}
+
+// ... and then B preloaded into the inactive slot.
+static void mount_a_preload_b(void) {
+    mount_a_with_next_b();
+    dc_set_preload_gate(&c, gate_yes, NULL);
+    push_image_response();
+    CHECK(dc_preload_step(&c), "precondition: B preloaded");
+    CHECK(strcmp(c.preload.sha256, SHA_B) == 0, "precondition: the record says B");
+}
+
+// 1. Review Focus 1: next's sha256/diskId must never be read as desired's.
+static void next_is_lifted_before_desired_is_read(void) {
+    boot(); init_shas();
+    push_poll_next(2, SHA_A, SHA_B, /*next_first=*/true);
+    push_image_response();
+    dc_step(&c);
+    char want[128];
+    snprintf(want, sizeof want, "GET /api/device/image/%s ", SHA_A);
+    CHECK(strstr(fake_last_request(), want) != NULL, "the image fetched is desired's, A");
+    CHECK(strstr(fake_last_request(), SHA_B) == NULL, "never next's, B");
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "A is what got mounted");
+    CHECK(strcmp(c.mounted_disk_id, "d1") == 0, "and desired's diskId, not next's");
+    CHECK(c.preload.known, "a next came with the poll");
+    CHECK(strcmp(c.preload.next_sha256, SHA_B) == 0, "and is recorded as next");
+    CHECK(strcmp(c.preload.next_disk_id, NEXT_ID2) == 0, "with its disk id");
+    CHECK_EQ_INT(c.preload.next_disk_no, 2);
+}
+
+// 2.
+static void preload_fetches_next_into_inactive_without_publishing(void) {
+    mount_a_with_next_b();
+    int active = psram_active_slot();
+    int inactive = psram_inactive_slot();
+    int before = fake_request_count();
+    dc_set_preload_gate(&c, gate_yes, NULL);
+    push_image_response();
+    CHECK(dc_preload_step(&c), "a preload did work");
+    CHECK_EQ_INT(fake_request_count(), before + 1);
+    char want[128];
+    snprintf(want, sizeof want, "GET /api/device/image/%s ", SHA_B);
+    CHECK(strstr(fake_last_request(), want) != NULL, "it fetched next, B");
+    CHECK_EQ_INT(psram_active_slot(), active);
+    CHECK_EQ_INT(c.preload.slot, inactive);
+    CHECK(strcmp(c.preload.sha256, SHA_B) == 0, "the record holds B");
+    CHECK(!c.preload.loading, "and is no longer loading");
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "A is still the mounted disk");
+    CHECK_EQ_INT(c.state, DC_IDLE_POLL);
+}
+
+// 3. Review Focus 2.
+static void no_preload_while_gate_false(void) {
+    mount_a_with_next_b();
+    int before = fake_request_count();
+    dc_set_preload_gate(&c, gate_no, NULL);
+    CHECK(!dc_preload_step(&c), "the gate said no");
+    CHECK_EQ_INT(fake_request_count(), before);
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    // No gate at all is a no, too.
+    dc_set_preload_gate(&c, NULL, NULL);
+    CHECK(!dc_preload_step(&c), "no gate installed: never preload");
+    CHECK_EQ_INT(fake_request_count(), before);
+}
+
+// 4.
+static void no_refetch_when_already_preloaded(void) {
+    mount_a_preload_b();
+    int before = fake_request_count();
+    CHECK(!dc_preload_step(&c), "B is already there");
+    CHECK_EQ_INT(fake_request_count(), before);
+}
+
+// 5.
+static void swap_publishes_preloaded_slot_without_fetching(void) {
+    mount_a_preload_b();
+    int pre_slot = c.preload.slot;
+    int before = fake_request_count();
+    push_poll_next(6, SHA_B, SHA_C, false);
+    CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    CHECK_EQ_INT(fake_request_count(), before + 1);   // the poll, and nothing else
+    CHECK_EQ_INT(psram_active_slot(), pre_slot);
+    CHECK(strcmp(c.mounted_sha256, SHA_B) == 0, "B is mounted");
+    CHECK_EQ_INT(c.since, 6);
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "the record is consumed");
+    CHECK(strcmp(c.preload.next_sha256, SHA_C) == 0, "and the new next is C");
+}
+
+// 6. R2: a preload that is not the desired disk is never published.
+static void swap_with_mismatched_preload_fetches(void) {
+    mount_a_preload_b();
+    int target = psram_inactive_slot();
+    push_poll_next(6, SHA_C, SHA_A, false);
+    push_image_response();
+    CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    char want[128];
+    snprintf(want, sizeof want, "GET /api/device/image/%s ", SHA_C);
+    CHECK(strstr(fake_last_request(), want) != NULL, "C is fetched");
+    CHECK_EQ_INT(psram_active_slot(), target);
+    CHECK(strcmp(c.mounted_sha256, SHA_C) == 0, "C is mounted");
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "the stale B record is gone");
+}
+
+// 7. Review Focus 2: the fetch overwrote the idle slot, so the record lies
+// unless it is dropped -- even when the fetch fails part-way.
+static void regular_fetch_invalidates_preload(void) {
+    mount_a_preload_b();
+    push_poll_next(6, SHA_C, "", false);
+    fake_push_truncated("HTTP/1.1 200 OK\r\nContent-Length: 2027536\r\n\r\nWFMF", 40);
+    dc_step(&c);
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "a failed fetch leaves A mounted");
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "the slot was overwritten: no B record");
+    // And a poll back to B now fetches rather than publishing half-written C.
+    push_poll_next(7, SHA_B, "", false);
+    push_image_response();
+    dc_step(&c);
+    char want[128];
+    snprintf(want, sizeof want, "GET /api/device/image/%s ", SHA_B);
+    CHECK(strstr(fake_last_request(), want) != NULL, "B is fetched again, not swapped in");
+}
+
+// 8.
+static void next_null_drops_preload(void) {
+    mount_a_preload_b();
+    push_poll_next(6, SHA_A, NULL, false);
+    dc_step(&c);
+    CHECK(c.preload.next_sha256[0] == '\0', "no next");
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+    CHECK(c.preload.sha256[0] == '\0', "the record is dropped");
+    CHECK(!dc_preload_step(&c), "and there is nothing to preload");
+}
+
+// 9. Spec §4.2/§4.4: the swap waits behind unsent writes like any swap.
+static void held_swap_waits(void) {
+    mount_a_preload_b();
+    int active = psram_active_slot();
+    int pre_slot = c.preload.slot;
+    dc_set_hold(&c, hold_true, NULL);
+    int before = fake_request_count();
+    push_poll_next(6, SHA_B, SHA_C, false);
+    CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    CHECK_EQ_INT(fake_request_count(), before + 1);
+    CHECK_EQ_INT(psram_active_slot(), active);
+    CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "held: A stays");
+    CHECK_EQ_INT(c.preload.slot, pre_slot);
+    CHECK(strcmp(c.preload.sha256, SHA_B) == 0, "and the B record is kept for later");
+
+    dc_set_hold(&c, hold_false, NULL);
+    push_poll_next(6, SHA_B, SHA_C, false);
+    CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    CHECK_EQ_INT(fake_request_count(), before + 2);   // still no image fetch
+    CHECK_EQ_INT(psram_active_slot(), pre_slot);
+    CHECK(strcmp(c.mounted_sha256, SHA_B) == 0, "hold lifted: B swapped in from the preload");
+    CHECK_EQ_INT(c.preload.slot, SLOT_NONE);
+}
+
+// 10.
+static void tap_next_parses_outcome(void) {
+    uint32_t no = 99, count = 99;
+    char title[32];
+
+    boot();
+    push_ok_json("{\"outcome\":\"mounting\",\"diskNo\":2,\"diskCount\":3,\"title\":\"Monkey Island\"}");
+    CHECK_EQ_INT(dc_tap_next(&c, &no, &count, title, sizeof title), DC_TAP_MOUNTING);
+    CHECK_EQ_INT(no, 2);
+    CHECK_EQ_INT(count, 3);
+    CHECK(strcmp(title, "Monkey Island") == 0, "title");
+    const char *q = fake_last_request();
+    CHECK(strstr(q, "POST /api/device/tap HTTP/1.1") != NULL, "path");
+    CHECK(strcmp(body_of_last_request(), "{\"action\":\"next\"}") == 0, "exact body");
+
+    boot();
+    push_ok_json("{\"outcome\":\"single\"}");
+    no = count = 99; strcpy(title, "stale");
+    CHECK_EQ_INT(dc_tap_next(&c, &no, &count, title, sizeof title), DC_TAP_SINGLE);
+    CHECK_EQ_INT(no, 0);
+    CHECK(title[0] == '\0', "no stale title");
+
+    boot();
+    push_ok_json("{\"outcome\":\"nothing_mounted\"}");
+    CHECK_EQ_INT(dc_tap_next(&c, &no, &count, title, sizeof title), DC_TAP_NO_DISK);
+
+    boot();
+    push_ok_json("{\"outcome\":\"ignored\"}");
+    CHECK_EQ_INT(dc_tap_next(&c, NULL, NULL, NULL, 0), DC_TAP_IGNORED);
+
+    boot();
+    fake_push_connect_failure();
+    CHECK_EQ_INT(dc_tap_next(&c, &no, &count, title, sizeof title), DC_TAP_FAILED);
+    CHECK_EQ_INT(c.backoff_ms, 0);
+}
+
+// 11.
+static void nfc_write_kind_next_arms_next(void) {
+    boot();
+    push_ok_json("{\"version\":0,\"desired\":null,\"nfcWrite\":{\"seq\":3,\"diskId\":null,"
+                 "\"title\":null,\"kind\":\"next\"}}");
+    dc_step(&c);
+    CHECK(c.nfc_write_new, "new");
+    CHECK_EQ_INT(c.nfc_write_seq, 3);
+    CHECK(c.nfc_write_next, "kind next arms the Next-disk card");
+    CHECK(c.nfc_write_disk_id[0] == '\0', "with no disk id");
+
+    push_ok_json("{\"version\":0,\"desired\":null,\"nfcWrite\":{\"seq\":4,\"diskId\":null,\"title\":null}}");
+    dc_step(&c);
+    CHECK_EQ_INT(c.nfc_write_seq, 4);
+    CHECK(!c.nfc_write_next, "no kind: a disarm, not a Next card");
+
+    push_ok_json("{\"version\":0,\"desired\":null,\"nfcWrite\":{\"seq\":5,\"diskId\":\"" NFC_ID "\",\"title\":\"T\"}}");
+    dc_step(&c);
+    CHECK(!c.nfc_write_next, "a disk write is not a Next card");
+    CHECK(strcmp(c.nfc_write_disk_id, NFC_ID) == 0, "armed with the disk");
+}
+
+// 12.
+static void status_reports_preload(void) {
+    boot(); init_shas();
+    fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
+    dc_report_status(&c, 0, -50, NULL, "1.6.0+gt");
+    CHECK(strstr(fake_last_request(), ",\"preload\":null") != NULL, "none: an explicit null");
+
+    c.preload.slot = 1; strcpy(c.preload.sha256, SHA_B);
+    fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
+    dc_report_status(&c, 0, -50, NULL, "1.6.0+gt");
+    char want[160];
+    snprintf(want, sizeof want, ",\"preload\":{\"sha256\":\"%s\",\"state\":\"ready\"}", SHA_B);
+    CHECK(strstr(fake_last_request(), want) != NULL, "ready");
+
+    c.preload.slot = SLOT_NONE; c.preload.sha256[0] = '\0';
+    c.preload.loading = true; strcpy(c.preload.next_sha256, SHA_C);
+    fake_push_response("HTTP/1.1 204 No Content\r\n\r\n");
+    dc_report_status(&c, 0, -50, NULL, "1.6.0+gt");
+    snprintf(want, sizeof want, ",\"preload\":{\"sha256\":\"%s\",\"state\":\"loading\"}", SHA_C);
+    CHECK(strstr(fake_last_request(), want) != NULL, "loading");
+}
+
 int main(void) {
     // Only test_successful_image_fetch_publishes_and_reflects_write_protected
     // needs real PSRAM backing (everything else in this file either never
@@ -1781,6 +2072,20 @@ int main(void) {
     RUN(tap_maps_outcomes);
     RUN(tap_write_report_body);
     RUN(status_includes_nfc_reader);
+
+    // Multi-disk Next disk. Before the free below: these drive real fetches.
+    RUN(next_is_lifted_before_desired_is_read);
+    RUN(preload_fetches_next_into_inactive_without_publishing);
+    RUN(no_preload_while_gate_false);
+    RUN(no_refetch_when_already_preloaded);
+    RUN(swap_publishes_preloaded_slot_without_fetching);
+    RUN(swap_with_mismatched_preload_fetches);
+    RUN(regular_fetch_invalidates_preload);
+    RUN(next_null_drops_preload);
+    RUN(held_swap_waits);
+    RUN(tap_next_parses_outcome);
+    RUN(nfc_write_kind_next_arms_next);
+    RUN(status_reports_preload);
 
     // The observation tests run BEFORE the backing is released: several of
     // them drive a real fetch, which writes into PSRAM. Appending them after
