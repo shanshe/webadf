@@ -44,6 +44,7 @@ Tasks 1-4, then **6 before 5** (the poll uses Task 6's `nfcWriteForPoll` kind), 
 - **R2: freshness of `next`.** The poll only returns a body when a cursor moves. A browser edit to disk N+1 therefore reaches the board at the next version bump, not at once. The swap-time sha256 comparison (spec §4.4) is what guarantees stale bytes are never published. A stale preload costs one normal fetch, nothing more.
 - **R3: preload state `none`.** The status report sends `"preload":null` when nothing is preloaded. The server stores `preload_state = 'none'`, so "board reports nothing" (`'none'`) and "board too old to report" (NULL) stay distinct. The UI shows "Disk N ready (instant swap)" only when the state is `ready` and the sha256 matches `next`, "Disk N loading…" for any other non-NULL state, and nothing for NULL.
 - **R4: M in "Disk N of M"** is the number of distinct disk numbers in the title.
+- **R5: "oldest" duplicate is the lowest `id`.** The spec says the oldest (`createdAt`, then `id`), but `disks` has no timestamp column (checked in `src/db/schema/catalog.ts`). The lowest id is deterministic and stable, which is what the rule needs; adding a column for this alone is not worth a migration.
 
 ## Review Focus
 
@@ -163,7 +164,7 @@ git commit -m "db: nfc_write_kind, preload_sha256, preload_state (multi-disk nex
 - Consumes: `isServable`, `isHdAdf` (`src/lib/disk-format.ts`), `LEGACY_BOARD_TRACK_MAX_BYTES` (`src/lib/adfmfm/constants.ts`).
 - Produces:
   ```ts
-  export type NextCandidate = { id: string; diskNo: number; createdAt: Date; sha256: string;
+  export type NextCandidate = { id: string; diskNo: number; sha256: string;
     imageFormat: string; sizeBytes: number; maxTrackBits: number | null };
   export type BoardCaps = { trackMaxBytes: number | null; playsHd: boolean };
   export type NextResult =
@@ -186,7 +187,7 @@ import { nextDisk, nextInfo, type NextCandidate, type BoardCaps } from './next-d
 const DD = 901_120, HD = 1_802_240;
 let n = 0;
 const disk = (diskNo: number, o: Partial<NextCandidate> = {}): NextCandidate => ({
-  id: `d${++n}`, diskNo, createdAt: new Date(2026, 0, n), sha256: `${n}`.padStart(64, '0'),
+  id: `d${String(++n).padStart(3, '0')}`, diskNo, sha256: `${n}`.padStart(64, '0'),
   imageFormat: 'adf', sizeBytes: DD, maxTrackBits: null, ...o,
 });
 const board: BoardCaps = { trackMaxBytes: 14336, playsHd: true };
@@ -214,10 +215,10 @@ describe('nextDisk', () => {
     expect(nextDisk([a], null, board)).toEqual({ kind: 'nothing_mounted' });
     expect(nextDisk([a], 'gone', board)).toEqual({ kind: 'nothing_mounted' });
   });
-  it('collapses a duplicate disk number to the oldest row', () => {
+  it('collapses a duplicate disk number to the lowest id (plan R5)', () => {
     const a = disk(1);
-    const b1 = disk(2, { createdAt: new Date(2025, 0, 1) });
-    const b2 = disk(2, { createdAt: new Date(2027, 0, 1) });
+    const b1 = disk(2, { id: 'b-low' });
+    const b2 = disk(2, { id: 'z-high' });
     expect(nextDisk([a, b2, b1], a.id, board)).toMatchObject({ disk: b1, diskCount: 2 });
   });
   it('counts from a non-canonical duplicate by its disk number', () => {
@@ -276,7 +277,7 @@ import { LEGACY_BOARD_TRACK_MAX_BYTES } from '@/lib/adfmfm/constants';
  * about what "next" is.
  */
 export type NextCandidate = {
-  id: string; diskNo: number; createdAt: Date; sha256: string;
+  id: string; diskNo: number; sha256: string;
   imageFormat: string; sizeBytes: number; maxTrackBits: number | null;
 };
 export type BoardCaps = { trackMaxBytes: number | null; playsHd: boolean };
@@ -293,8 +294,8 @@ export function boardHolds(d: NextCandidate, b: BoardCaps): boolean {
   return true;
 }
 
-const older = (a: NextCandidate, b: NextCandidate) =>
-  a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+// Plan R5: disks has no timestamp, so a duplicate disk number resolves to the lowest id.
+const older = (a: NextCandidate, b: NextCandidate) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 export function nextDisk(all: NextCandidate[], currentId: string | null, b: BoardCaps): NextResult {
   const current = currentId ? all.find((d) => d.id === currentId) : undefined;
@@ -334,7 +335,7 @@ export async function readNextForDevices(orgId: string, devs: NextDeviceInput[])
   const gameOf = new Map(cur.map((r) => [r.id, r.gameId]));
   const gameIds = [...new Set(cur.map((r) => r.gameId))];
   const rows = gameIds.length === 0 ? [] : await db.select({
-    id: disks.id, gameId: disks.gameId, diskNo: disks.diskNo, createdAt: disks.createdAt,
+    id: disks.id, gameId: disks.gameId, diskNo: disks.diskNo,
     sha256: disks.sha256, imageFormat: disks.imageFormat, sizeBytes: disks.sizeBytes,
     maxTrackBits: disks.maxTrackBits,
   }).from(disks).where(and(eq(disks.orgId, orgId), inArray(disks.gameId, gameIds)));
@@ -357,7 +358,7 @@ export function nextInfo(r: NextResult | undefined, preloadSha256: string | null
 }
 ```
 
-Check that `disks.createdAt` and `disks.maxTrackBits` exist in `src/db/schema/catalog.ts`. If `createdAt` has another name there, use that column and keep the property name `createdAt`.
+`disks.maxTrackBits` exists (`src/db/schema/catalog.ts`); `disks` has no timestamp column (plan R5).
 
 - [ ] **Step 4: Run the tests.** `npx vitest run src/lib/next-disk.test.ts`. Expected: PASS.
 
