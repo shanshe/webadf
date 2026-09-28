@@ -52,10 +52,15 @@ export async function applyMatch(sha256: string, entryId: string): Promise<Apply
   const entry = entryRows[0];
   if (!entry) return { gamesUpdated: 0, disksUpdated: 0, gamesMerged: 0 };
 
-  // Every disk holding these bytes, in every organization.
+  // Every disk holding these bytes, in every organization. Joined to games
+  // for diskOrderSource: see the human-arranged guard below.
   const affected = await db
-    .select({ diskId: disks.id, gameId: disks.gameId, orgId: disks.orgId })
+    .select({
+      diskId: disks.id, gameId: disks.gameId, orgId: disks.orgId,
+      diskOrderSource: games.diskOrderSource,
+    })
     .from(disks)
+    .innerJoin(games, eq(disks.gameId, games.id))
     .where(eq(disks.sha256, sha256));
   if (affected.length === 0) return { gamesUpdated: 0, disksUpdated: 0, gamesMerged: 0 };
 
@@ -65,12 +70,24 @@ export async function applyMatch(sha256: string, entryId: string): Promise<Apply
   let gamesMerged = 0;
 
   for (const row of affected) {
-    // Disk level: the TOSEC rom name and disk number are authoritative.
+    // A person arranged this game's disks into a set (disk-sets spec §2) --
+    // diskOrderSource: 'human'. That arrangement is the Authority rule's
+    // territory exactly like a human-edited title: identity (tosecName)
+    // still gets written below, because it says what the bytes ARE, not how
+    // they are ordered or what the game is called. diskNo (arrangement) and
+    // the game's title (also arrangement-adjacent -- see mergeDuplicates)
+    // are left alone.
+    const humanArranged = row.diskOrderSource === 'human';
+
+    // Disk level: the TOSEC rom name is always authoritative (identity).
+    // The disk number is authoritative only when nothing human ordered it.
     stmts.push(db.update(disks).set({
       tosecName: entry.romName,
-      ...(entry.diskNo === null ? {} : { diskNo: entry.diskNo }),
+      ...(entry.diskNo === null || humanArranged ? {} : { diskNo: entry.diskNo }),
     }).where(eq(disks.id, row.diskId)));
     disksUpdated++;
+
+    if (humanArranged) continue;
 
     // Game level: only over machine-authored metadata this TOSEC retitle is
     // allowed to overwrite. Gating on TOSEC_RETITLABLE_SOURCES (not just
@@ -119,12 +136,28 @@ export async function applyMatch(sha256: string, entryId: string): Promise<Apply
  * not survive, so a human-edited (non-MACHINE_SOURCES) row is only ever a
  * survivor, never the one a sweep removes. See the branches below for how
  * that plays out when more than one row is human-edited.
+ *
+ * A game with diskOrderSource: 'human' (a person arranged its disk set,
+ * disk-sets spec §2) is excluded from `dupes` entirely, before the
+ * protected/machine split below even runs -- it is neither survivor nor
+ * absorbed. Unlike metadataSource, this is not "protect the row's own
+ * fields": a merge deletes the LOSING row's id outright and repoints every
+ * disk, device and collection membership that pointed at it onto the
+ * survivor. Letting a human-arranged game be the absorbed row would delete
+ * the game the person arranged; letting it be the survivor would silently
+ * attach another sha256's disk to a set someone laid out on purpose. Both
+ * are the sweep making an arrangement decision that is not its call, so the
+ * row is left out of the merge pool altogether -- it survives only by never
+ * being a duplicate as far as this pass is concerned.
  */
 async function mergeDuplicates(orgId: string, sortTitle: string, year: number | null): Promise<number> {
   const db = getDb();
 
-  const dupes = await db
-    .select({ id: games.id, createdAt: games.createdAt, metadataSource: games.metadataSource })
+  const dupesRaw = await db
+    .select({
+      id: games.id, createdAt: games.createdAt, metadataSource: games.metadataSource,
+      diskOrderSource: games.diskOrderSource,
+    })
     .from(games)
     .where(and(
       eq(games.orgId, orgId),
@@ -143,6 +176,8 @@ async function mergeDuplicates(orgId: string, sortTitle: string, year: number | 
     // list (see admin-queries.ts's adminListUsers, which orders by
     // (createdAt, id) for the same reason). Do not drop the second column.
     .orderBy(games.createdAt, games.id);
+
+  const dupes = dupesRaw.filter((d) => d.diskOrderSource !== 'human');
 
   if (dupes.length < 2) return 0;
 
