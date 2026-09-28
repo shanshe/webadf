@@ -179,6 +179,37 @@ static void test_an_impossible_gap_is_counted(void) {
     CHECK_EQ_INT(f.intervals, 3);
 }
 
+static void test_short_intervals_are_glitches(void) {
+    /* Bench 2026-09-27 (HD writes, HANDOFF 3ao step 3): an HD write captured
+       one interval at 1,640 ns among flux that otherwise never dropped below
+       ~3,600 ns -- the shortest legal MFM interval is 2 bitcells, 4,000 ns.
+       flux_ns_is_glitch() is exactly what flux_capture.c's diagnostics call
+       to count these; this is the same function, not a re-implementation. */
+    CHECK(flux_ns_is_glitch(1640), "1,640 ns: the bench glitch, must count");
+    CHECK(flux_ns_is_glitch(2999), "just under the threshold must count");
+    CHECK(!flux_ns_is_glitch(3000), "the threshold itself must not count");
+    CHECK(!flux_ns_is_glitch(3600), "a legal interval must not count");
+}
+
+static void test_a_clean_capture_has_no_glitches(void) {
+    /* A real Greaseweazle-derived track, turned into the same intervals the
+       decoder sees (to_intervals(), shared with the round-trip test above).
+       If FLUX_GLITCH_NS ever fired on clean flux, the threshold would be
+       flagging real writes, not glitches. */
+    uint8_t mfm[TRACK_MFM_BYTES];
+    if (!read_fixture("prng", 0, mfm)) { CHECK(0, "fixture"); return; }
+
+    static uint32_t cells[200000];
+    uint32_t max_gap = 0;
+    size_t n = to_intervals(mfm, sizeof mfm, cells, (sizeof cells / sizeof cells[0]), &max_gap);
+
+    uint32_t glitches = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (flux_ns_is_glitch(cells[i] * CELL_NS)) glitches++;
+    }
+    CHECK_EQ_INT(glitches, 0);
+}
+
 static void test_bit_layout_is_msb_first(void) {
     /* The order bits go down the wire, and the order mfm_decode_track reads
        them. Getting this backwards produces a stream that is byte-reversed
@@ -257,6 +288,8 @@ int main(void) {
     RUN(test_it_tolerates_the_speed_error_a_real_drive_has);
     RUN(test_overflow_is_reported_not_hidden);
     RUN(test_an_impossible_gap_is_counted);
+    RUN(test_short_intervals_are_glitches);
+    RUN(test_a_clean_capture_has_no_glitches);
     RUN(test_bit_layout_is_msb_first);
     RUN(test_counter_to_ns);
     RUN(test_an_hd_write_fits_the_capture_buffer);
