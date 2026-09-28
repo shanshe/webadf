@@ -310,30 +310,40 @@ test('a touch drag scrolls the library, and a press-and-hold drags a card', asyn
   await held.end();
 });
 
-test('the Create ADF menu opens and makes a disk at a phone width', async ({ page }) => {
+test('the New disk panel opens as a bottom sheet and makes a disk at a phone width', async ({ page }) => {
   await signUpFresh(page);
   await page.goto('/library');
 
   // Worth a mobile test specifically because of what was given up: the old
   // control was a native <select>, and a phone renders one as an OS picker
   // for free -- correctly sized, always on screen, impossible to get wrong.
-  // A Base UI menu inherits none of that, so it has to be asserted.
+  // The bottom sheet inherits none of that, so it has to be asserted.
   await page.getByTestId('create-adf').tap();
-  const ffs = page.getByTestId('create-adf-ffs');
-  await expect(ffs).toBeVisible();
+  const panel = page.getByTestId('create-adf-panel');
+  await expect(panel).toBeVisible();
 
-  // On screen horizontally. A popup anchored to a button near the right edge
-  // of a 390px viewport is the obvious way for this to go wrong.
-  const box = (await ffs.boundingBox())!;
-  expect(box.x).toBeGreaterThanOrEqual(0);
-  expect(box.x + box.width).toBeLessThanOrEqual(390);
-  // And big enough to hit with a finger rather than a mouse.
-  expect(box.height).toBeGreaterThanOrEqual(32);
+  // A bottom sheet: full width, flush with the bottom of the viewport.
+  // Polled, because the sheet slides in.
+  await expect.poll(async () => {
+    const b = (await panel.boundingBox())!;
+    return Math.round(b.y + b.height);
+  }).toBe(844);
+  const sheet = (await panel.boundingBox())!;
+  expect(sheet.x).toBeGreaterThanOrEqual(0);
+  expect(sheet.x + sheet.width).toBeLessThanOrEqual(390);
+  expect(sheet.width).toBeGreaterThanOrEqual(380);
 
-  await ffs.tap();
+  // Every control is big enough to hit with a thumb rather than a mouse.
+  for (const id of ['create-adf-size-dd', 'create-adf-size-hd', 'create-adf-fs-ffs', 'create-adf-fs-ofs', 'create-adf-submit']) {
+    const b = (await page.getByTestId(id).boundingBox())!;
+    expect(b.height, id).toBeGreaterThanOrEqual(44);
+  }
+
+  await page.getByTestId('create-adf-submit').tap();
   await expect(page.getByTestId('game-card')).toHaveCount(1);
+  await expect(panel).toBeHidden();
 
-  // The menu is portalled to the body, so it can widen the document without
+  // The sheet is portalled to the body, so it can widen the document without
   // widening any container the grid test would have caught.
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -343,7 +353,7 @@ test('the Create ADF menu opens and makes a disk at a phone width', async ({ pag
 
 /**
  * The file toolbar (upload, new folder) and a row's Rename/Delete controls,
- * at 390x844. Worth a real check for the same reason the Create ADF menu
+ * at 390x844. Worth a real check for the same reason the create-disk menu
  * was: task-11's controls are ordinary buttons and inline forms, not the
  * dropdown that the Create ADF finding was about, but nothing here was ever
  * proven to fit a phone either, and the same card that clips the Download

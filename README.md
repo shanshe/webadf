@@ -30,12 +30,12 @@ ordering. The current bench board is rev A2.*
   to pick files out of them.
 - HD (1.76 MB) ADFs are recognised and tagged HD, and are disks like any other: browsed
   and edited in the browser, with full history. Blank HD disks can be made from the
-  Create ADF menu.
+  New disk panel.
 - Each unique disk is stored once, however many times it is uploaded.
 - Disks are identified against TOSEC, OpenRetro and Demozoo, and grouped into titles
   with cover art, screenshots, publisher, year and type.
 - Collections, search as you type, and a layout that works on a phone.
-- Create a blank formatted disk (OFS or FFS).
+- Create a blank formatted disk: 880 KB or 1.76 MB, OFS or FFS.
 - Download any disk as an ADF.
 
 ### Inside a disk

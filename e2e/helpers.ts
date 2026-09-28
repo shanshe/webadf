@@ -94,18 +94,20 @@ export async function signUpFresh(page: Page) {
 }
 
 /**
- * Make a blank disk from the library header's "Create ADF" menu.
+ * Make a blank disk from the library header's "New disk" panel.
  *
- * Every caller goes through here because the trigger click alone no longer
- * creates anything. It used to: the control was a sticky <select> beside a
- * button, so a bare `create-adf` click made a disk using whatever filesystem
- * had last been selected -- including one selected by an earlier action. The
- * menu makes the filesystem part of the click instead of ambient state, and
- * that means a caller that forgets the second click leaves a menu open and no
- * disk made. Keeping the two-step in one place is what stops that being
- * rediscovered per spec.
+ * Every caller goes through here because the trigger click alone creates
+ * nothing: it opens a small form (Size, Filesystem, Create). Both switches
+ * are clicked every time, even for the defaults, so a caller states the disk
+ * it wants rather than relying on what the panel happens to show. The panel
+ * resets to 880 KB / FFS on each open, but that reset is what
+ * create-adf.spec.ts tests -- it is not something every other spec should
+ * lean on silently. Keeping the steps in one place stops a caller forgetting
+ * the Create click and leaving a panel open with no disk made.
  */
 export async function createAdf(page: Page, filesystem: 'FFS' | 'OFS' = 'FFS', density: 'dd' | 'hd' = 'dd') {
   await page.getByTestId('create-adf').click();
-  await page.getByTestId(`create-adf-${density === 'hd' ? 'hd-' : ''}${filesystem.toLowerCase()}`).click();
+  await page.getByTestId(`create-adf-size-${density}`).click();
+  await page.getByTestId(`create-adf-fs-${filesystem.toLowerCase()}`).click();
+  await page.getByTestId('create-adf-submit').click();
 }
