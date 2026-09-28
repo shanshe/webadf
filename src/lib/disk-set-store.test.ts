@@ -69,7 +69,7 @@ beforeEach(() => {
 });
 
 const game = (id: string, over: Record<string, unknown> = {}) => ({
-  id, title: `T ${id}`, sortTitle: `t ${id}`, year: 1990, publisher: 'Psygnosis', metadataSource: 'tosec',
+  id, title: `T ${id}`, year: 1990, publisher: 'Psygnosis', metadataSource: 'tosec', diskOrderSource: null,
   coverAssetId: null, demozooProductionId: null, ...over,
 });
 
@@ -95,8 +95,8 @@ describe('addDisksToSet', () => {
     const b = only();
     const moves = b.filter((s) => /^update "disks"/.test(s.sql));
     expect(moves.map((m) => m.params)).toEqual([
-      ['G', 2, 's1', 'org-1'],
-      ['G', 3, 's2', 'org-1'],
+      ['G', 2, 's1', 'org-1', 'S'],
+      ['G', 3, 's2', 'org-1', 'S'],
     ]);
   });
 
@@ -113,8 +113,31 @@ describe('addDisksToSet', () => {
     await addDisksToSet('org-1', 'G', ['p1', 'q1']);
     const moves = only().filter((s) => /^update "disks"/.test(s.sql));
     expect(moves.map((m) => m.params)).toEqual([
-      ['G', 2, 'p1', 'org-1'],
-      ['G', 3, 'q1', 'org-1'],
+      ['G', 2, 'p1', 'org-1', 'P'],
+      ['G', 3, 'q1', 'org-1', 'Q'],
+    ]);
+  });
+
+  it('pins every disk UPDATE to the title it was read in (m4)', async () => {
+    addScenario();
+    await addDisksToSet('org-1', 'G', ['s2']);
+    for (const m of only().filter((s) => /^update "disks"/.test(s.sql))) {
+      expect(m.sql).toMatch(/where \("disks"\."id" = \$\d+ and "disks"\."org_id" = \$\d+ and "disks"\."game_id" = \$\d+\)/);
+    }
+  });
+
+  it('a rename (the suggestion path) renumbers the target\'s own disks from 1 too (m2)', async () => {
+    answer(games, [{ id: 'G' }], [game('S')]);
+    answer(disks,
+      [{ id: 'd2', gameId: 'G', diskNo: 2 }],           // a lone target TOSEC numbered "Disk 2"
+      [{ id: 's1', gameId: 'S', diskNo: 1 }],
+      [{ id: 's1', gameId: 'S', diskNo: 1 }],
+    );
+    answer(collectionGames, []); answer(devices, []);
+    await addDisksToSet('org-1', 'G', ['s1'], 'My Set');
+    expect(only().filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params)).toEqual([
+      ['G', 1, 'd2', 'org-1', 'G'],
+      ['G', 2, 's1', 'org-1', 'S'],
     ]);
   });
 
@@ -187,9 +210,16 @@ describe('addDisksToSet', () => {
     addScenario({ collection: true });
     const { undo } = await addDisksToSet('org-1', 'G', ['s2']);
     expect(undo).toEqual([{
-      diskIds: ['s1', 's2'], title: 'T S', sortTitle: 't S', year: 1990, publisher: 'Psygnosis',
-      metadataSource: 'tosec', hadExtras: true,
+      diskIds: ['s1', 's2'], title: 'T S', year: 1990, publisher: 'Psygnosis',
+      metadataSource: 'tosec', diskOrderSource: null, hadExtras: true,
     }]);
+  });
+
+  it('carries a human-arranged source title\'s disk_order_source in its undo snapshot (I4)', async () => {
+    addScenario();
+    byTable.set(games, [[{ id: 'G' }], [game('S', { diskOrderSource: 'human' })]]);
+    const { undo } = await addDisksToSet('org-1', 'G', ['s2']);
+    expect(undo[0].diskOrderSource).toBe('human');
   });
 
   it('hadExtras is false with no cover, no Demozoo link and no collection', async () => {
@@ -244,7 +274,7 @@ describe('reorderSet', () => {
     await reorderSet('org-1', 'G', ['b', 'a']);
     const b = only();
     expect(b.filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params))
-      .toEqual([['G', 1, 'b', 'org-1'], ['G', 2, 'a', 'org-1']]);
+      .toEqual([['G', 1, 'b', 'org-1', 'G'], ['G', 2, 'a', 'org-1', 'G']]);
     const dev = b.find((s) => /^update "devices"/.test(s.sql))!;
     expect(dev.sql).toMatch(/set "desired_game_id" = \$1, "desired_disk_no" = \$2/);
     expect(dev.params).toEqual(expect.arrayContaining(['G', 1, 'dev', 'org-1', 'b']));
@@ -284,7 +314,7 @@ describe('moveDiskOut', () => {
     expect(b[0].sql).toMatch(/^insert into "games"/);
     expect(b[0].params).toEqual(expect.arrayContaining([gameId, 'org-1', 'LEMMINGS2', 'lemmings2', 'human']));
     const moves = b.filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params);
-    expect(moves).toEqual([[gameId, 1, 'a', 'org-1'], ['G', 1, 'b', 'org-1']]);
+    expect(moves).toEqual([[gameId, 1, 'a', 'org-1', 'G'], ['G', 1, 'b', 'org-1', 'G']]);
     const dev = b.filter((s) => /^update "devices"/.test(s.sql));
     expect(dev.map((d) => d.params)).toEqual(expect.arrayContaining([
       expect.arrayContaining(['G', 1, 'dev', 'org-1', 'b']),
@@ -338,8 +368,8 @@ describe('moveDiskOut', () => {
 
 describe('undoMove', () => {
   const snap = {
-    diskIds: ['s1', 's2'], title: 'Lemmings', sortTitle: 'lemmings', year: 1991, publisher: 'Psygnosis',
-    metadataSource: 'tosec', hadExtras: false,
+    diskIds: ['s1', 's2'], title: 'The Lemmings', year: 1991, publisher: 'Psygnosis',
+    metadataSource: 'tosec', diskOrderSource: 'human' as const, hadExtras: false,
   };
 
   it('recreates the title and moves the disks back 1..N; the set left behind is renumbered', async () => {
@@ -352,10 +382,14 @@ describe('undoMove', () => {
     const { gameId } = await undoMove('org-1', snap);
     const b = only();
     expect(b[0].sql).toMatch(/^insert into "games"/);
-    expect(b[0].params).toEqual(expect.arrayContaining([gameId, 'org-1', 'Lemmings', 'lemmings', 1991, 'Psygnosis', 'tosec']));
+    // sortTitle derived on the server from the title; disk_order_source restored (I4).
+    expect(b[0].sql).toMatch(/"disk_order_source"/);
+    expect(b[0].params).toEqual(expect.arrayContaining(
+      [gameId, 'org-1', 'The Lemmings', 'lemmings, the', 1991, 'Psygnosis', 'tosec', 'human']));
+    // Each move pinned to G, where the disks sit now (m4).
     expect(b.filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params)).toEqual([
-      [gameId, 1, 's1', 'org-1'], [gameId, 2, 's2', 'org-1'],
-      ['G', 1, 'd1', 'org-1'], ['G', 2, 'd4', 'org-1'],
+      [gameId, 1, 's1', 'org-1', 'G'], [gameId, 2, 's2', 'org-1', 'G'],
+      ['G', 1, 'd1', 'org-1', 'G'], ['G', 2, 'd4', 'org-1', 'G'],
     ]);
     const dev = b.filter((s) => /^update "devices"/.test(s.sql)).map((s) => s.params);
     expect(dev).toEqual(expect.arrayContaining([

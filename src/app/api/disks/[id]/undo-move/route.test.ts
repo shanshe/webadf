@@ -14,8 +14,8 @@ const { NotFound } = await import('@/lib/disk-set-store');
 const { PlanError } = await import('@/lib/disk-set');
 
 const snapshot = {
-  diskIds: ['s1', 's2'], title: 'Lemmings', sortTitle: 'lemmings', year: 1991, publisher: 'Psygnosis',
-  metadataSource: 'tosec', hadExtras: true,
+  diskIds: ['s1', 's2'], title: 'Lemmings', year: 1991, publisher: 'Psygnosis',
+  metadataSource: 'tosec', diskOrderSource: 'human', hadExtras: true,
 };
 const ctx = { params: Promise.resolve({ id: 's1' }) };
 const req = (body: unknown) => new Request('http://x/api/disks/s1/undo-move', {
@@ -39,6 +39,20 @@ describe('POST /api/disks/[id]/undo-move', () => {
     const res = await POST(req({ snapshot: s }), ctx);
     expect(res.status).toBe(200);
     expect(undoMove).toHaveBeenCalledWith('org-1', s);
+  });
+
+  it('drops a client-sent sortTitle (the store derives it) and defaults a missing diskOrderSource to null (I4)', async () => {
+    undoMove.mockResolvedValue({ gameId: 'NEW' });
+    const { diskOrderSource: _omit, ...old } = snapshot;
+    const res = await POST(req({ snapshot: { ...old, sortTitle: 'zzz forged' } }), ctx);
+    expect(res.status).toBe(200);
+    expect(undoMove).toHaveBeenCalledWith('org-1', { ...old, diskOrderSource: null });
+  });
+
+  it('refuses a diskOrderSource other than human or null', async () => {
+    const res = await POST(req({ snapshot: { ...snapshot, diskOrderSource: 'tosec' } }), ctx);
+    expect(res.status).toBe(400);
+    expect(undoMove).not.toHaveBeenCalled();
   });
 
   it('NotFound is 404', async () => {

@@ -41,9 +41,15 @@ import { makeSortTitle } from '@/lib/tosec';
 import { readVolume } from '@/lib/adffs';
 import { diskStore } from '@/lib/storage';
 
+/**
+ * What Undo needs to recreate an emptied title. No sortTitle: the server
+ * derives it from `title` (makeSortTitle) rather than trusting the client's.
+ * diskOrderSource is carried so a human-arranged title comes back human-arranged
+ * (TOSEC re-application and the upload suggestion both respect that flag).
+ */
 export type UndoSnapshot = {
-  diskIds: string[]; title: string; sortTitle: string; year: number | null; publisher: string | null;
-  metadataSource: string | null; hadExtras: boolean;
+  diskIds: string[]; title: string; year: number | null; publisher: string | null;
+  metadataSource: string | null; diskOrderSource: 'human' | null; hadExtras: boolean;
 };
 
 /** A title or disk that is unknown or belongs to another org -- indistinguishable on purpose. */
@@ -56,7 +62,7 @@ type Stmt = BatchItem<'pg'>;
 
 const setDisk = { id: disks.id, gameId: disks.gameId, diskNo: disks.diskNo };
 
-async function orgDevices(db: Db, orgId: string): Promise<DeviceRef[]> {
+export async function orgDevices(db: Db, orgId: string): Promise<DeviceRef[]> {
   return db.select({ id: devices.id, desiredDiskId: devices.desiredDiskId, mountedDiskId: devices.mountedDiskId })
     .from(devices).where(eq(devices.orgId, orgId));
 }
@@ -75,12 +81,17 @@ async function disksOf(db: Db, orgId: string, gameId: string): Promise<SetDisk[]
 const noDiskLeft = (gameIdCol: typeof games.id | typeof collectionGames.gameId) =>
   sql`not exists (select 1 from ${disks} "d" where "d"."game_id" = ${gameIdCol})`;
 
-/** Statements 1 and 2 of every batch: the disk moves, then the devices. */
-function applyPlan(db: Db, orgId: string, plan: Plan, devs: DeviceRef[]): Stmt[] {
+/**
+ * Statements 1 and 2 of every batch: the disk moves, then the devices. Each
+ * disk UPDATE is pinned to the title the plan read it in (Renumber.fromGameId),
+ * so a disk another tab moved meanwhile stays where that tab put it.
+ * Also used by disk-delete.ts to close the gap a deleted disk leaves.
+ */
+export function applyPlan(db: Db, orgId: string, plan: Plan, devs: DeviceRef[]): Stmt[] {
   const out: Stmt[] = [];
   for (const r of plan.renumber) {
     out.push(db.update(disks).set({ gameId: r.gameId, diskNo: r.diskNo })
-      .where(and(eq(disks.id, r.diskId), eq(disks.orgId, orgId))));
+      .where(and(eq(disks.id, r.diskId), eq(disks.orgId, orgId), eq(disks.gameId, r.fromGameId))));
   }
   const byId = new Map(devs.map((d) => [d.id, d]));
   for (const u of plan.devices) {
@@ -113,7 +124,7 @@ function markHuman(db: Db, orgId: string, gameId: string): Stmt {
     .where(and(eq(games.id, gameId), eq(games.orgId, orgId)));
 }
 
-async function run(db: Db, stmts: Stmt[]): Promise<void> {
+export async function run(db: Db, stmts: Stmt[]): Promise<void> {
   if (stmts.length === 0) return;
   await db.batch(stmts as [Stmt, ...Stmt[]]);
 }
@@ -140,8 +151,8 @@ export async function addDisksToSet(
 
   const sourceIds = [...new Set(picked.map((d) => d.gameId))];
   const sources = await db.select({
-    id: games.id, title: games.title, sortTitle: games.sortTitle, year: games.year, publisher: games.publisher,
-    metadataSource: games.metadataSource, coverAssetId: games.coverAssetId, demozooProductionId: games.demozooProductionId,
+    id: games.id, title: games.title, year: games.year, publisher: games.publisher,
+    metadataSource: games.metadataSource, diskOrderSource: games.diskOrderSource, coverAssetId: games.coverAssetId, demozooProductionId: games.demozooProductionId,
   }).from(games).where(and(inArray(games.id, sourceIds), eq(games.orgId, orgId)));
   // A disk whose title is not this org's (org_id drift) is refused, never moved:
   // this operation must not delete or strip another org's title.
@@ -156,7 +167,8 @@ export async function addDisksToSet(
     .where(inArray(collectionGames.gameId, sourceIds));
   const devs = await orgDevices(db, orgId);
 
-  const plan = planAddDisks({ gameId, disks: targetDisks }, picked, allOfSources, devs);
+  // A rename is the suggestion path: the set is new, so number it from 1.
+  const plan = planAddDisks({ gameId, disks: targetDisks }, picked, allOfSources, devs, { compact: rename !== undefined });
 
   const from = new Map(allOfSources.map((d) => [d.id, d.gameId]));
   const collected = new Set(inCollection.map((c) => c.gameId));
@@ -164,7 +176,8 @@ export async function addDisksToSet(
     const g = sources.find((s) => s.id === gid)!;
     return {
       diskIds: plan.renumber.filter((r) => from.get(r.diskId) === gid).map((r) => r.diskId),
-      title: g.title, sortTitle: g.sortTitle, year: g.year, publisher: g.publisher, metadataSource: g.metadataSource,
+      title: g.title, year: g.year, publisher: g.publisher, metadataSource: g.metadataSource,
+      diskOrderSource: g.diskOrderSource === 'human' ? 'human' : null,
       hadExtras: g.coverAssetId !== null || g.demozooProductionId !== null || collected.has(gid),
     };
   });
@@ -256,7 +269,8 @@ export async function undoMove(orgId: string, snap: UndoSnapshot): Promise<{ gam
   // The disks, 1..N in snapshot order, and the set they leave, 1..N in its
   // current order -- each a reorder of a known list, so planReorder builds
   // both the renumbers and the device updates.
-  const plans: Plan[] = [planReorder({ gameId: newId, disks: moving.map((d) => ({ ...d, gameId: newId })) }, ids, devs)];
+  // `moving` keeps each disk's current gameId: that is what its UPDATE is pinned to.
+  const plans: Plan[] = [planReorder({ gameId: newId, disks: moving }, ids, devs)];
   const gid = leftIds[0];
   const rest = leftDisks.filter((d) => d.gameId === gid && !ids.includes(d.id))
     .sort((a, b) => a.diskNo - b.diskNo || (a.id < b.id ? -1 : 1));
@@ -268,8 +282,8 @@ export async function undoMove(orgId: string, snap: UndoSnapshot): Promise<{ gam
 
   await run(db, [
     db.insert(games).values({
-      id: newId, orgId, title: snap.title, sortTitle: snap.sortTitle, year: snap.year, publisher: snap.publisher,
-      metadataSource: snap.metadataSource,
+      id: newId, orgId, title: snap.title, sortTitle: makeSortTitle(snap.title), year: snap.year, publisher: snap.publisher,
+      metadataSource: snap.metadataSource, diskOrderSource: snap.diskOrderSource,
     }),
     ...applyPlan(db, orgId, merged, devs),
   ]);

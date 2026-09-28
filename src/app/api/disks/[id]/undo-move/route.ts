@@ -7,10 +7,13 @@ const snapshot = z.object({
   diskIds: z.array(z.string().min(1).max(64)).min(1).max(64)
     .refine((ids) => new Set(ids).size === ids.length, 'duplicate disk ids'),
   title: z.string().min(1).max(200),
-  sortTitle: z.string().min(1).max(200),
+  // No sortTitle: the store derives it from title. A snapshot from before
+  // this change still carries one; zod strips it.
   year: z.number().int().min(1900).max(2100).nullable(),
   publisher: z.string().max(200).nullable(),
   metadataSource: z.string().max(32).nullable(),
+  // Absent in a snapshot issued before it was carried: treated as not arranged.
+  diskOrderSource: z.enum(['human']).nullable().default(null),
   hadExtras: z.boolean(),
 });
 const body = z.object({ snapshot });
