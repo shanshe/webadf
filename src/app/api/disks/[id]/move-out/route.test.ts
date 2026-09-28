@@ -11,6 +11,7 @@ vi.mock('@/lib/disk-set-store', async () => {
 
 const { POST } = await import('./route');
 const { NotFound } = await import('@/lib/disk-set-store');
+const { PlanError } = await import('@/lib/disk-set');
 
 const ctx = { params: Promise.resolve({ id: 'd1' }) };
 const req = () => new Request('http://x/api/disks/d1/move-out', { method: 'POST' });
@@ -31,6 +32,13 @@ describe('POST /api/disks/[id]/move-out', () => {
     const res = await POST(req(), ctx);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('a lone disk (not_in_a_set) is 400', async () => {
+    moveDiskOut.mockRejectedValue(new PlanError('not_in_a_set'));
+    const res = await POST(req(), ctx);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'not_in_a_set' });
   });
 
   it('an over-long id is 400 and never reaches the store', async () => {

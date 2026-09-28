@@ -11,6 +11,7 @@ vi.mock('@/lib/disk-set-store', async () => {
 
 const { POST } = await import('./route');
 const { NotFound } = await import('@/lib/disk-set-store');
+const { PlanError } = await import('@/lib/disk-set');
 
 const snapshot = {
   diskIds: ['s1', 's2'], title: 'Lemmings', sortTitle: 'lemmings', year: 1991, publisher: 'Psygnosis',
@@ -44,6 +45,13 @@ describe('POST /api/disks/[id]/undo-move', () => {
     const res = await POST(req({ snapshot }), ctx);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('a stale snapshot (stale_undo) is 409', async () => {
+    undoMove.mockRejectedValue(new PlanError('stale_undo'));
+    const res = await POST(req({ snapshot }), ctx);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'stale_undo' });
   });
 
   it.each([

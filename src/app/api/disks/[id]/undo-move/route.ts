@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { requireOrg } from '@/lib/session';
 import { undoMove, NotFound } from '@/lib/disk-set-store';
+import { PlanError } from '@/lib/disk-set';
 
 const snapshot = z.object({
   diskIds: z.array(z.string().min(1).max(64)).min(1).max(64)
@@ -41,6 +42,9 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     return new Response(null, { status: 204 });
   } catch (err) {
     if (err instanceof NotFound) return Response.json({ error: 'not_found' }, { status: 404 });
+    // The set changed since the add (disks split up, or the set would be
+    // emptied): refused, nothing written.
+    if (err instanceof PlanError) return Response.json({ error: err.code }, { status: 409 });
     throw err;
   }
 }

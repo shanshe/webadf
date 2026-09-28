@@ -300,17 +300,15 @@ describe('moveDiskOut', () => {
     expect(only()[0].params).toContain('Disk');
   });
 
-  it('deletes the old title (guarded) when the disk was its last', async () => {
+  it('refuses a lone disk (not_in_a_set) before reading its image, and writes nothing', async () => {
     outScenario([]);
     readVolume.mockReturnValue({ ok: true, volume: { name: 'X' } });
-    await moveDiskOut('org-1', 'a');
-    const b = only();
-    const iCg = idx(b, /^delete from "collection_games"/);
-    const iG = idx(b, /^delete from "games"/);
-    expect(iCg).toBeGreaterThan(idx(b, /^update "disks"/));
-    expect(iG).toBeGreaterThan(iCg);
-    expect(b[iG].sql).toMatch(/not exists \(select 1 from "disks" "d" where "d"\."game_id" = "games"\."id"\)/);
-    expect(b[iG].params).toEqual(expect.arrayContaining(['G', 'org-1']));
+    const err = await moveDiskOut('org-1', 'a').catch((e) => e);
+    expect(err).toBeInstanceOf(PlanError);
+    expect(err.code).toBe('not_in_a_set');
+    expect(read).not.toHaveBeenCalled();
+    expect(readVolume).not.toHaveBeenCalled();
+    expect(batches).toHaveLength(0);
   });
 
   it('a disk outside the org is NotFound', async () => {
@@ -349,16 +347,27 @@ describe('undoMove', () => {
     expect(idx(b, /^delete/)).toBe(-1);
   });
 
-  it('a title left with no disks is deleted, guarded', async () => {
+  it('stale_undo when undoing would leave a title with no disks; nothing written', async () => {
     answer(disks, [{ id: 's1', gameId: 'G', diskNo: 1 }, { id: 's2', gameId: 'G', diskNo: 2 }],
       [{ id: 's1', gameId: 'G', diskNo: 1 }, { id: 's2', gameId: 'G', diskNo: 2 }]);
     answer(games, [{ id: 'G' }]);
     answer(devices, []);
-    await undoMove('org-1', snap);
-    const b = only();
-    const del = b.find((s) => /^delete from "games"/.test(s.sql))!;
-    expect(del.sql).toMatch(/not exists \(select 1 from "disks" "d"/);
-    expect(del.params).toEqual(expect.arrayContaining(['G', 'org-1']));
+    const err = await undoMove('org-1', snap).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanError);
+    expect(err.code).toBe('stale_undo');
+    expect(batches).toHaveLength(0);
+  });
+
+  it('stale_undo when the snapshot disks are no longer in one title; nothing written', async () => {
+    answer(disks, [{ id: 's1', gameId: 'G', diskNo: 2 }, { id: 's2', gameId: 'H', diskNo: 2 }],
+      [{ id: 'd1', gameId: 'G', diskNo: 1 }, { id: 's1', gameId: 'G', diskNo: 2 },
+        { id: 'h1', gameId: 'H', diskNo: 1 }, { id: 's2', gameId: 'H', diskNo: 2 }]);
+    answer(games, [{ id: 'G' }, { id: 'H' }]);
+    answer(devices, []);
+    const err = await undoMove('org-1', snap).catch((e) => e);
+    expect(err).toBeInstanceOf(PlanError);
+    expect(err.code).toBe('stale_undo');
+    expect(batches).toHaveLength(0);
   });
 
   it('a snapshot disk no longer in the org is NotFound, nothing written', async () => {

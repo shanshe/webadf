@@ -205,6 +205,11 @@ export async function moveDiskOut(orgId: string, diskId: string): Promise<{ game
   if (!disk) throw new NotFound();
   const remaining = await db.select(setDisk).from(disks)
     .where(and(eq(disks.gameId, disk.gameId), eq(disks.orgId, orgId), ne(disks.id, diskId)));
+  // A lone disk is not in a set (controller ruling d): moving it out would
+  // only swap its title for a bare one, losing the cover, Demozoo link,
+  // collections, year and publisher. Refused before the image is read or
+  // anything is written.
+  if (remaining.length === 0) throw new PlanError('not_in_a_set');
   await requireGame(db, orgId, disk.gameId);
 
   const title = await nameFor(db, orgId, disk);
@@ -229,7 +234,11 @@ export async function undoMove(orgId: string, snap: UndoSnapshot): Promise<{ gam
     .where(and(inArray(disks.id, ids), eq(disks.orgId, orgId)));
   if (moving.length !== ids.length) throw new NotFound();
 
+  // A stale snapshot is refused, never half-applied (controller ruling): the
+  // disks must still sit together in ONE title, and that title must keep at
+  // least one disk of its own -- undo never deletes a title.
   const leftIds = [...new Set(moving.map((d) => d.gameId))];
+  if (leftIds.length !== 1) throw new PlanError('stale_undo');
   const leftDisks = await db.select(setDisk).from(disks)
     .where(and(inArray(disks.gameId, leftIds), eq(disks.orgId, orgId)));
   const left = await db.select({ id: games.id }).from(games)
@@ -238,19 +247,17 @@ export async function undoMove(orgId: string, snap: UndoSnapshot): Promise<{ gam
   const devs = await orgDevices(db, orgId);
 
   const newId = stableId('game', orgId, 'undo', ids.join(','), String(Date.now()));
-  // The disks, 1..N in snapshot order, and each title they leave, 1..N in its
+  // The disks, 1..N in snapshot order, and the set they leave, 1..N in its
   // current order -- each a reorder of a known list, so planReorder builds
   // both the renumbers and the device updates.
   const plans: Plan[] = [planReorder({ gameId: newId, disks: moving.map((d) => ({ ...d, gameId: newId })) }, ids, devs)];
-  const emptied: string[] = [];
-  for (const gid of leftIds) {
-    const rest = leftDisks.filter((d) => d.gameId === gid && !ids.includes(d.id))
-      .sort((a, b) => a.diskNo - b.diskNo || (a.id < b.id ? -1 : 1));
-    if (rest.length === 0) emptied.push(gid);
-    else plans.push(planReorder({ gameId: gid, disks: rest }, rest.map((d) => d.id), devs));
-  }
+  const gid = leftIds[0];
+  const rest = leftDisks.filter((d) => d.gameId === gid && !ids.includes(d.id))
+    .sort((a, b) => a.diskNo - b.diskNo || (a.id < b.id ? -1 : 1));
+  if (rest.length === 0) throw new PlanError('stale_undo');
+  plans.push(planReorder({ gameId: gid, disks: rest }, rest.map((d) => d.id), devs));
   const merged: Plan = {
-    renumber: plans.flatMap((p) => p.renumber), emptiedGameIds: emptied, devices: plans.flatMap((p) => p.devices),
+    renumber: plans.flatMap((p) => p.renumber), emptiedGameIds: [], devices: plans.flatMap((p) => p.devices),
   };
 
   await run(db, [
@@ -259,7 +266,6 @@ export async function undoMove(orgId: string, snap: UndoSnapshot): Promise<{ gam
       metadataSource: snap.metadataSource,
     }),
     ...applyPlan(db, orgId, merged, devs),
-    ...deleteEmptied(db, orgId, emptied),
   ]);
   return { gameId: newId };
 }

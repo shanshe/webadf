@@ -10,7 +10,7 @@ export type Renumber = { diskId: string; gameId: string; diskNo: number };
 export type Plan = { renumber: Renumber[]; emptiedGameIds: string[]; devices: DeviceUpdate[] };
 
 export class PlanError extends Error {
-  constructor(public code: 'stale_order' | 'nothing_to_add' | 'same_title') { super(code); }
+  constructor(public code: 'stale_order' | 'nothing_to_add' | 'same_title' | 'not_in_a_set' | 'stale_undo') { super(code); }
 }
 
 const byNo = (a: SetDisk, b: SetDisk) => a.diskNo - b.diskNo || (a.id < b.id ? -1 : 1);

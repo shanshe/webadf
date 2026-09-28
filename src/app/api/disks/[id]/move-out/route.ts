@@ -1,5 +1,6 @@
 import { requireOrg } from '@/lib/session';
 import { moveDiskOut, NotFound } from '@/lib/disk-set-store';
+import { PlanError } from '@/lib/disk-set';
 
 export const maxDuration = 60;
 
@@ -16,6 +17,8 @@ export async function POST(_request: Request, ctx: { params: Promise<{ id: strin
     return Response.json(await moveDiskOut(orgId, id));
   } catch (err) {
     if (err instanceof NotFound) return Response.json({ error: 'not_found' }, { status: 404 });
+    // A lone disk is not in a set; moving it out is refused.
+    if (err instanceof PlanError) return Response.json({ error: err.code }, { status: 400 });
     throw err;
   }
 }
