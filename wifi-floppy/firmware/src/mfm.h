@@ -16,8 +16,13 @@
 #include <stdbool.h>
 
 #define MFM_SECTORS            11
+/* HD writes spec §4.2: an HD track has 22. Which count a decode uses is the
+ * MOUNTED DISK's (write_back_sectors()), never inferred from the data. */
+#define MFM_HD_SECTORS         22
+#define MFM_MAX_SECTORS        MFM_HD_SECTORS
 #define MFM_SECTOR_DATA_BYTES  512
-#define MFM_TRACK_DATA_BYTES   (MFM_SECTORS * MFM_SECTOR_DATA_BYTES)   /* 5632 */
+#define MFM_TRACK_DATA_BYTES   (MFM_SECTORS * MFM_SECTOR_DATA_BYTES)      /* 5632 */
+#define MFM_HD_TRACK_DATA_BYTES (MFM_HD_SECTORS * MFM_SECTOR_DATA_BYTES)  /* 11264 */
 /* sync(4) + header(8) + label(32) + hdrsum(8) + datasum(8) + data(1024) + 4 */
 #define MFM_SECTOR_MFM_BYTES   1088
 
@@ -26,15 +31,21 @@
 int mfm_interval_to_bits(uint32_t ns);
 
 typedef struct {
-    /** Bitmap of sectors recovered, bit n = sector n. All 11 means a complete
-     *  track; anything less names exactly which are missing, which is the
-     *  difference between "retry" and "this disk is damaged". */
-    uint16_t found;
+    /** Bitmap of sectors recovered, bit n = sector n. All `nsec` bits (0x7ff
+     *  DD, 0x3fffff HD) means a complete track; anything less names exactly
+     *  which are missing, which is the difference between "retry" and "this
+     *  disk is damaged". */
+    uint32_t found;
     /** Sectors whose header or data checksum failed. Counted rather than
      *  fatal: a capture spanning more than one revolution sees every sector
      *  more than once, and one bad copy alongside a good one is a recoverable
      *  read, not a failed track. */
     uint16_t bad_checksums;
+    /** Checksum-good sectors whose id is `nsec` or more: sectors of a track of
+     *  the other density. An HD track read with nsec 11 has 11 of these, and
+     *  sectors 0..10 alone would look complete. Never stored; the verdict
+     *  refuses the track (WB_REJECT_DENSITY). */
+    uint16_t foreign_sectors;
     /** The track number the sector headers claim. Meaningful only when
      *  `found` is non-zero. The caller compares it with the track it THINKS
      *  the head is on -- a mismatch means the write landed on the wrong
@@ -65,6 +76,15 @@ typedef struct {
 void mfm_decode_track(const uint8_t *mfm, size_t len, uint8_t *adf_out,
                       mfm_decode_result_t *out);
 
+/**
+ * mfm_decode_track for `nsec` sectors: 11 (DD) or 22 (HD), the MOUNTED disk's
+ * count (HD writes spec §4.2). `adf_out` holds nsec * 512 bytes. An `nsec` of
+ * 0 or more than MFM_MAX_SECTORS finds nothing. core0's, like
+ * mfm_decode_track, which is this with nsec 11.
+ */
+void mfm_decode_track_n(const uint8_t *mfm, size_t len, uint8_t *adf_out,
+                        mfm_decode_result_t *out, unsigned nsec);
+
 /** Working memory mfm_decode_track_r needs: one realigned sector body
  *  (MFM_SECTOR_MFM_BYTES - 8) plus one decoded sector's data. 1,592 bytes. */
 #define MFM_DECODE_SCRATCH_BYTES ((MFM_SECTOR_MFM_BYTES - 8) + MFM_SECTOR_DATA_BYTES)
@@ -84,7 +104,9 @@ void mfm_decode_track(const uint8_t *mfm, size_t len, uint8_t *adf_out,
  * scratch that no other concurrent caller can reach.
  */
 void mfm_decode_track_r(const uint8_t *mfm, size_t len, uint8_t *adf_out,
-                        mfm_decode_result_t *out, uint8_t *scratch);
+                        mfm_decode_result_t *out, uint8_t *scratch);   /* 11 sectors */
+void mfm_decode_track_rn(const uint8_t *mfm, size_t len, uint8_t *adf_out,
+                         mfm_decode_result_t *out, uint8_t *scratch, unsigned nsec);
 
 /** Amiga checksum: XOR of the big-endian u32 words, folded to the 0x55555555
  *  lanes. `len` must be a multiple of 4. */

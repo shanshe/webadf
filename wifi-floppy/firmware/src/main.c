@@ -563,9 +563,12 @@ static volatile int32_t write_token;
 static volatile uint32_t writes_other_drive;
 static volatile bool     write_ours;
 
-// Written by core0 when a write lands, read by core1's uploader. last_ms
-// first, then the barrier, then gen: a reader that sees the new gen also
-// sees the time of the write that made it.
+// Written by core0 when a write lands, read by core1's uploader. g_write_gen
+// is a seqlock (write_back_gen_begin/_end, final review F1): odd from before
+// the store's first byte until the track is DIRTY and g_write_last_ms is set,
+// even once all of that is visible -- so a reader that sees the new even gen
+// also sees the time of the write that made it, and up_close can tell a store
+// in progress from a settled one.
 static volatile uint32_t g_write_last_ms;
 static volatile uint32_t g_write_gen;
 // Stamped in the WGATE ISR on both edges (see gpio_isr below) -- unlike
@@ -1742,11 +1745,9 @@ static void core1_main(void) {
             // boot-time default); this is now the only place that updates it
             // afterward.
             bool up_forced = up_forces_wprot(&up);
-            // HD spec §5.3: an HD disk is read-only here, and not only because
-            // the server sends writeProtected: the board holds the line itself.
-            bool hd_mounted = mounted &&
-                psram_image_slot_kind(psram_active_slot()) == SLOT_KIND_ADF_HD;
-            bool wprot = write_back_wprot(mounted, c.mounted_write_protected, up_forced, hd_mounted);
+            // HD writes spec §4.5: an HD disk follows the same three gates as
+            // DD. (1.4.x held WPROT for HD whatever the server sent.)
+            bool wprot = write_back_wprot(mounted, c.mounted_write_protected, up_forced);
             bus_out_set(PIN_WPROT, wprot);
             // The pin is set first, THEN the change is announced: the Amiga
             // must read the new state when it looks.
@@ -1760,22 +1761,21 @@ static void core1_main(void) {
              *
              * Added after a write test that produced nothing: WGATE never
              * fired, and working out why meant inferring the pin's state from
-             * the absence of an event. FOUR separate gates force WPROT --
-             * no disk, the server's flag, the uploader (up_forces_wprot:
-             * after a refused write, or while parked) and an HD image --
-             * and none folds into another, so each is its own field below.
-             * Without them the reasons were indistinguishable from the log.
-             * A gate nobody can observe is a gate nobody can debug.
+             * the absence of an event. THREE separate gates force WPROT --
+             * no disk, the server's flag and the uploader (up_forces_wprot:
+             * after a refused write, or while parked) -- and none folds into
+             * another, so each is its own field below. Without them the
+             * reasons were indistinguishable from the log. A gate nobody can
+             * observe is a gate nobody can debug.
              */
             static int last_wprot = -1;
             if ((int)wprot != last_wprot) {
                 last_wprot = (int)wprot;
-                wf_logf(WF_INFO, "wprot: %s (mounted=%s server=%s uploader=%s hd=%s)",
+                wf_logf(WF_INFO, "wprot: %s (mounted=%s server=%s uploader=%s)",
                         wprot ? "ASSERTED -- the Amiga cannot write" : "RELEASED -- the Amiga may write",
                         mounted ? "yes" : "no",
                         mounted ? (c.mounted_write_protected ? "protected" : "writable") : "n/a",
-                        up_forced ? "forced" : "ok",
-                        hd_mounted ? "read-only" : "no");
+                        up_forced ? "forced" : "ok");
             }
             // The panel's pencil, from the same value and at the same moment
             // -- lit exactly when the Amiga may actually write, which now
@@ -2306,8 +2306,9 @@ int main(void) {
                 // prompts sees the new disk's density. Taken at the next
                 // answer -- the first motor-off select after a motor-on one,
                 // or the 32-bit repeat -- never mid-answer (bus_out.c). Whether Kickstart re-reads the ID
-                // on a change at all is bench step 9. The same HD derivation
-                // as the WPROT rule on core1 (write_back_wprot).
+                // on a change at all is bench step 9. HD writes spec §4.5:
+                // WPROT no longer derives HD from the slot kind
+                // (write_back_wprot) -- this is now the only place that does.
                 const bool hd = psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD;
                 if (bus_out_drive_id_set_hd(hd))
                     wf_logf(WF_INFO, "drive-id: now answering %s 0x%08lx",
@@ -2462,17 +2463,28 @@ int main(void) {
                 // wt/wtok, never write_track/write_token directly.
                 const int     wt   = write_track;
                 const int32_t wtok = write_token;
-                static uint8_t decoded[MFM_TRACK_DATA_BYTES];
+                // HD writes spec §4.2: the mounted disk's sector count -- the
+                // disk WGATE wrote to (wtok), never what the data looks like.
+                const unsigned nsec = write_back_sectors(wtok);
+                const uint32_t want = write_back_mask(nsec);
+                static uint8_t decoded[MFM_HD_TRACK_DATA_BYTES];
                 mfm_decode_result_t d;
                 memset(decoded, 0, sizeof decoded);
-                mfm_decode_track(cap.mfm, cap.mfm_bytes, decoded, &d);
+                // Final review F2: the decode's own time, for the bench -- an
+                // HD capture is twice a DD one (~6-7 ms expected), and core0
+                // serves no read while it runs.
+                const uint64_t dec_t0 = time_us_64();
+                mfm_decode_track_n(cap.mfm, cap.mfm_bytes, decoded, &d, nsec);
+                const unsigned long dec_us = (unsigned long)(time_us_64() - dec_t0);
                 wf_logf(WF_INFO,
-                        "write: trk %d %u iv %u B sec 0x%03x%s bad %u rng %u%s",
+                        "write: trk %d %u iv %u B sec 0x%06lx/%u%s bad %u foreign %u rng %u "
+                        "dec %lu us%s",
                         wt,
                         (unsigned)cap.intervals, (unsigned)cap.mfm_bytes,
-                        (unsigned)d.found,
-                        d.found == 0x7ff ? " ALL" : " PART",
-                        (unsigned)d.bad_checksums, (unsigned)cap.out_of_range,
+                        (unsigned long)d.found, nsec,
+                        d.found == want ? " ALL" : " PART",
+                        (unsigned)d.bad_checksums, (unsigned)d.foreign_sectors,
+                        (unsigned)cap.out_of_range, dec_us,
                         cap.overflowed ? " OVERFLOWED" : "");
                 wf_logf(WF_INFO, "write: first id %u sync@%lu, last id %u end@%lu, of %lu bits",
                         (unsigned)d.first_id, (unsigned long)d.first_sync_bit,
@@ -2498,23 +2510,31 @@ int main(void) {
                                                               wtok, now_tok);
                     if (v != WB_APPLY) {
                         wf_logf(WF_WARN, "write: trk %d rejected: %s",
-                                wt, write_back_reason(v));
-                    } else if (write_back_apply(psram_token_slot(now_tok), wt, decoded)) {
-                        // The SRAM copy is keyed on (track, token) and a write
-                        // changes neither: drop it, and if the head is still on
-                        // this track re-serve it now rather than at the next seek.
-                        track_cache_invalidate(wt);
-                        if (loaded == wt) loaded = -1;
-                        // Publish to core1's uploader: last_ms first, then the
-                        // barrier, then gen -- see g_write_last_ms's comment.
-                        g_write_last_ms = clock_ms();
-                        __dmb();
-                        g_write_gen++;
-                        const uint64_t us = time_us_64() - t0;
-                        wf_logf(WF_INFO, "write: trk %d applied in %lu us",
-                                wt, (unsigned long)us);
+                                wt, write_back_reason(v, nsec));
                     } else {
-                        wf_logf(WF_ERR, "write: trk %d apply failed (PSRAM)", wt);
+                        // Final review F1: g_write_gen goes odd BEFORE the
+                        // store's first byte and even only after the track is
+                        // DIRTY and last_ms is set, so core1's close never
+                        // hashes a half-copied track (up_close has the
+                        // interleavings). A failed apply still moves it by two:
+                        // the close is retried once, harmlessly.
+                        write_back_gen_begin(&g_write_gen);
+                        const bool ok = write_back_apply(psram_token_slot(now_tok), wt, decoded);
+                        if (ok) g_write_last_ms = clock_ms();
+                        write_back_gen_end(&g_write_gen);
+                        if (ok) {
+                            // The SRAM copy is keyed on (track, token) and a
+                            // write changes neither: drop it, and if the head is
+                            // still on this track re-serve it now rather than at
+                            // the next seek.
+                            track_cache_invalidate(wt);
+                            if (loaded == wt) loaded = -1;
+                            const uint64_t us = time_us_64() - t0;
+                            wf_logf(WF_INFO, "write: trk %d applied in %lu us",
+                                    wt, (unsigned long)us);
+                        } else {
+                            wf_logf(WF_ERR, "write: trk %d apply failed (PSRAM)", wt);
+                        }
                     }
                 }
             }

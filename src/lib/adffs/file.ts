@@ -6,6 +6,7 @@ import {
   T_HEADER, ST_FILE,
 } from './constants';
 import { blockAt, be32, i32, checksumOk } from './blocks';
+import { geometryOf } from './geometry';
 import type { Filesystem } from './boot';
 
 export interface FileBytes {
@@ -45,6 +46,9 @@ export function collectFileBlocks(adf: Uint8Array, headerBlock: number, warnings
   const seen = new Set<number>([headerBlock]);
   let current: number | null = headerBlock;
   let isHeader = true;
+  // The disk's own block count caps the pointer list (see the comment below):
+  // 1,760 DD, 3,520 HD. An image of another length keeps the DD cap.
+  const maxData = geometryOf(adf)?.blockCount ?? BLOCK_COUNT;
 
   while (current !== null) {
     const b = blockAt(adf, current);
@@ -62,17 +66,17 @@ export function collectFileBlocks(adf: Uint8Array, headerBlock: number, warnings
     // crafted 901,120-byte image this produced 64,770,560 bytes of output in
     // 42 ms -- a 72x amplification, allocated and streamed on a single
     // request. A real file cannot have more data blocks than the disk has
-    // blocks, so the pointer list is capped at BLOCK_COUNT (1,760) and
+    // blocks, so the pointer list is capped at the disk's block count and
     // collection stops the moment it would be exceeded.
     let capped = false;
     for (let i = HASH_TABLE_SIZE - 1; i >= 0; i--) {
       const ptr = be32(b, 24 + i * 4);
       if (ptr === 0) continue;
-      if (data.length >= BLOCK_COUNT) { capped = true; break; }
+      if (data.length >= maxData) { capped = true; break; }
       data.push(ptr);
     }
     if (capped) {
-      warn(`data pointer list exceeds ${BLOCK_COUNT} blocks; stopping collection`);
+      warn(`data pointer list exceeds ${maxData} blocks; stopping collection`);
       break;
     }
 

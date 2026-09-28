@@ -8,8 +8,6 @@ import {
   readVolume, readFile, deleteEntry, renameEntry, replaceFile, moveEntry,
   type AdfEntry, type WriteResult,
 } from '@/lib/adffs';
-import { isHdAdf } from '@/lib/disk-format';
-import { ROOT_BLOCK } from '@/lib/adffs/constants';
 import { downloadFilename, contentDisposition } from '@/lib/download-name';
 import { applyDiskEdit } from '@/lib/disk-write';
 
@@ -29,8 +27,8 @@ function findEntry(entries: AdfEntry[], block: number): AdfEntry | null {
  * Same walk as `findEntry`, but also returns the block the entry lives
  * directly under. `renameEntry` and `deleteEntry` both take the PARENT block
  * explicitly (spec D-3-5's block-addressing has no parent pointer of its
- * own to read back), so the only way to get it is to walk down from
- * ROOT_BLOCK and remember where each entry was found.
+ * own to read back), so the only way to get it is to walk down from the
+ * volume's root block and remember where each entry was found.
  */
 function findEntryWithParent(
   entries: AdfEntry[], block: number, parentBlock: number,
@@ -69,7 +67,7 @@ export async function GET(
 
   // The same entitlement boundary as /api/disks/[id]/adf. 404, never 403.
   const rows = await getDb()
-    .select({ sha256: disks.sha256, imageFormat: disks.imageFormat, sizeBytes: disks.sizeBytes })
+    .select({ sha256: disks.sha256 })
     .from(disks)
     .innerJoin(entitlements, and(
       eq(entitlements.sha256, disks.sha256),
@@ -80,10 +78,6 @@ export async function GET(
 
   const disk = rows[0];
   if (!disk) return Response.json({ error: 'not_found' }, { status: 404 });
-
-  // HD spec §4.2: "HD disks can't be browsed in the browser yet" -- said as
-  // its own reason, not as a missing filesystem.
-  if (isHdAdf(disk)) return Response.json({ error: 'hd_not_browsable' }, { status: 409 });
 
   let adf: Uint8Array;
   try {
@@ -184,7 +178,7 @@ export async function PATCH(
       edit = (adf) => {
         const volume = readVolume(adf);
         if (!volume.ok) return { ok: false, reason: 'no-filesystem' };
-        const found = findEntryWithParent(volume.root, blockNo, ROOT_BLOCK);
+        const found = findEntryWithParent(volume.root, blockNo, volume.rootBlock);
         if (!found) return { ok: false, reason: 'not-found' };
 
         // Resolved through the PARSED tree, exactly like `found` above and
@@ -198,7 +192,7 @@ export async function PATCH(
         // `moveEntry`'s own `T_HEADER`/checksum/`ST_USERDIR` checks on
         // `toParent` are a second, independent line of defense for the same
         // bogus-block attack -- this is the first.
-        if (toParent !== ROOT_BLOCK) {
+        if (toParent !== volume.rootBlock) {
           const dest = findEntry(volume.root, toParent);
           if (!dest) return { ok: false, reason: 'not-found' };
           if (dest.kind !== 'dir') return { ok: false, reason: 'not-a-directory' };
@@ -215,7 +209,7 @@ export async function PATCH(
       edit = (adf) => {
         const volume = readVolume(adf);
         if (!volume.ok) return { ok: false, reason: 'no-filesystem' };
-        const found = findEntryWithParent(volume.root, blockNo, ROOT_BLOCK);
+        const found = findEntryWithParent(volume.root, blockNo, volume.rootBlock);
         if (!found) return { ok: false, reason: 'not-found' };
         return renameEntry(adf, found.parentBlock, blockNo, newName);
       };
@@ -254,7 +248,7 @@ export async function DELETE(
   const edit = (adf: Uint8Array): WriteResult => {
     const volume = readVolume(adf);
     if (!volume.ok) return { ok: false, reason: 'no-filesystem' };
-    const found = findEntryWithParent(volume.root, blockNo, ROOT_BLOCK);
+    const found = findEntryWithParent(volume.root, blockNo, volume.rootBlock);
     if (!found) return { ok: false, reason: 'not-found' };
     return deleteEntry(adf, found.parentBlock, blockNo);
   };

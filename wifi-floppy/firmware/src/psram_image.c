@@ -1,4 +1,5 @@
 #include "psram_image.h"
+#include "mfm.h"
 #ifndef WFMF_HOST_TEST
 #include "hardware/psram.h"
 #include "hardware/sync.h"     // __dmb() -- see psram_publish_slot()/
@@ -150,7 +151,7 @@ bool psram_image_read(int slot, int track, uint8_t *dst, uint32_t *bit_count) {
 static void store(int slot, int track, const uint8_t *src, uint32_t bit_count,
                   track_state_t st) {
     if (!have_psram || !slot_ok(slot) || track < 0 || track >= NUM_TRACKS) return;
-    if (kind[slot] == SLOT_KIND_ADF_HD) return;         // HD is read-only (spec §5.3)
+    if (kind[slot] == SLOT_KIND_ADF_HD) return;         // MFM never goes into an ADF slot (psram_image_store_adf)
     uint32_t nbytes = (bit_count + 7) / 8;
     if (nbytes > TRACK_MAX_BYTES) return;          // oversized track, drop
     memcpy(track_ptr(slot, track), src, nbytes);
@@ -174,6 +175,18 @@ void psram_image_commit(int slot, int track, uint32_t bit_count) {
 
 void psram_image_mark_dirty(int slot, int track, const uint8_t *src, uint32_t bit_count) {
     store(slot, track, src, bit_count, TRK_DIRTY);
+}
+
+_Static_assert(MFM_HD_TRACK_DATA_BYTES <= TRACK_MAX_BYTES, "an HD track's ADF bytes fit a PSRAM track");
+
+bool psram_image_store_adf(int slot, int track, const uint8_t *adf) {
+    if (!have_psram || !slot_ok(slot) || track < 0 || track >= NUM_TRACKS) return false;
+    if (kind[slot] != SLOT_KIND_ADF_HD) return false;
+    memcpy(track_ptr(slot, track), adf, MFM_HD_TRACK_DATA_BYTES);
+    bits[slot][track] = MFM_HD_TRACK_DATA_BYTES * 8u;
+    wfmf_barrier();     // payload must be visible to core1 before the flag that tells it to read it
+    state[slot][track] = TRK_DIRTY;
+    return true;
 }
 
 int psram_image_next_dirty(int slot) {

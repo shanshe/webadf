@@ -185,26 +185,28 @@ static void dc_image_sink(void *ctx, const uint8_t *b, int n) {
 //     core1_main and nothing else calls into this file). There is no RTOS,
 //     no thread, and no second caller -- so "single-threaded" is a
 //     property of the whole file, not of one function.
-//   * These functions never call each other in a cycle. The only call
-//     graph is  core1_main -> dc_step -> dc_handle_poll_body ->
-//     dc_fetch_image -> dc_exchange,  core1_main -> dc_report_status ->
-//     dc_exchange,  core1_main -> dc_register -> dc_exchange,
-//     core1_main -> fw_update -> dc_fetch_firmware -> dc_exchange,
-//     core1_main -> up_step -> dc_post -> dc_exchange (uploader.c,
-//     Task 5: one dirty track at a time), and its close counterpart,
-//     core1_main -> up_step -> (sha256_*, psram_image_read,
-//     mfm_decode_track_r) -> dc_post -> dc_exchange (uploader.c, Task 6:
-//     hashes the whole image, then posts the digest), and the NFC pair,
-//     core1_main -> dc_tap / dc_tap_write_report -> dc_post -> dc_exchange,
-//     sent BETWEEN dc_steps -- an interrupted poll returns first, and only
-//     then does the tap go out. Every path is a
-//     straight line, including the close's hash loop -- sha256_*,
-//     psram_image_read and mfm_decode_track_r never call back into any
-//     dc_*/up_* function, so nothing here is re-entered while its statics
-//     are live; dc_exchange is shared by five callers but is never nested
-//     inside itself, and dc_post/dc_fetch_firmware are never nested inside dc_step -- the
-//     uploader runs from its own call site in the main loop, not from inside the
-//     poll.
+//   * These functions never call each other in a cycle. The only call graph
+//     is  core1_main -> dc_step -> dc_handle_poll_body -> dc_fetch_image ->
+//     dc_exchange,  core1_main -> dc_report_status -> dc_exchange,
+//     core1_main -> dc_register -> dc_exchange, core1_main -> fw_update ->
+//     dc_fetch_firmware -> dc_exchange, core1_main -> up_step -> dc_post ->
+//     dc_exchange (uploader.c, Task 5: one dirty track at a time), and its
+//     close counterpart, core1_main -> up_step -> (sha256_*,
+//     psram_image_read, mfm_decode_track_r, psram_image_track_data) ->
+//     dc_post -> dc_exchange (uploader.c, Task 6: hashes the whole image,
+//     then posts the digest -- psram_image_track_data is the HD track's
+//     read, HD writes spec §4.4: no decode, no copy, a pointer straight
+//     into PSRAM), and the NFC pair, core1_main -> dc_tap /
+//     dc_tap_write_report -> dc_post -> dc_exchange, sent BETWEEN dc_steps
+//     -- an interrupted poll returns first, and only then does the tap go
+//     out. Every path is a straight line, including the close's hash loop
+//     -- sha256_*, psram_image_read, mfm_decode_track_r and
+//     psram_image_track_data never call back into any dc_*/up_* function,
+//     so nothing here is re-entered while its statics are live; dc_exchange
+//     is shared by five callers but is never nested inside itself, and
+//     dc_post/dc_fetch_firmware are never nested inside dc_step -- the
+//     uploader runs from its own call site in the main loop, not from
+//     inside the poll.
 //   * Each function owns its own statics -- dc_exchange's read chunk is
 //     not shared with dc_step's body buffer, and so on -- so a caller's
 //     buffer can never be clobbered by a callee. (The one buffer that IS
@@ -219,6 +221,8 @@ static void dc_image_sink(void *ctx, const uint8_t *b, int n) {
 //     transport's callbacks, never these.
 //
 // The cost is ~6 KB of BSS in a build with ~390 KB of SRAM unallocated.
+// dc_post's request buffer has since grown by 5.6 KB to carry an HD track
+// (DC_POST_BODY_MAX, HD writes spec §4.4).
 // ---------------------------------------------------------------------
 
 // Exponential from the floor, doubling on every consecutive failure,
@@ -1124,7 +1128,7 @@ bool dc_report_status(device_client_t *c, int psram_free, int rssi, const char *
 int dc_post(device_client_t *c, const char *path, const char *content_type,
             const uint8_t *body, int body_len, char *resp, int resp_cap) {
     if (body_len < 0 || body_len > DC_POST_BODY_MAX) return -1;
-    // static: see the STACK note above. One head + one track, ~6.1 KB.
+    // static: see the STACK note above. One head + one HD track, ~11.8 KB.
     static char req[DC_POST_HEAD_BYTES + DC_POST_BODY_MAX];
     int n = http_build_head(req, DC_POST_HEAD_BYTES, "POST", path, c->host, c->token,
                             content_type, body_len);

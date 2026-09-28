@@ -11,10 +11,8 @@
 // that marks its own block used. The counts agree with amitools' xdftool on
 // every disk tried.
 
-import { BLOCK_BYTES, BLOCK_COUNT, ROOT_BLOCK } from './constants';
-
-/** The two boot blocks are outside the bitmap, which starts at block 2. */
-const BITMAP_FIRST_BLOCK = 2;
+import { BLOCK_BYTES } from './constants';
+import { geometryOf, BITMAP_FIRST_BLOCK } from './geometry';
 
 export interface VolumeUsage {
   totalBlocks: number;
@@ -40,24 +38,28 @@ function be32(adf: Uint8Array, offset: number): number {
  * would act on it -- deciding whether a file fits.
  */
 export function readUsage(adf: Uint8Array): VolumeUsage | null {
-  if (adf.length !== BLOCK_BYTES * BLOCK_COUNT) return null;
+  // The disk's own geometry (HD writes spec §6.1). Any other length has no
+  // bitmap this code knows where to find.
+  const g = geometryOf(adf);
+  if (!g) return null;
 
-  const root = ROOT_BLOCK * BLOCK_BYTES;
+  const root = g.rootBlock * BLOCK_BYTES;
   // bm_flag is -1 when the bitmap is VALID. Anything else means AmigaDOS
   // itself considers it stale and would rebuild it on mount, so reporting
   // numbers from it would be reporting numbers the Amiga is about to discard.
   if ((be32(adf, root + 312) | 0) !== -1) return null;
 
-  // bm_pages[0], read rather than assumed. 881 on every disk measured, but
-  // the root block is where the format says to look.
+  // bm_pages[0], read rather than assumed: 881 DD, 1761 HD on every disk
+  // measured, but the root block is where the format says to look.
   const page = be32(adf, root + 316);
-  if (page < BITMAP_FIRST_BLOCK || page >= BLOCK_COUNT || page === ROOT_BLOCK) return null;
+  if (page < BITMAP_FIRST_BLOCK || page >= g.blockCount || page === g.rootBlock) return null;
 
   const bm = page * BLOCK_BYTES;
   let freeBlocks = 0;
   // A SET bit means FREE -- the same inversion the writer documents, and the
-  // one thing here most likely to be read backwards.
-  for (let bit = 0; bit < BLOCK_COUNT - BITMAP_FIRST_BLOCK; bit++) {
+  // one thing here most likely to be read backwards. One bitmap block covers
+  // either density: 3,518 bits for HD against its 4,064.
+  for (let bit = 0; bit < g.blockCount - BITMAP_FIRST_BLOCK; bit++) {
     const o = bm + 4 + (bit >>> 5) * 4;
     if ((be32(adf, o) & (1 << (bit & 31))) !== 0) freeBlocks++;
   }
@@ -73,14 +75,14 @@ export function readUsage(adf: Uint8Array): VolumeUsage | null {
   // Used counts the two boot blocks, which are outside the bitmap but are
   // certainly not free space. This is also what xdftool reports, so the two
   // agree disk for disk.
-  const usedBlocks = BLOCK_COUNT - freeBlocks;
+  const usedBlocks = g.blockCount - freeBlocks;
   return {
-    totalBlocks: BLOCK_COUNT,
+    totalBlocks: g.blockCount,
     usedBlocks,
     freeBlocks,
-    totalBytes: BLOCK_COUNT * BLOCK_BYTES,
+    totalBytes: g.blockCount * BLOCK_BYTES,
     usedBytes: usedBlocks * BLOCK_BYTES,
     freeBytes: freeBlocks * BLOCK_BYTES,
-    percentUsed: Math.round((usedBlocks / BLOCK_COUNT) * 100),
+    percentUsed: Math.round((usedBlocks / g.blockCount) * 100),
   };
 }

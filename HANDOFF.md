@@ -59,7 +59,8 @@ SHA-256; you browse them and press mount; a custom board emulates the floppy dri
 | **Write-back piece 2a (server)** | ✅ **done 2026-09-18, 5 tasks + final fix wave, merged to `master`.** Disk history tables, browser edits and renames recorded as versions, `POST /api/device/write` + `/close`, live write-protect; see 4g |
 | **HFE v1 disks** | ✅ **done 2026-09-24, merged and live; bench-proven 2026-09-25.** Upload keeps the `.hfe`, the board plays it read-only, "Extract as ADF" when every sector decodes. Long-track HFEs (fw 1.2.0, 14 KB tracks, per-board `trackMaxBytes`): **Turrican boots on the Amiga**; extract round trip passed byte-exact. Only the weak-bit bench item is owed (needs a weak-bit HFE). A cylinder-17 hang after a disk swap is parked; see 3al, 3al-a |
 | **NFC tap-to-mount** | ✅ **merged and live 2026-09-26 (master 0f6fbd1); firmware 1.3.0 (seq 10) confirmed on the board.** Tap a tag → the board mounts that disk from its own org's library (swap; same tag = no-op; 1 s rate limit). Claude writes tags: `pnpm nfc:write "<disk>"` arms the board through the poll, you tap a blank tag, the read-back is reported. HW-147C/Si512 reader on I2C1 (0x28). **Firmware 1.3.1 (seq 11, 2026-09-26): a tap needs 3 s of absence; a write never lands on a tag already on the reader.** Bench: write + tap-mount + same-tag proven; see §3am. **Fob button (2026-09-26, b6c4e7c):** an NFC icon on every library card and disk row writes that disk to a tag from the web (dialog picks disk and board, 2:00 countdown, read-back shown; withdraws on close/cancel/leave); shown only when a board reports a reader |
-| **HD floppies, read-only** | 🟡 **built on `feat/hd-floppies`, not merged.** Web + firmware 1.4.0 done and tested; migration 0026 applied; bench checklist owed; see 3an |
+| **HD floppies, read-only** | ✅ **merged; firmware 1.4.1 verified on hardware 2026-09-27** (A5000, Kickstart 3.1); see 3an |
+| **HD disks: writes, history, editing, blank disks** | 🟡 **built on `feat/hd-writes`, not merged.** Web done and e2e green; firmware 1.5.0 built and host-tested, not published; bench checklist owed; see 3ao |
 | **Drive chips in the header** | ✅ **done 2026-09-25, merged and live.** Every paired board as a chip beside the wordmark: status dot, name, mounted disk; caret menu with Go to disk (the game page), Disk is Protected/Writable, and Eject (no confirm, below a divider). Pending states while a mount or eject converges. 1 chip + "+k" at 1280, 2 at 1536, 3 at 1920; below 1280 a single "Drives" list. Fed by `liveStateRows` (now carries the mounted game/title/disk no/format, all in `liveFingerprint`); `src/lib/drive-chips.ts`, `src/components/shell/drive-chips.tsx`. Unverified: 640–700 px the Drives button overlaps the pill (the search box already does, 640–767 px, on master). **2026-09-26 (`b40699c`): the chips are centred in the gap between the wordmark and the pill** (`src/components/shell/header-start.tsx` measures the pill's width; equal gaps at 1280/1536/1920, with and without Admin), and the "+k" chip shows one number at ≥1920 (a Tailwind breakpoint-order bug had shown "+2 +1") |
 | **Five minors, 2026-09-25** | ✅ **merged and live.** Update confirm is a real modal (role=dialog, Escape, focus, Enter submits); the 50-board cap (`MAX_UPDATE_BATCH`) shows in the update bar; re-extracting an EDITED extract is a 409 `already_extracted` with a link; the not-extractable reason is visible text; a refused HFE's bytes are deleted when nothing references them (a two-round-trip race is documented in `releaseRefused`) |
 | **Hardware** | rev A scrap (mirrored), **rev A2 in hand and working**. **Rev B is Shanshe's KiCad project, merged 2026-09-26 (PR #1, `22d3556`) and now the primary PCB** -- the generated-board toolchain (`generate_pcb.py`, `verify_board.py`, `export_gerbers.py`, renders) is gone. `pnpm hw:verify` (`wifi-floppy/hardware/hw_verify.py`) runs KiCad ERC/DRC + parity and checks the netlist against the firmware and §4c. **PR #2 (2026-09-26, `d871430`): `hw:verify` PASSES** -- 1k pull-ups to +5V on all eight host-driven lines (WGATE, WDATA, MTR, DIR, STEP, SIDE, SEL0, SEL1), power flags fixed, J2 moved 0.1 mm to clear U1's RF keepout (keepout zones verified unchanged; J2 now sits right at its edge); the assembly BOM (DNP flags, LCSC numbers) is for the operator to complete when sourcing; GP20 (NFC reset) is not wired. See the rev B entry in §4 |
@@ -4459,6 +4460,78 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 - **Screenshot redirects:** screenshot fetches follow redirects, so the `media.demozoo.org` host
   allowlist checks only the first URL (the raster content-type allowlist and `nosniff` still apply).
 - **Cron drift:** the daily 01:30 cron against a 7-day gate can drift a refetch to 8 days.
+
+### 3ao. HD disks: Amiga writes, full history, browser editing, blank HD disks -- 2026-09-27 (spec/plan 2026-09-27-hd-writes-and-editing)
+
+**STATUS: built on `feat/hd-writes`; web e2e green; firmware 1.5.0 built and host-tested; NOT merged, NOT
+published, bench checklist below owed.** Spec `docs/superpowers/specs/2026-09-27-hd-writes-and-editing-design.md`,
+plan `docs/superpowers/plans/2026-09-27-hd-writes-and-editing.md` (its "Rulings" section lists every call made
+while planning).
+
+What it does:
+- adffs reads an image's geometry from its length (`src/lib/adffs/geometry.ts`): DD 1,760 blocks / root 880, HD
+  3,520 / root 1,760, one bitmap block on both. Every read, write, allocate and format path takes it;
+  `readVolume` returns `rootBlock`, and the file browser's controls send it. `pnpm adffs:verify` cross-checks HD
+  with xdftool both ways (as `.hdf`: amitools 0.4.0's ADF device is DD-only).
+- History takes its sector count (1,760/3,520) and track size (5,632/11,264) from the image; the WDLD format is
+  unchanged; a disk's versions are all one size (`size_mismatch`). The write route takes 11,264-byte tracks for
+  an HD disk and 400s the other density's size.
+- Every HD refusal is gone: the write-protect toggle, the drive chips, the file browser, file edits, volume
+  rename, restore, and `readDesired` (an HD disk is sent writable when its row is). `plays_hd` and
+  `hd_unsupported` stay. Blank HD disks: "Create HD ADF (FFS/OFS)" in the create menu.
+- Firmware 1.5.0: capture window 800 ms and buffer 32 KB (sized for the write's lead gap, not just the track;
+  the spec said 28 KB); the decoder is told the mounted disk's sector count (11/22) and counts good sectors
+  numbered `nsec` or more as foreign (`WB_REJECT_DENSITY`: an HD track on a DD disk, and vice versa) -- on a DD
+  disk this means a good sector numbered 11 or more now counts under `foreign` in the write log, not `bad`; a
+  verified HD track goes into its `ADF_HD` slot as ADF bytes (`psram_image_store_adf`); the uploader posts those
+  bytes and hashes 160 x 11,264 at close; `DC_POST_BODY_MAX` is 11,264; WPROT follows the server for HD.
+- **Older boards:** a 1.4.1 board still asserts WPROT for HD itself. An HD disk set writable in the web app is
+  still protected on such a board until it updates to 1.5.0. No capability flag; this note and the README are
+  the documentation.
+- New or changed log lines to read on the bench: `write: trk N <iv> iv <bytes> B sec 0x3fffff/22 ALL bad 0
+  foreign 0 rng 0 dec <us> us` (` OVERFLOWED` appended when the capture filled its buffer; the `B` figure is the
+  capture size, and `dec` is the decode's own time in microseconds -- ~6-7 ms expected for HD, during which
+  core0 serves no read), `write: trk N rejected: not all 22 sectors verified` /
+  `sectors numbered 11 or more: an HD track on a DD disk` (DD) / `sectors numbered 22 or more` (HD), `wprot: …
+  (mounted=… server=… uploader=…)` (no `hd=` field any more), `hd: track N encoded in X us (new max)` (watch
+  this while an HD close is hashing -- the hash runs alongside the next capture, so PSRAM contention could show
+  up as a new max here), and `heap: free low-water N bytes`.
+
+**Bench prep (controller):**
+0. Confirm the ribbon: a continuity test from J1 pin 10 to pin 9 beeps when the ribbon is fitted reversed (3an's
+   lesson -- check the ribbon before blaming firmware).
+1. Deploy the web app first (merge to master ships it). 1.4.1 boards keep protecting HD, so this is safe.
+2. Build 1.5.0 from the committed tree and publish it to the registry marked as a bench candidate -- OTA install
+   needs a registry entry, so there is no way to get 1.5.0 onto the board without publishing it first. Install it
+   on the bench board over OTA. Announce it only once bench steps 1 and 2 below pass. The registry is
+   append-only and a release installs only on boards someone targets at it, so a candidate that fails the bench
+   is simply left untargeted and superseded by the next version -- there is nothing to withdraw.
+3. The HD Workbench test disk from 3an (`HDBench.adf`, `scripts/hd-test-disk.sh`) is in the library. Set it
+   writable in the web app. Have a DD Workbench 3.1 disk, set writable, for step 1.
+
+**Bench checklist (A5000 rev 8a.1, Kickstart 3.1; each step a visible pass or fail; one physical step per turn):**
+1. DD regression: the DD Workbench disk boots, and `Echo >DF0:ddcheck hi` makes a new version in the library.
+2. HD save: boot the HD Workbench disk; `Echo >DF0:hello hi` and `Copy RAM:HDCheck.txt DF0:copy.txt` (copy
+   HDCheck.txt to RAM: first). The log shows `sec 0x3fffff/22 ALL` per written track and no `rejected`; the new
+   version appears in the history panel with `hello` and `copy.txt` added, and both can be opened in the browser.
+3. Large write: `Copy` a several-hundred-KB file onto the HD disk. Every `write: trk` line says `ALL`; the
+   library's newest version matches (its file opens and has the right size). Record the largest `… B` figure
+   from the `write: trk` lines here (the capture size; the buffer is 32,768 -- its margin rests on an estimated
+   lead gap, so this figure tells us whether the estimate held). Also watch the `hd: track N encoded in X us (new
+   max)` line while this write's close is hashing; record it if a new max appears well above the earlier tracks'
+   times (possible PSRAM contention between the hash and the next capture).
+4. Offline: switch WiFi off, save to the HD disk, switch it back on. The version arrives.
+5. Memory: record the lowest `heap: free low-water` line during steps 2-4 here. 1.4.1 was 69,632 after TLS; this
+   release adds ~22 KB of static buffers (+16,384 capture, +5,632 POST buffer), so expect around 47,000 and
+   require it stay at or above roughly 20,000.
+6. Restore: put an older HD version back from the history panel (eject first); the Amiga sees it after the
+   disk change.
+7. Back-to-back track writes: on a scratch HD disk (the library's "Create HD ADF (FFS)"), set writable,
+   `Format DRIVE DF0: NAME HDFmt` -- no `QUICK`, so every track is written -- or a `DiskCopy` onto it; either
+   writes all 160 tracks one after the other. Every `write: trk`
+   line says `ALL`; record the largest `dec … us` figure (the decode time, ~6-7 ms expected) and any `not a
+   write` / `rejected` line or track missing from the sequence (a lost capture). The library's newest version is
+   the formatted (or copied) disk.
 
 ### 3an. HD floppies, read-only -- 2026-09-26 (spec/plan 2026-09-26-hd-floppies-read-only)
 

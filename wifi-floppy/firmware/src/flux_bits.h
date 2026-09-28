@@ -23,6 +23,27 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+/**
+ * The capture's window and buffer (HD writes spec §4.1). Here rather than in
+ * flux_capture.h so the host tests can hold the accumulator to them:
+ * flux_capture.h is device-only (it includes hardware/pio.h).
+ *
+ * 800 ms: two HD revolutions (an Amiga HD drive spins at 150 rpm, 400 ms a
+ * turn, with the same 2 us cell as DD). A write is one revolution plus its
+ * lead gap; a WGATE held longer than this is not a write.
+ *
+ * 32,768 bytes: one HD write, lead gap included, with DD's margin. A DD write
+ * measured 108,992 bits (13,624 bytes) against DD's 16,384-byte buffer; an HD
+ * write at twice that is ~27,250. The spec's 28,672 would leave 5 %; this
+ * leaves DD's 20 % for 4 KB more. This file's own "fits the capture" test
+ * only exercises ~28,652 of it (an HD write behind a doubled DD lead gap,
+ * §4.1's fixture) -- that does not justify 32 KB on its own; the rest is
+ * margin for the HD lead gap, which is not measured yet. Bench step 3
+ * records the real size (the `write: trk N ... B` log line).
+ */
+#define FLUX_CAPTURE_MAX_MS     800u
+#define FLUX_CAPTURE_BUF_BYTES  32768u
+
 typedef struct {
     uint8_t *buf;
     size_t   cap_bits;

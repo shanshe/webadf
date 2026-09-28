@@ -4,10 +4,10 @@ import { getDb } from '@/db';
 import { disks, entitlements } from '@/db/schema/catalog';
 import { devices } from '@/db/schema/devices';
 import { diskWriteSessions, diskWriteTracks } from '@/db/schema/disk-history';
-import { isHdAdf } from '@/lib/disk-format';
+import { HD_TRACK_DATA_BYTES, TRACK_DATA_BYTES } from '@/lib/adfmfm/constants';
 import { diskStore } from '@/lib/storage';
 import { recordVersion, StaleHeadError, type Recorded } from '@/lib/disk-history/store';
-import { overlayTracks, isTrackUpload } from '@/lib/disk-history/version';
+import { overlayTracks, isTrackUpload, trackBytesForDisk } from '@/lib/disk-history/version';
 
 /**
  * A board's write session (write-back spec §3.1, §3.3). The board uploads each
@@ -20,10 +20,10 @@ export interface WriteQuery { diskId: string; mount: number }
 export const SESSION_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
 /**
  * What a route answers, verbatim. stageTrack: 200 { staged } | 200 { duplicate }
- * | 400 invalid_body | 404 not_found | 409 not_mounted | 409 { not_mounted,
- * reason: 'behind' } | 409 write_protected (with an open session only for an
- * HD disk, as { write_protected, reason: 'hd_read_only' }; otherwise only
- * when opening one). closeSession: 200 { sha256 } | 200 { sha256,
+ * | 400 invalid_body (not 5,632 bytes for a DD disk / 11,264 for an HD one)
+ * | 404 not_found | 409 not_mounted | 409 { not_mounted, reason: 'behind' }
+ * | 409 write_protected (only when opening a session). closeSession: 200
+ * { sha256 } | 200 { sha256,
  * unchanged } | 404 not_found | 409 not_mounted | 409 { mismatch, sha256 }
  * | 409 incomplete (seq is not the session's last; kept) | 409 conflict (the
  * disk moved on; the session is kept for a retry).
@@ -76,7 +76,11 @@ async function holdsMount(device: Device, q: WriteQuery): Promise<'current' | 'b
 export async function stageTrack(
   device: Device, q: WriteQuery & { track: number; seq: number; session: string }, data: Uint8Array,
 ): Promise<Outcome> {
-  if (!isTrackUpload(q.track, data)) return { status: 400, body: { error: 'invalid_body' } };
+  // A body that is no disk's track at all is refused before any query. Which
+  // of the two sizes THIS disk takes is decided once its row is read, below.
+  if (!isTrackUpload(q.track, data, TRACK_DATA_BYTES) && !isTrackUpload(q.track, data, HD_TRACK_DATA_BYTES)) {
+    return { status: 400, body: { error: 'invalid_body' } };
+  }
   const held = await holdsMount(device, q);
   if (!held) return { status: 409, body: { error: 'not_mounted' } };
 
@@ -87,12 +91,15 @@ export async function stageTrack(
     .where(and(eq(disks.id, q.diskId), eq(disks.orgId, device.orgId))).limit(1))[0];
   if (!disk) return { status: 404, body: { error: 'not_found' } };
 
-  // HD spec §4.3: read-only on the Amiga in this release. The board asserts
-  // WPROT and discards any capture itself; this is the server's half, and it
-  // holds for an already-open session too. `error` stays write_protected --
-  // the one refusal uploader.c acts on (it parks and forces WPROT); any other
-  // word it treats as transient and retries forever.
-  if (isHdAdf(disk)) return { status: 409, body: { error: 'write_protected', reason: 'hd_read_only' } };
+  // HD writes spec §5.1: 5,632 bytes for a DD disk, 11,264 for an HD one. The
+  // other density's size is refused, never overlaid -- it would land at the
+  // wrong offset and shift every byte after it. An HFE (trackBytesForDisk:
+  // null) skips this and meets the write_protected refusal below, exactly as
+  // before.
+  const trackBytes = trackBytesForDisk(disk);
+  if (trackBytes !== null && data.length !== trackBytes) {
+    return { status: 400, body: { error: 'invalid_body' } };
+  }
 
   const atMount = and(eq(diskWriteSessions.deviceId, device.deviceId), eq(diskWriteSessions.mount, q.mount));
   let session = (await db.select({ lastSeq: diskWriteSessions.lastSeq, token: diskWriteSessions.token })

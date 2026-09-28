@@ -312,6 +312,20 @@ describe('restoreVersion', () => {
     expect(diskVersionRows).toHaveLength(rowCountBefore); // nothing recorded
   });
 
+  it('refuses a target whose size differs from the head, recording nothing (Review Focus 5)', async () => {
+    await buildChain(['A']);   // DD versions 0..1
+    // The head the disk row points at is an HD image: only reachable by a
+    // hand-edited row or blob, and it must be a refusal, never a 500.
+    const hdHead = formatVolume({ filesystem: 'FFS', volumeName: 'Other', density: 'hd' });
+    blobBytes.set(sha256Of(hdHead), hdHead);
+    diskLookupResult = [{ sha256: sha256Of(hdHead), tosecName: 'Chain.adf', sourceFilename: 'Chain.adf' }];
+    const rowCountBefore = diskVersionRows.length;
+
+    const { restoreVersion } = await import('./restore');
+    expect(await restoreVersion(ORG, DISK, 0, null)).toEqual({ ok: false, status: 409, reason: 'size_mismatch' });
+    expect(diskVersionRows).toHaveLength(rowCountBefore);
+  });
+
   it('a broken chain (HistoryError) is a 500, not a silent empty restore', async () => {
     const images = await buildChain(['A', 'B', 'C']); // versions 0..3, seq 1 is a delta
     diskLookupResult = [{ sha256: sha256Of(images[3]), tosecName: 'Chain.adf', sourceFilename: 'Chain.adf' }];
@@ -328,5 +342,30 @@ describe('restoreVersion', () => {
     if (result.ok) throw new Error('expected a refusal');
     expect(result.status).toBe(500);
     expect(diskVersionRows).toHaveLength(rowCountBefore); // nothing recorded
+  });
+
+  it('restores an HD version like a DD one (HD writes spec §5.2)', async () => {
+    const { recordVersion } = await import('./store');
+    let head = formatVolume({ filesystem: 'FFS', volumeName: 'HDChain', density: 'hd' });
+    blobBytes.set(sha256Of(head), head);
+    const images = [head];
+    for (const name of ['A', 'B']) {
+      const r = addFile(head, 1760, name, new TextEncoder().encode(name));
+      if (!r.ok) throw new Error(`fixture: ${r.reason}`);
+      await recordVersion({
+        orgId: ORG, diskId: DISK, headSha: sha256Of(head), head, next: r.adf,
+        source: 'browser', userId: 'user-1', sourceFilename: 'HDChain.adf',
+      });
+      head = r.adf;
+      images.push(head);
+    }
+    diskLookupResult = [{
+      sha256: sha256Of(images[2]), tosecName: 'HDChain.adf', sourceFilename: 'HDChain.adf',
+      imageFormat: 'adf', sizeBytes: 1_802_240,
+    }];
+
+    const { restoreVersion } = await import('./restore');
+    expect(await restoreVersion(ORG, DISK, 1, 'user-2'))
+      .toEqual({ ok: true, sha256: sha256Of(images[1]), seq: 3, recorded: true });
   });
 });

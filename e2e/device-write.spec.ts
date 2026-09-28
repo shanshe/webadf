@@ -8,7 +8,7 @@ import { diskVersions, diskWriteSessions, diskWriteTracks } from '@/db/schema/di
 import { diskStore } from '@/lib/storage';
 import { recordVersion } from '@/lib/disk-history/store';
 import { formatVolume } from '@/lib/adffs/format';
-import { TRACK_DATA_BYTES } from '@/lib/adfmfm';
+import { TRACK_DATA_BYTES, HD_TRACK_DATA_BYTES } from '@/lib/adfmfm';
 import { signUpFresh, runTag } from './helpers';
 import { pairDevice, seedDisk, authHeader, cleanupSeeded } from './device-helpers';
 
@@ -136,6 +136,16 @@ test('a short body and a bad query are 400s', async ({ page, request }) => {
     { headers: authHeader(m.token) });
   expect(noSession.status()).toBe(400);
   expect((await noSession.json()).error).toBe('invalid_query');
+});
+
+test("an HD track's 11,264 bytes on a DD disk are a 400, and nothing is staged (Review Focus 1)", async ({ page, request }) => {
+  const m = await mountedWritableDisk(page, request);
+  const res = await upload(request, m.token, { diskId: m.diskId, mount: m.mount, track: 0, seq: 1 },
+                           new Uint8Array(HD_TRACK_DATA_BYTES));
+  expect(res.status()).toBe(400);
+  expect((await res.json()).error).toBe('invalid_body');
+  expect(await getDb().select().from(diskWriteTracks)
+    .where(eq(diskWriteTracks.deviceId, m.deviceId))).toEqual([]);
 });
 
 test('a close whose digest disagrees: the server image wins and the board re-downloads', async ({ page, request }) => {

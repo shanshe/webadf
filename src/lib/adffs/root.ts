@@ -1,6 +1,7 @@
 // The root block: where "does this disk have a filesystem?" is answered.
 
-import { ROOT_BLOCK, CHECKSUM_WORD, T_HEADER, ST_ROOT } from './constants';
+import { CHECKSUM_WORD, T_HEADER, ST_ROOT } from './constants';
+import { geometryOf, DD_GEOMETRY } from './geometry';
 import { blockAt, be32, i32, checksumOk, bcplString, amigaDate } from './blocks';
 import type { BootInfo, Filesystem } from './boot';
 
@@ -14,7 +15,7 @@ export interface VolumeInfo {
 }
 
 /**
- * Null when block 880 is not a valid root block.
+ * Null when the root block (880 DD, 1,760 HD) is not a valid root block.
  *
  * THE CHECKSUM IS NOT OPTIONAL (design decision D-3-1). Type and secondary
  * type alone are two 32-bit comparisons that ordinary game data passes by
@@ -25,7 +26,7 @@ export interface VolumeInfo {
  * distinguishes a filesystem from a coincidence.
  */
 export function readRoot(adf: Uint8Array, boot: BootInfo): VolumeInfo | null {
-  const root = blockAt(adf, ROOT_BLOCK);
+  const root = blockAt(adf, (geometryOf(adf) ?? DD_GEOMETRY).rootBlock);
   if (!root) return null;
   if (be32(root, 0) !== T_HEADER) return null;
   if (i32(root, 508) !== ST_ROOT) return null;

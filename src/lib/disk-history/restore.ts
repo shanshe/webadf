@@ -12,7 +12,6 @@ import { and, eq } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { disks, entitlements } from '@/db/schema/catalog';
 import { findHolder, mountedReason, repointLateMounts } from '@/lib/disk-holder';
-import { isHdAdf } from '@/lib/disk-format';
 import { diskStore } from '@/lib/storage';
 import { materialise, HistoryError } from '@/lib/disk-history/chain';
 import { DeltaError } from '@/lib/disk-history/delta';
@@ -50,7 +49,6 @@ export async function restoreVersion(
       tosecName: disks.tosecName,
       sourceFilename: entitlements.sourceFilename,
       imageFormat: disks.imageFormat,
-      sizeBytes: disks.sizeBytes,
     })
     .from(disks)
     .innerJoin(entitlements, and(
@@ -66,10 +64,6 @@ export async function restoreVersion(
   // Spec D2: an HFE is a preserved original. Refused before the holder
   // check and before any read -- nothing about it can be edited, mounted or not.
   if (disk.imageFormat === 'hfe') return { ok: false, status: 409, reason: 'hfe_read_only' };
-
-  // HD spec §4.2: an HD disk has no browser history in this release, and a
-  // restore is an edit. Refused by name, like HFE.
-  if (isHdAdf(disk)) return { ok: false, status: 409, reason: 'hd_read_only' };
 
   // D-W-4: refuse before anything is read or written -- the same findHolder
   // applyDiskEdit and the volume rename use, and the same reason string.
@@ -111,6 +105,11 @@ export async function restoreVersion(
   } catch {
     return { ok: false, status: 503, reason: 'blob_unavailable' };
   }
+
+  // A disk's versions are all one size (HD writes spec §5.2). A target of the
+  // other size is only reachable through hand-edited rows or blobs; refused
+  // by name here rather than left to recordVersion's DeltaError as a 500.
+  if (target.length !== before.length) return { ok: false, status: 409, reason: 'size_mismatch' };
 
   const currentSeq = entries[entries.length - 1].seq;
 

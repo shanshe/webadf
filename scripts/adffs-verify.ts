@@ -23,9 +23,9 @@ import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatVolume } from '../src/lib/adffs/format';
-import { readVolume } from '../src/lib/adffs';
+import { readVolume, readFile, readUsage } from '../src/lib/adffs';
 import { syntheticVolume, type SyntheticOptions } from '../src/lib/adffs/synthetic';
-import { ROOT_BLOCK } from '../src/lib/adffs/constants';
+import { ROOT_BLOCK, BLOCK_BYTES, CHECKSUM_WORD } from '../src/lib/adffs/constants';
 import {
   addFile, deleteEntry, renameEntry, replaceFile, makeDirectory, moveEntry, applyBatch,
 } from '../src/lib/adffs/write';
@@ -239,7 +239,10 @@ for (const [label, opts] of syntheticFixtures) {
  * is really gone) against the same file.
  */
 function proves(label: string, adf: Uint8Array, expectNames: string[]): string {
-  const image = join(dir, `${label.replace(/\W/g, '')}.adf`);
+  // An HD image goes to xdftool as `.hdf`: amitools 0.4.0's ADF device is
+  // DD-only (see the HD section at the end of this file).
+  const ext = adf.length === 1_802_240 ? 'hdf' : 'adf';
+  const image = join(dir, `${label.replace(/\W/g, '')}.${ext}`);
   writeFileSync(image, adf);
 
   let listing = '';
@@ -450,6 +453,203 @@ console.log('\nsharpest case: delete then refill');
 
   const back = readVolume(new Uint8Array(readFileSync(image)));
   check('our reader still reads the disk after refill', back.ok, back.ok ? '' : `reason=${back.reason}`);
+}
+
+// ---------------------------------------------------------------------------
+// HD (HD writes spec §6.4): the same second opinion at 3,520 blocks, in both
+// directions.
+//
+// amitools 0.4.0's ADF device is DD-only -- `format` on a 1.8 MB `.adf`
+// silently rewrites it as 901,120 bytes. Its HDF device takes the geometry
+// from the file size, so an HD image goes to xdftool under an `.hdf` name.
+// Measured 2026-09-27: `xdftool x.hdf create chs=80,2,22 + format N ffs`
+// writes root 1760, bitmap 1761 and boot pointer 1760 -- the layout
+// formatVolume({ density: 'hd' }) writes -- and `info` says 3520 total, 4 used.
+const HD_ROOT = 1760;
+
+/**
+ * Byte-diff a blank disk against xdftool's OWN `create + format` of the
+ * identical geometry, name and filesystem. This is the real check the
+ * brief's mutation step needed: "does xdftool accept our disk" is not
+ * enough, because xdftool's `list`/`write`/`info` all follow the ROOT's
+ * bitmap pointer wherever it leads, so a bitmap moved to the wrong block
+ * (Step 5's mutation) still looks fine to every check above. Comparing our
+ * bytes against an independent tool's bytes for the SAME format does not
+ * have that blind spot.
+ *
+ * Masked before comparing (measured 2026-09-27 against xdftool's own
+ * output -- every one of the 17 bytes that differ between two blank FFS HD
+ * disks falls in exactly these ranges, nothing else):
+ *   - the root checksum (it covers the date triples, so it changes with them)
+ *   - the three date triples (wall-clock timestamps; never equal between
+ *     two independent runs)
+ *   - the four reserved bytes at root+496..499 (xdftool writes non-zero
+ *     bytes there that this project's format leaves zero; AmigaDOS does
+ *     not read this field)
+ * Anything outside that mask must be identical, or formatVolume disagrees
+ * with xdftool about the actual layout.
+ */
+function checkBlankByteIdentical(label: string, ours: Uint8Array, theirs: Uint8Array): void {
+  if (ours.length !== theirs.length) {
+    check(label, false, `length ${ours.length} vs ${theirs.length}`);
+    return;
+  }
+  const masked = (adf: Uint8Array): Uint8Array => {
+    const out = Uint8Array.from(adf);
+    const root = HD_ROOT * BLOCK_BYTES;
+    out.fill(0, root + CHECKSUM_WORD * 4, root + CHECKSUM_WORD * 4 + 4); // checksum
+    out.fill(0, root + 420, root + 432);                                 // r_days
+    out.fill(0, root + 472, root + 484);                                 // v_days
+    out.fill(0, root + 484, root + 500);                                 // c_days + reserved
+    return out;
+  };
+  const a = masked(ours);
+  const b = masked(theirs);
+  let at = -1;
+  for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) { at = i; break; } }
+  check(label, at === -1,
+    at === -1 ? '' : `first differing byte at offset ${at} (block ${Math.floor(at / BLOCK_BYTES)})`);
+}
+
+console.log('\nHD: our blank disks');
+for (const filesystem of ['OFS', 'FFS'] as const) {
+  const name = `OursHD${filesystem}`;
+  const image = join(dir, `ours-hd-${filesystem}.hdf`);
+  const ours = formatVolume({ filesystem, volumeName: name, density: 'hd' });
+  writeFileSync(image, ours);
+
+  const theirsImage = join(dir, `xdftool-hd-${filesystem}.hdf`);
+  xdftool(theirsImage, 'create', 'chs=80,2,22', '+', 'format', name, filesystem === 'FFS' ? 'ffs' : 'ofs');
+  checkBlankByteIdentical(
+    `HD ${filesystem}: byte-identical to xdftool's own blank format (masking checksum, dates, root+496..499)`,
+    ours, new Uint8Array(readFileSync(theirsImage)));
+
+  const info = xdftool(image, 'info');
+  check(`HD ${filesystem}: xdftool reports 3520 blocks`, /total:\s+3520\b/.test(info), info.split('\n')[0]?.trim());
+  check(`HD ${filesystem}: xdftool reports 4 blocks used`, /used:\s+4\b/.test(info), info.split('\n')[1]?.trim());
+  check(`HD ${filesystem}: xdftool reports 3516 free`, /free:\s+3516\b/.test(info), info.split('\n')[2]?.trim());
+
+  const list = xdftool(image, 'list');
+  check(`HD ${filesystem}: volume name and filesystem recognised`,
+    list.includes(name) && list.includes(filesystem === 'FFS' ? 'ffs' : 'ofs'),
+    list.split('\n')[0]?.trim());
+
+  // THE ONE THAT MATTERS, as for DD: they allocate out of OUR bitmap.
+  xdftool(image, 'write', payload, 'hello.txt');
+  check(`HD ${filesystem}: xdftool can write a file into our disk`, xdftool(image, 'list').includes('hello.txt'));
+
+  const reread = readVolume(new Uint8Array(readFileSync(image)));
+  check(`HD ${filesystem}: our reader still reads it after their write`,
+    reread.ok && reread.rootBlock === HD_ROOT && reread.root.some((e) => e.name === 'hello.txt'),
+    reread.ok ? `root=${reread.rootBlock} entries=[${reread.root.map((e) => e.name).join(', ')}]` : `reason=${reread.reason}`);
+}
+
+console.log('\nHD: our write operations, proved by xdftool');
+for (const filesystem of ['OFS', 'FFS'] as const) {
+  const blank = () => formatVolume({ filesystem, volumeName: `Hd${filesystem}`, density: 'hd' });
+
+  {
+    const added = addFile(blank(), HD_ROOT, 'add.txt', smallPayload);
+    if (!added.ok) throw new Error(`setup: HD add failed (${added.reason})`);
+    proves(`HD ${filesystem} add`, added.adf, ['add.txt']);
+  }
+
+  {
+    const added = addFile(blank(), HD_ROOT, 'big.bin', largePayload);
+    if (!added.ok) throw new Error(`setup: HD add-large failed (${added.reason})`);
+    proves(`HD ${filesystem} add-large`, added.adf, ['big.bin']);
+  }
+
+  {
+    const added = addFile(blank(), HD_ROOT, 'old.txt', smallPayload);
+    if (!added.ok) throw new Error(`setup: HD rename setup failed (${added.reason})`);
+    const renamed = renameEntry(added.adf, HD_ROOT, blockOf(added.adf, 'old.txt'), 'new.txt');
+    if (!renamed.ok) throw new Error(`setup: HD rename failed (${renamed.reason})`);
+    proves(`HD ${filesystem} rename`, renamed.adf, ['new.txt']);
+  }
+
+  {
+    const made = makeDirectory(blank(), HD_ROOT, 'sub');
+    if (!made.ok) throw new Error(`setup: HD mkdir failed (${made.reason})`);
+    const added = addFile(made.adf, blockOf(made.adf, 'sub'), 'inner.txt', smallPayload);
+    if (!added.ok) throw new Error(`setup: HD add-into-dir failed (${added.reason})`);
+    proves(`HD ${filesystem} add-into-dir`, added.adf, ['sub', 'inner.txt']);
+  }
+
+  {
+    const made = makeDirectory(blank(), HD_ROOT, 'doomed');
+    if (!made.ok) throw new Error(`setup: HD delete-dir mkdir failed (${made.reason})`);
+    const dirBlock = blockOf(made.adf, 'doomed');
+    const added = addFile(made.adf, dirBlock, 'inside.txt', smallPayload);
+    if (!added.ok) throw new Error(`setup: HD delete-dir add failed (${added.reason})`);
+    const deleted = deleteEntry(added.adf, HD_ROOT, dirBlock);
+    if (!deleted.ok) throw new Error(`setup: HD delete-dir failed (${deleted.reason})`);
+    const image = proves(`HD ${filesystem} delete-dir`, deleted.adf, []);
+    const listing = xdftool(image, 'list');
+    check(`HD ${filesystem} delete-dir: doomed is really gone`, !listing.toUpperCase().includes('DOOMED'));
+  }
+
+  {
+    const seeded = addFile(blank(), HD_ROOT, 'root.txt', smallPayload);
+    if (!seeded.ok) throw new Error(`setup: HD batch seed failed (${seeded.reason})`);
+    const batched = applyBatch([
+      { op: 'mkdir', parentPath: '', name: 'C' },
+      { op: 'add', parentPath: 'C', name: 'one.txt', bytes: smallPayload },
+    ])(seeded.adf);
+    if (!batched.ok) throw new Error(`setup: HD batch failed (${batched.reason})`);
+    const moved = moveEntry(batched.adf, HD_ROOT, blockOf(batched.adf, 'root.txt'), blockOf(batched.adf, 'C'));
+    if (!moved.ok) throw new Error(`setup: HD move failed (${moved.reason})`);
+    const image = proves(`HD ${filesystem} batch and move`, moved.adf, ['C', 'one.txt', 'root.txt']);
+    check(`HD ${filesystem} move: xdftool sees root.txt inside C`,
+      xdftool(image, 'list', 'C').toUpperCase().includes('ROOT.TXT'));
+    checkParentConsistency(`HD ${filesystem} move`, image);
+  }
+
+  {
+    // Past the middle: 2,000 blocks cannot all come from below the root, so
+    // this file's data lands above block 1,760 -- where no DD disk has blocks
+    // at all. xdftool EXTRACTS it and it must be the same bytes.
+    const big = new Uint8Array(2000 * 512);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 31 + 7) & 0xff;
+    const added = addFile(blank(), HD_ROOT, 'past-root.bin', big);
+    if (!added.ok) throw new Error(`setup: HD past-root add failed (${added.reason})`);
+    const image = proves(`HD ${filesystem} past-root`, added.adf, ['past-root.bin']);
+    const out = join(dir, `past-root-${filesystem}.bin`);
+    xdftool(image, 'read', 'past-root.bin', out);
+    check(`HD ${filesystem} past-root: xdftool extracts our bytes exactly`,
+      Buffer.compare(readFileSync(out), Buffer.from(big)) === 0);
+  }
+}
+
+console.log("\nHD: xdftool's disk, our reader and writer");
+{
+  const image = join(dir, 'theirs-hd.hdf');
+  const inner = join(dir, 'inner.txt');
+  writeFileSync(inner, 'made by xdftool\n');
+  xdftool(image, 'create', 'chs=80,2,22', '+', 'format', 'TheirsHD', 'ffs',
+    '+', 'makedir', 'Dir', '+', 'write', inner, 'Dir/inner.txt', '+', 'write', payload, 'top.txt');
+  const theirs = new Uint8Array(readFileSync(image));
+  check('their HD disk is 1,802,240 bytes', theirs.length === 1_802_240, `${theirs.length}`);
+
+  const v = readVolume(theirs);
+  check('our reader opens their HD disk at root 1760',
+    v.ok && v.rootBlock === HD_ROOT && v.volume.name === 'TheirsHD',
+    v.ok ? `root=${v.rootBlock} name=${v.volume.name}` : `reason=${v.reason}`);
+  if (v.ok) {
+    const innerEntry = v.root.find((e) => e.name === 'Dir')?.children.find((e) => e.name === 'inner.txt');
+    const got = innerEntry ? readFile(theirs, innerEntry.block) : null;
+    check('we read their nested file byte for byte',
+      got !== null && Buffer.from(got.bytes).toString() === 'made by xdftool\n');
+  }
+
+  const usage = readUsage(theirs);
+  check('our used-block count agrees with xdftool info',
+    usage !== null && new RegExp(`used:\\s+${usage.usedBlocks}\\b`).test(xdftool(image, 'info')),
+    usage ? `ours: ${usage.usedBlocks} used` : 'bitmap untrusted');
+
+  const added = addFile(theirs, HD_ROOT, 'ours.txt', smallPayload);
+  check('we can add a file to their HD disk', added.ok, added.ok ? '' : added.reason);
+  if (added.ok) proves('HD ours-into-theirs', added.adf, ['Dir', 'top.txt', 'ours.txt']);
 }
 
 rmSync(dir, { recursive: true, force: true });

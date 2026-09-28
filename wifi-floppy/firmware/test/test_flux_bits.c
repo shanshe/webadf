@@ -1,6 +1,7 @@
 #include "harness.h"
 #include "../src/flux_bits.h"
 #include "../src/mfm.h"
+#include "hd_fixture.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -203,6 +204,54 @@ static void test_counter_to_ns(void) {
     CHECK_EQ_INT(flux_counter_to_ns((uint32_t)-600, clk), 8000);
 }
 
+/* ---- HD writes spec §4.1: one HD write fits the capture ------------------ */
+
+/* A DD write carries ~13,264 bits (1,658 bytes) of gap before its sectors
+ * (HANDOFF: "a write is gap first ... ending at bit 108,980 of a 108,992-bit
+ * capture"). The HD gap is not measured yet (bench step 3 logs it), so this
+ * assumes it scales with the track: twice DD's. */
+#define HD_LEAD_GAP_BYTES 3316u
+
+static void test_an_hd_write_fits_the_capture_buffer(void) {
+    // Greaseweazle's HD track 80 behind a doubled DD lead gap: MFM-coded zero
+    // bytes, 0xAA on the wire, a transition every two cells. HD_MFM_BYTES and
+    // the fixture reader are hd_fixture.h's, shared with test_write_back.c.
+    static uint8_t wire[HD_LEAD_GAP_BYTES + HD_MFM_BYTES];
+    memset(wire, 0xaa, HD_LEAD_GAP_BYTES);
+    CHECK(read_hd_fixture(80, wire + HD_LEAD_GAP_BYTES),
+          "fixtures/adf_mfm_hd/prng-t080.mfm (scripts/adf-mfm-hd-fixtures.py)");
+
+    static uint8_t buf[FLUX_CAPTURE_BUF_BYTES];
+    flux_bits_t fb;
+    flux_bits_init(&fb, buf, sizeof buf);
+    size_t prev = SIZE_MAX;
+    for (size_t i = 0; i < sizeof wire * 8u; i++) {
+        if (!bit_at(wire, i)) continue;
+        if (prev != SIZE_MAX) flux_bits_feed(&fb, (uint32_t)(i - prev) * CELL_NS);
+        prev = i;
+    }
+    CHECK(!fb.overflowed, "a whole HD write, lead gap included, fits the buffer");
+
+    static uint8_t got[MFM_HD_TRACK_DATA_BYTES], want[MFM_HD_TRACK_DATA_BYTES];
+    hd_prng_track(80, want);
+    mfm_decode_result_t r;
+    mfm_decode_track_n(buf, flux_bits_bytes(&fb), got, &r, MFM_HD_SECTORS);
+    CHECK_EQ_INT(r.found, 0x3fffff);
+    CHECK(memcmp(got, want, sizeof want) == 0, "every sector comes back from the capture");
+}
+
+static void test_a_wgate_held_for_the_whole_window_overflows(void) {
+    // 800 ms of the densest legal flux (4 us gaps) is 400,000 cells: more than
+    // any buffer here. It must say so -- the verdict then rejects it
+    // (WB_REJECT_OVERFLOW) -- never wrap or drop silently.
+    static uint8_t buf[FLUX_CAPTURE_BUF_BYTES];
+    flux_bits_t fb;
+    flux_bits_init(&fb, buf, sizeof buf);
+    for (uint32_t i = 0; i < FLUX_CAPTURE_MAX_MS * 1000u / 4u; i++) flux_bits_feed(&fb, 4000u);
+    CHECK(fb.overflowed, "flagged");
+    CHECK_EQ_INT(flux_bits_bytes(&fb), FLUX_CAPTURE_BUF_BYTES);
+}
+
 int main(void) {
     RUN(test_a_golden_track_survives_the_round_trip);
     RUN(test_it_tolerates_the_speed_error_a_real_drive_has);
@@ -210,5 +259,7 @@ int main(void) {
     RUN(test_an_impossible_gap_is_counted);
     RUN(test_bit_layout_is_msb_first);
     RUN(test_counter_to_ns);
+    RUN(test_an_hd_write_fits_the_capture_buffer);
+    RUN(test_a_wgate_held_for_the_whole_window_overflows);
     return REPORT();
 }

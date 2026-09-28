@@ -13,22 +13,16 @@
 // documentation -- same rule as constants.ts.
 
 import {
-  BLOCK_BYTES, BLOCK_COUNT, ROOT_BLOCK, HASH_TABLE_SIZE,
+  BLOCK_BYTES, ROOT_BLOCK, HASH_TABLE_SIZE,
   CHECKSUM_WORD, T_HEADER, ST_ROOT,
 } from './constants';
 import { blockChecksum } from './blocks';
+import { geometryOf, geometryFor, BITMAP_FIRST_BLOCK, DD_GEOMETRY } from './geometry';
 import type { Filesystem } from './boot';
 
-/** Immediately after the root block, which is where a real format puts it. */
+/** A DD disk's bitmap block: immediately after the root, where a real format
+ *  puts it. An HD disk's is 1,761 -- the same rule, `rootBlock + 1`. */
 export const BITMAP_BLOCK = ROOT_BLOCK + 1;
-
-/**
- * The bitmap covers blocks 2..1759 -- the two boot blocks are NOT in it.
- * xdftool's `info` reports 4 blocks used on a blank disk (boot x2, root,
- * bitmap) but only two of those are bits.
- */
-const BITMAP_FIRST_BLOCK = 2;
-const BITMAP_BITS = BLOCK_COUNT - BITMAP_FIRST_BLOCK;
 
 const FLAG_FFS = 0x01;
 const FLAG_INTL = 0x02;
@@ -43,6 +37,9 @@ export interface FormatOptions {
    * and get "now", which is what a format does.
    */
   now?: Date;
+  /** 'dd' (880 KB, 1,760 blocks) unless asked for 'hd' (1.76 MB, 3,520
+   *  blocks, root 1,760) -- HD writes spec §6.3. */
+  density?: 'dd' | 'hd';
 }
 
 function putBe32(buf: Uint8Array, offset: number, value: number): void {
@@ -93,13 +90,20 @@ function putBcpl(buf: Uint8Array, lengthOffset: number, value: string, max: numb
 }
 
 /**
- * A freshly formatted, empty 880 KB volume.
+ * A freshly formatted, empty volume: 880 KB, or 1.76 MB for `density: 'hd'`.
  *
- * Byte-identical to `xdftool create + format`, except for the two timestamps
- * -- proven in format.test.ts by formatting both and diffing.
+ * Byte-identical to `xdftool create + format` except for the root checksum,
+ * the date triples and four reserved bytes at root+496 -- proven for HD by
+ * the byte-diff in `pnpm adffs:verify`'s "our blank disks" section (masking
+ * exactly those bytes and requiring equality otherwise); DD's blank format
+ * is exercised by the same script's write-based cross-checks (xdftool must
+ * accept the block layout enough to allocate into it) and by
+ * format.test.ts's own determinism check, not a byte-diff against xdftool.
  */
 export function formatVolume(opts: FormatOptions): Uint8Array {
-  const adf = new Uint8Array(BLOCK_BYTES * BLOCK_COUNT);
+  const g = geometryFor(opts.density ?? 'dd');
+  const bitmapBlock = g.rootBlock + 1;
+  const adf = new Uint8Array(BLOCK_BYTES * g.blockCount);
   const when = opts.now ?? new Date();
 
   // --- boot block -------------------------------------------------------
@@ -111,16 +115,16 @@ export function formatVolume(opts: FormatOptions): Uint8Array {
   // verify it (D-3-2: only 19 of 49 sound archive disks have a valid one),
   // and claiming a checksum for boot code that does not exist would be worse
   // than leaving it absent.
-  putBe32(adf, 8, ROOT_BLOCK);
+  putBe32(adf, 8, g.rootBlock);
 
   // --- root block -------------------------------------------------------
-  const root = ROOT_BLOCK * BLOCK_BYTES;
+  const root = g.rootBlock * BLOCK_BYTES;
   putBe32(adf, root + 0, T_HEADER);
   // header_key and high_seq are 0 on a root block; hash table size is not.
   putBe32(adf, root + 12, HASH_TABLE_SIZE);
   // The hash table (72 longs from offset 24) stays zero: no entries yet.
   putBe32(adf, root + 312, 0xffffffff);                    // bm_flag: valid
-  putBe32(adf, root + 316, BITMAP_BLOCK);                  // bm_pages[0]
+  putBe32(adf, root + 316, bitmapBlock);                   // bm_pages[0]
   // THREE date triples, not one. Omitting any leaves it zero, which reads as
   // 1978-01-01 on an Amiga and differs from a real format.
   putAmigaDate(adf, root + 420, when);   // last change to the root DIRECTORY
@@ -137,12 +141,13 @@ export function formatVolume(opts: FormatOptions): Uint8Array {
   // format and the one the reader cannot catch: a bitmap that is exactly
   // wrong still reads perfectly, and only corrupts when a real Amiga writes
   // to the disk and believes an occupied block is available.
-  const bm = BITMAP_BLOCK * BLOCK_BYTES;
-  // Every bit free to begin with, INCLUDING the trailing bits past block
-  // 1759 -- xdftool leaves the whole remainder of the block 0xff, and
-  // matching it keeps the two outputs diffable.
+  const bm = bitmapBlock * BLOCK_BYTES;
+  // Every bit free to begin with, INCLUDING the trailing bits past the last
+  // block -- xdftool leaves the whole remainder of the block 0xff on both
+  // densities, and matching it keeps the two outputs diffable. alloc.ts
+  // never hands those padding bits out (it bounds by the geometry).
   adf.fill(0xff, bm + 4, bm + BLOCK_BYTES);
-  for (const used of [ROOT_BLOCK, BITMAP_BLOCK]) {
+  for (const used of [g.rootBlock, bitmapBlock]) {
     const bit = used - BITMAP_FIRST_BLOCK;
     const wordOffset = bm + 4 + (bit >>> 5) * 4;
     const mask = 1 << (bit & 31);
@@ -166,9 +171,11 @@ export function formatVolume(opts: FormatOptions): Uint8Array {
 
 /** Blocks the bitmap says are in use. Exported for tests and future writes. */
 export function usedBlocks(adf: Uint8Array): number[] {
-  const bm = BITMAP_BLOCK * BLOCK_BYTES;
+  const g = geometryOf(adf);
+  if (!g) return [];
+  const bm = (g.rootBlock + 1) * BLOCK_BYTES;
   const used: number[] = [];
-  for (let bit = 0; bit < BITMAP_BITS; bit++) {
+  for (let bit = 0; bit < g.blockCount - BITMAP_FIRST_BLOCK; bit++) {
     const o = bm + 4 + (bit >>> 5) * 4;
     const word = ((adf[o] << 24) | (adf[o + 1] << 16) | (adf[o + 2] << 8) | adf[o + 3]) >>> 0;
     if ((word & (1 << (bit & 31))) === 0) used.push(bit + BITMAP_FIRST_BLOCK);
@@ -192,7 +199,7 @@ export function usedBlocks(adf: Uint8Array): number[] {
  */
 export function setVolumeName(adf: Uint8Array, volumeName: string): Uint8Array {
   const out = adf.slice();
-  const root = ROOT_BLOCK * BLOCK_BYTES;
+  const root = (geometryOf(adf) ?? DD_GEOMETRY).rootBlock * BLOCK_BYTES;
   // Clear the whole 31-byte field first: a shorter name would otherwise leave
   // the tail of the previous one behind it, which the length byte hides from
   // our reader but a hex dump would not.

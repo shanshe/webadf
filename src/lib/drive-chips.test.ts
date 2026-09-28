@@ -70,11 +70,11 @@ describe('toDriveChip', () => {
     expect(c.canGoTo).toBe(true);
   });
 
-  it('an HD disk reads WP, says why, and cannot be toggled (HD spec §4.3)', () => {
+  it("an HD disk follows its library flag like a DD disk (HD writes spec §5.3)", () => {
     const c = chip({ ...loaded, mountedSizeBytes: 1_802_240, mountedDiskWriteProtected: false });
-    expect(c.disk?.readOnly).toBe('HD');
-    expect(protectTag(c)).toBe('WP');
-    expect(c.canToggleProtect).toBe(false);
+    expect(c.disk?.readOnly).toBeNull();
+    expect(protectTag(c)).toBe('RW');
+    expect(c.canToggleProtect).toBe(true);
   });
 
   it('an HFE says HFE', () => {

@@ -11,7 +11,6 @@ import { fromQuery } from '@/lib/trail';
 import { FobButton, type FobDevice } from '@/components/nfc/fob-button';
 import { HdTag } from '@/components/disks/hd-tag';
 import { isHdAdf } from '@/lib/disk-format';
-import { HD_READ_ONLY } from '@/lib/hd-messages';
 
 export function DiskRow({ disk, choices, from, fobDevices = [] }: {
   disk: GameDetailDisk;
@@ -144,8 +143,7 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
                 title="HFE disks are preserved originals: extract as ADF to change files"
                 data-testid={`hfe-readonly-${disk.id}`}>Read-only (HFE)</span>
         ) : (
-          <WriteProtectToggle diskId={disk.id} writeProtected={disk.writeProtected}
-                              locked={isHd ? HD_READ_ONLY : undefined} />
+          <WriteProtectToggle diskId={disk.id} writeProtected={disk.writeProtected} />
         )}
         <MountAction diskId={disk.id} choices={choices} />
         {/* Write this disk onto an NFC tag, so tapping it mounts this disk.

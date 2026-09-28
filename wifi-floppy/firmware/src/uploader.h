@@ -51,7 +51,7 @@ typedef uint32_t (*up_counter_fn)(void);
 typedef struct {
     device_client_t *dc;
     char     session[UP_SESSION_MAX + 1];
-    up_counter_fn write_gen;       // +1 per write core0 applied
+    up_counter_fn write_gen;       // core0's seqlock: odd while it stores a track, +2 per store (write_back.h)
     up_counter_fn last_write_ms;   // dc->now() time of the last applied write
     bool     open;                 // a server session exists for (mount, session)
     uint32_t mount;                // fixed from open to close (HANDOFF 4g rule 2)

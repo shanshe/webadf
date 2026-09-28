@@ -15,6 +15,8 @@ export const maxDuration = 60;
 const body = z.object({
   volumeName: z.string().trim().min(1).max(MAX_VOLUME_NAME).optional(),
   filesystem: z.enum(['OFS', 'FFS']).optional(),
+  /** 'dd' (880 KB) unless asked for 'hd' (1.76 MB) -- HD writes spec §6.3. */
+  density: z.enum(['dd', 'hd']).optional(),
   /** The collection currently being viewed, so a disk lands where you stand. */
   collectionId: z.string().optional(),
 });
@@ -27,8 +29,8 @@ const DEFAULT_NAME = 'Empty';
  *
  * The bytes are built HERE and stored directly (diskStore.put) rather than
  * through the presigned-upload path: that path exists so a browser's large
- * uploads never pass through a function, and these 880 KB are already in this
- * function's memory.
+ * uploads never pass through a function, and these 880 KB (or 1.76 MB) are
+ * already in this function's memory.
  *
  * THE DISK IS REAL THE MOMENT THIS RETURNS (operator's ruling, 2026-09-03):
  * blob, entitlement, game and disk rows all exist, and the name is edited
@@ -49,7 +51,10 @@ export async function POST(request: Request) {
   // and more room per disk. OFS stays selectable for 1.3-era hardware.
   const filesystem = parsed.data.filesystem ?? 'FFS';
 
-  const bytes = formatVolume({ filesystem, volumeName });
+  // DD by default: the drive and most software expect it, and HD needs
+  // Kickstart 3.0+ and firmware 1.4.1+ to play at all.
+  const density = parsed.data.density ?? 'dd';
+  const bytes = formatVolume({ filesystem, volumeName, density });
   const sha256 = createHash('sha256').update(bytes).digest('hex');
 
   // Content-addressed, so two blank disks made in the same millisecond with
@@ -122,5 +127,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ gameId, diskId, sha256, volumeName, filesystem, collectionId });
+  return Response.json({ gameId, diskId, sha256, volumeName, filesystem, density, collectionId });
 }

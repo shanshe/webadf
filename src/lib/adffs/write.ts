@@ -8,7 +8,6 @@
 import {
   BLOCK_BYTES, HASH_TABLE_SIZE, CHECKSUM_WORD, OFS_DATA_BYTES,
   OFS_DATA_CHECKSUM_WORD, T_HEADER, T_DATA, T_LIST, ST_FILE, ST_USERDIR,
-  ROOT_BLOCK,
 } from './constants';
 import { blockAt, be32, i32, checksumOk, bcplString, blockChecksum } from './blocks';
 import { putBe32, putName, recheck } from './write-blocks';
@@ -18,6 +17,12 @@ import { readBoot, type Filesystem } from './boot';
 import { walkDirectory, type AdfEntry } from './dir';
 import { collectFileBlocks } from './file';
 import { putAmigaDate } from './format';
+import { geometryOf, DD_GEOMETRY } from './geometry';
+
+/** This disk's root block: 880 DD, 1,760 HD (HD writes spec §6.1). */
+function rootOf(adf: Uint8Array): number {
+  return (geometryOf(adf) ?? DD_GEOMETRY).rootBlock;
+}
 
 export type WriteError =
   | 'disk-full' | 'name-too-long' | 'name-exists' | 'not-found'
@@ -567,13 +572,13 @@ export function replaceFile(adf: Uint8Array, entryBlock: number, bytes: Uint8Arr
  * Every block from `entry` up to the root, following each header's parent.
  *
  * Bounded by `seen` ALONE, deliberately not by a depth cap. `seen` is
- * sufficient on its own: an 880K image has exactly BLOCK_COUNT (1,760)
- * blocks, each admitted here at most once, so this cannot spin even on an
- * image that is already cyclic. A `MAX_DEPTH`-style cap would be actively
- * WRONG here, not merely redundant: `walkDirectory` itself admits entries
- * up to `MAX_DEPTH` deep, so climbing from one of those back to the root
- * can take more than `MAX_DEPTH` links, and a matching cap would exit the
- * loop before reaching `ROOT_BLOCK` (or a repeat) -- returning a
+ * sufficient on its own: an image has exactly its geometry's block count
+ * (1,760 or 3,520) blocks, each admitted here at most once, so this cannot
+ * spin even on an image that is already cyclic. A `MAX_DEPTH`-style cap
+ * would be actively WRONG here, not merely redundant: `walkDirectory`
+ * itself admits entries up to `MAX_DEPTH` deep, so climbing from one of
+ * those back to the root can take more than `MAX_DEPTH` links, and a
+ * matching cap would exit the loop before reaching the root -- returning a
  * TRUNCATED chain that silently omits a real ancestor. Since the caller
  * only asks "is `entryBlock` in this chain", a truncated chain answers
  * "no" to what should be "yes": a wrongful ALLOWANCE of exactly the cycle
@@ -581,13 +586,14 @@ export function replaceFile(adf: Uint8Array, entryBlock: number, bytes: Uint8Arr
  * be had from a step count here, so this uses the bound that gives both.
  */
 function ancestryOf(adf: Uint8Array, entry: number): number[] {
+  const root = rootOf(adf);
   const chain: number[] = [];
   const seen = new Set<number>();
   let cur = entry;
   while (cur !== 0 && !seen.has(cur)) {
     chain.push(cur);
     seen.add(cur);
-    if (cur === ROOT_BLOCK) break;
+    if (cur === root) break;
     cur = be32(adf, cur * BLOCK_BYTES + 500);
   }
   return chain;
@@ -611,7 +617,7 @@ function ancestryOf(adf: Uint8Array, entry: number): number[] {
  * reporting a plausible listing: measured directly (comment out the
  * `ancestryOf` check below and read the result), the moved subtree
  * unlinks from the real root's chain onto its own descendant, so
- * `readVolume` from `ROOT_BLOCK` sees `{ warnings: [], root: [] }` -- no
+ * `readVolume` from the root block sees `{ warnings: [], root: [] }` -- no
  * warning, no error, the corrupted directory just isn't there. The disk
  * reads as empty and healthy; the only way to see the cycle at all is to
  * start a walk AT the orphaned block directly, which is not something any
@@ -680,7 +686,7 @@ export function moveEntry(
   if (be32(dest, 0) !== T_HEADER) return { ok: false, reason: 'not-found' };
   if (!checksumOk(dest, CHECKSUM_WORD)) return { ok: false, reason: 'not-found' };
   const destKind = i32(dest, 508);
-  if (toParent !== ROOT_BLOCK && destKind !== ST_USERDIR) {
+  if (toParent !== rootOf(adf) && destKind !== ST_USERDIR) {
     return { ok: false, reason: 'not-a-directory' };
   }
 
@@ -738,9 +744,9 @@ function replaceExisting(adf: Uint8Array, parent: number, name: string, bytes: U
 
 /**
  * Resolve a batch-relative path to the block number it names, walking
- * segment by segment from `ROOT_BLOCK` through directories ALREADY on the
- * disk when `dirs` (the batch's own cache, seeded `['', ROOT_BLOCK]`) has no
- * entry for it yet.
+ * segment by segment from the root block through directories ALREADY on the
+ * disk when `dirs` (the batch's own cache, seeded `['', <root block>]`) has
+ * no entry for it yet.
  *
  * THE GAP THIS CLOSES: `dirs` used to be populated ONLY by a successful
  * `mkdir` earlier in the same batch (see `applyBatch` below), so dropping a
@@ -807,7 +813,8 @@ function resolveParentPath(
  * needs no transaction or rollback concept.
  *
  * `dirs` maps a batch-relative path to the block number that path resolved
- * to, seeded with the root so `parentPath: ''` always means `ROOT_BLOCK`.
+ * to, seeded with the root so `parentPath: ''` always means the disk's own
+ * root block (880 DD, 1,760 HD).
  * Every time an `mkdir` succeeds, its new block is looked up with
  * `findChildBlock` and recorded under its path, which is what lets a LATER
  * op in the same batch address a directory this batch itself just created.
@@ -822,7 +829,7 @@ function resolveParentPath(
 export function applyBatch(ops: readonly BatchOp[]): (adf: Uint8Array) => WriteResult {
   return (adf) => {
     let cur = adf;
-    const dirs = new Map<string, number>([['', ROOT_BLOCK]]);
+    const dirs = new Map<string, number>([['', rootOf(adf)]]);
 
     for (const op of ops) {
       const resolved = resolveParentPath(cur, dirs, op.parentPath);

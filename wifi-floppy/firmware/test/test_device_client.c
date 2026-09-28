@@ -1325,7 +1325,9 @@ static void post_sends_a_binary_body_whole(void) {
     CHECK_EQ_INT(st, 200);
     CHECK(strcmp(resp, "{\"staged\":3}") == 0, "response body returned");
     CHECK(strstr(fake_last_request(), "POST /api/device/write?track=3 HTTP/1.1") != NULL, "line");
-    CHECK(strstr(fake_last_request(), "Content-Length: 5632\r\n") != NULL, "length");
+    char clen[40];
+    snprintf(clen, sizeof clen, "Content-Length: %d\r\n", DC_POST_BODY_MAX);
+    CHECK(strstr(fake_last_request(), clen) != NULL, "length: DC_POST_BODY_MAX, an HD track");
     int n = fake_last_request_len();
     CHECK(n > DC_POST_BODY_MAX, "head + body");
     CHECK(memcmp(fake_last_request() + n - DC_POST_BODY_MAX, body, DC_POST_BODY_MAX) == 0,

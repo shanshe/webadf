@@ -37,21 +37,21 @@ export function CreateAdf() {
   const params = useSearchParams();
   const [busy, setBusy] = useState(false);
 
-  async function create(filesystem: 'FFS' | 'OFS') {
+  async function create(filesystem: 'FFS' | 'OFS', density: 'dd' | 'hd') {
     setBusy(true);
     try {
       const collectionId = params.get('collection');
       const res = await fetch('/api/disks/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ filesystem, ...(collectionId ? { collectionId } : {}) }),
+        body: JSON.stringify({ filesystem, density, ...(collectionId ? { collectionId } : {}) }),
       });
       if (!res.ok) {
         toast.error('Could not create the disk');
         return;
       }
       const body = await res.json().catch(() => null);
-      toast.success(`Blank ${filesystem} disk created`, {
+      toast.success(`Blank ${density === 'hd' ? 'HD ' : ''}${filesystem} disk created`, {
         description: body?.collectionId ? 'Added to this collection.' : 'Name it on its card.',
       });
       router.refresh();
@@ -85,11 +85,21 @@ export function CreateAdf() {
             Both items name their filesystem and neither is explained here --
             anyone choosing OFS over FFS already knows which one their machine
             needs, and the menu is not the place to teach it. */}
-        <DropdownMenuItem data-testid="create-adf-ffs" onClick={() => create('FFS')}>
+        <DropdownMenuItem data-testid="create-adf-ffs" onClick={() => create('FFS', 'dd')}>
           Create ADF (FFS)
         </DropdownMenuItem>
-        <DropdownMenuItem data-testid="create-adf-ofs" onClick={() => create('OFS')}>
+        <DropdownMenuItem data-testid="create-adf-ofs" onClick={() => create('OFS', 'dd')}>
           Create ADF (OFS)
+        </DropdownMenuItem>
+        {/* HD after DD, never first: DD is the default (HD writes spec §6.3),
+            and the first item on a menu IS the default. Named in the item for
+            the same reason the filesystem is -- a choice made per click, never
+            carried to the next disk. */}
+        <DropdownMenuItem data-testid="create-adf-hd-ffs" onClick={() => create('FFS', 'hd')}>
+          Create HD ADF (FFS)
+        </DropdownMenuItem>
+        <DropdownMenuItem data-testid="create-adf-hd-ofs" onClick={() => create('OFS', 'hd')}>
+          Create HD ADF (OFS)
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

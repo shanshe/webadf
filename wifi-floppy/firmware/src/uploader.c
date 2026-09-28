@@ -23,6 +23,11 @@
 #include <string.h>
 #include <stdio.h>
 
+// A full barrier, for the compiler and the core alike: `dmb` on the RP2350,
+// the host's fence under test -- as nfc_handoff.c and write_back.c. The
+// close's reads of the write generation need it (up_close).
+#define UP_FENCE() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+
 static void up_refresh(uploader_t *u) {
     device_client_t *dc = u->dc;
     if (u->parked && (dc->mounted_version != u->parked_version ||
@@ -171,15 +176,37 @@ up_sync_t up_sync(const uploader_t *u) {
     return u->online ? UP_PENDING : UP_OFFLINE;
 }
 
-// Reads track `t` out of `slot`, decodes it, and returns a pointer to the
-// shared static decode buffer if it came back whole (all sectors found,
-// consistently numbered, matching `t`) -- NULL otherwise. Shared by
-// up_send_track (one track, Task 5) and up_close's whole-image hash (Task
-// 6, every track): a torn read -- core0 rewriting the track while this read
-// is in progress -- must never be sent OR hashed, and both call sites
-// resolve it exactly the same way, using the exact same statics, so this is
-// the one place that check lives.
-static uint8_t *up_read_whole_track(int slot, int t) {
+_Static_assert(DC_POST_BODY_MAX >= MFM_HD_TRACK_DATA_BYTES, "dc_post must carry an HD track");
+
+// Reads track `t` out of `slot` as the bytes the server keeps for it: `*len`
+// bytes, or NULL if it could not be read whole. Shared by up_send_track (one
+// track) and up_close's whole-image hash, so a torn read is resolved the same
+// way in both.
+//
+// DD (an MFM slot): decoded into core1's own static buffer, and NULL unless
+// every sector came back, consistently numbered and matching `t` -- a torn
+// read (core0 rewriting the track while this read is in progress) fails that
+// and is never sent or hashed.
+//
+// HD (an ADF_HD slot, HD writes spec §4.4): the stored 11,264 bytes ARE the
+// sector data, verified when core0 applied the write, so they are returned in
+// place, not re-decoded and not copied -- an 11 KB static copy would cost
+// core1 RAM for nothing: dc_post copies the body into its own request buffer
+// before sending, and sha256_update only reads. No checksum can catch bytes
+// torn by core0's store, and none is needed: up_send_track clears the dirty
+// flag BEFORE dc_post reads the bytes and psram_image_store_adf sets it AFTER
+// its own copy, so a track rewritten mid-read is always sent again (the
+// server keeps a track's last upload); and up_close hashes only between two
+// reads of the same even write generation, which core0 holds odd for the
+// whole store (the seqlock, final review F1; the argument is at up_close).
+static const uint8_t *up_read_whole_track(int slot, int t, uint32_t *len) {
+    if (psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD) {
+        const uint8_t *p = psram_image_track_data(slot, t);
+        if (!p) return NULL;
+        *len = MFM_HD_TRACK_DATA_BYTES;
+        return p;
+    }
+
     static uint8_t mfm[TRACK_MAX_BYTES];
     uint32_t bits = 0;
     psram_image_read(slot, t, mfm, &bits);
@@ -197,6 +224,7 @@ static uint8_t *up_read_whole_track(int slot, int t) {
 
     if (d.found != 0x7ffu || !d.track_no_consistent || d.track_no != (uint8_t)t)
         return NULL;
+    *len = MFM_TRACK_DATA_BYTES;
     return trk;
 }
 
@@ -222,7 +250,8 @@ static up_step_t up_send_track(uploader_t *u, int slot, int t) {
     // against core0.
     psram_image_clear_dirty(slot, t);
 
-    uint8_t *trk = up_read_whole_track(slot, t);
+    uint32_t tlen = 0;
+    const uint8_t *trk = up_read_whole_track(slot, t, &tlen);
     if (!trk) {
         // core0 was rewriting this track while this read was in progress --
         // a damaged track is never sent. Put the dirty flag back so it is
@@ -253,7 +282,7 @@ static up_step_t up_send_track(uploader_t *u, int slot, int t) {
 
     static char resp[256];
     int status = dc_post(dc, path, "application/octet-stream", trk,
-                         MFM_TRACK_DATA_BYTES, resp, sizeof resp);
+                         (int)tlen, resp, sizeof resp);
 
     static char err[32];
     static char reason[32];
@@ -350,18 +379,44 @@ static up_step_t up_send_track(uploader_t *u, int slot, int t) {
 // in order, through the same torn-read check up_send_track uses) and posts
 // the digest. See uploader.h / the brief for the per-response behaviour
 // this implements verbatim.
+//
+// Final review F1: the hash must never cover a track core0 is still storing.
+// core0's store (main.c) is: gen odd, FENCE, memcpy, barrier, DIRTY, last_ms,
+// FENCE, gen even (write_back_gen_begin/_end). The close is: read g0, FENCE,
+// hash all 160 tracks, FENCE, read g1, check dirty. Every interleaving of one
+// store S against the close falls in one of four cases, by where S's two
+// increments land relative to the reads of g0 and g1:
+//   1. S ended before g0 was read: g0 is even and the fences make every byte
+//      of S visible to the hash that follows. Its track is DIRTY -- up_step
+//      only closes with nothing dirty, and the check below catches a DIRTY
+//      set since -- or already sent. Sound either way.
+//   2. S began before g0 and had not ended when g0 was read: g0 is odd.
+//      Refused at once, before any hashing. This is the case the old
+//      end-only increment missed: S could still be copying at the re-check,
+//      with g0 == g1 and nothing DIRTY yet, and the close went out over a
+//      half-written track (409 mismatch, up_server_wins, the write lost).
+//   3. S began after g0 was read and before g1 was: g1 != g0, whether S has
+//      ended (g0 + 2) or not (g0 + 1). Refused.
+//   4. S began after g1 was read: S's odd value is published before its
+//      first byte and the close's reads all precede g1, so the hash read
+//      none of S. The digest is of the image before S, which the server
+//      holds; S's DIRTY opens the next round.
+// Several stores are several such cases; one of 2 or 3 is enough to refuse.
+// Refusing is UP_WAITING, not a backoff: a store takes milliseconds, and the
+// next up_step (50 ms later, main.c) hashes again. g0 == g1 across a wrap
+// needs 2^31 stores during one hash.
 static up_step_t up_close(uploader_t *u, int slot) {
     device_client_t *dc = u->dc;
 
-    // If a write lands mid-hash, the bytes just fed to sha256_update may
-    // already be stale -- caught below by re-checking write_gen() and the
-    // dirty state once the loop finishes, not by trusting a single read.
-    uint32_t g0 = u->write_gen();
+    const uint32_t g0 = u->write_gen();
+    if (g0 & 1u) return UP_WAITING;        // case 2: a store is copying now
+    UP_FENCE();                            // no hash read before g0
 
     static sha256_t s;
     sha256_init(&s);
     for (int t = 0; t < NUM_TRACKS; t++) {
-        uint8_t *trk = up_read_whole_track(slot, t);
+        uint32_t tlen = 0;
+        const uint8_t *trk = up_read_whole_track(slot, t, &tlen);
         if (!trk) {
             // core0 is rewriting this track right now: hashing a torn read
             // would produce a digest that matches nothing. No request is
@@ -370,12 +425,14 @@ static up_step_t up_close(uploader_t *u, int slot) {
             up_backoff(u);
             return UP_WAITING;
         }
-        sha256_update(&s, trk, MFM_TRACK_DATA_BYTES);
+        sha256_update(&s, trk, tlen);   // the disk's own track size, spec §4.4
     }
 
+    UP_FENCE();                            // every hash read before g1
     if (u->write_gen() != g0 || psram_image_next_dirty(slot) >= 0) {
-        // A write landed while hashing -- resend it (on a later up_step),
-        // not close over a digest that no longer matches what is held.
+        // Case 3, or a DIRTY set since: a store began or landed while
+        // hashing -- send it (on a later up_step), never close over a digest
+        // that may not match what is held.
         return UP_WAITING;
     }
 

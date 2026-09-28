@@ -1,11 +1,10 @@
 import { and, asc, eq } from 'drizzle-orm';
-import { ADF_BYTES } from '@/lib/adfmfm';
 import { getDb } from '@/db';
 import { diskVersions } from '@/db/schema/disk-history';
 import { diskStore } from '@/lib/storage';
 import { readVolume } from '@/lib/adffs';
 import { HistoryError, type VersionKind } from './chain';
-import { applyDelta, decodeDelta } from './delta';
+import { applyDelta, decodeDelta, isHistoryImage } from './delta';
 import { loadEntries } from './store';
 import { diffTrees, sectorSummary, type TreeChange } from './diff';
 
@@ -18,7 +17,7 @@ import { diffTrees, sectorSummary, type TreeChange } from './diff';
  * a page wants to show (who made the change, when, from what) and the diff
  * between consecutive versions.
  *
- * Cost: each version's complete image is up to 880 KB, and `chain.ts`'s
+ * Cost: each version's complete image is up to 1.76 MB, and `chain.ts`'s
  * `materialise` reconstructs one by replaying from its nearest snapshot --
  * fine for fetching a single version, ruinous for walking a whole history,
  * where calling it once per version means an N-deep chain does its Nth
@@ -194,7 +193,7 @@ export async function loadHistory(
       let image: Uint8Array;
       if (entry.kind === 'snapshot') {
         image = await read(entry.blobSha256);
-        if (image.length !== ADF_BYTES) {
+        if (!isHistoryImage(image)) {
           throw new HistoryError(`snapshot ${entry.seq} is ${image.length} bytes, not a disk image`);
         }
       } else {

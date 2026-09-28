@@ -8,7 +8,6 @@ import {
   stageDrop, joinDestination, existingCollisionAt, type StagedEntry, type ExistingEntry,
 } from '@/lib/staging';
 import { blocksForPlan, type AdfEntry, type Filesystem } from '@/lib/adffs';
-import { ROOT_BLOCK } from '@/lib/adffs/constants';
 // The identical fold `stageDrop` itself uses (see staging.ts's own comment):
 // reused here, not reinvented, so a live re-check of a typed rename can
 // never disagree with the one-shot check `stageDrop` already ran.
@@ -73,7 +72,7 @@ export function DropStaging({
    */
   entries: AdfEntry[];
 }) {
-  const { diskId, disabled, busy, runEdit } = useFileEdit();
+  const { diskId, disabled, busy, runEdit, rootBlock } = useFileEdit();
 
   // Everything read from drops so far, across possibly several drops --
   // several drops are meant to land in the SAME staging batch and commit
@@ -108,10 +107,10 @@ export function DropStaging({
   // IDENTICAL walk (`collectDirectories`) the "Move to…" menu already
   // built rather than a second one that could disagree with it.
   const directoryOptions = useMemo<DirectoryOption[]>(
-    () => [{ block: ROOT_BLOCK, label: '/' }, ...collectDirectories(entries)],
-    [entries],
+    () => [{ block: rootBlock, label: '/' }, ...collectDirectories(entries)],
+    [entries, rootBlock],
   );
-  const [destinationBlock, setDestinationBlock] = useState<number>(ROOT_BLOCK);
+  const [destinationBlock, setDestinationBlock] = useState<number>(rootBlock);
   // `collectDirectories`' labels are slash-prefixed ("/Docs", "/Docs/Sub")
   // for display; the internal convention every path in this component (and
   // `existingNamesByDir`'s own keys) uses is un-prefixed, '' for the root

@@ -418,10 +418,11 @@ void dc_force_refetch(device_client_t *c);
 // it had arrived by a normal fetch.
 void dc_adopt_image(device_client_t *c, const char *sha256);
 
-// Largest body dc_post will send in one call -- one head plus one track
-// (see the STACK note in device_client.c for why the request buffer this
-// backs is `static` and sized from this).
-#define DC_POST_BODY_MAX 5632
+// Largest body dc_post will send in one call: one HD track's sector data,
+// 11,264 bytes (HD writes spec §4.4; a DD track is 5,632). See the STACK note
+// in device_client.c for why the request buffer this backs is `static` and
+// sized from this: it costs 5.6 KB more than DD alone did.
+#define DC_POST_BODY_MAX 11264
 
 // Sends one POST with a binary body (`body`/`body_len`, up to
 // DC_POST_BODY_MAX -- NUL bytes and all, unlike http_build_request's

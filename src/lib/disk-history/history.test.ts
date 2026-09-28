@@ -311,4 +311,25 @@ describe('loadHistory', () => {
     expect(history).toHaveLength(names.length + 1); // +1 for version 0
     expect(readCount).toBe(history.length);
   });
+
+  it('lists file-level changes for an HD disk (HD writes spec §5.2)', async () => {
+    const { recordVersion } = await import('./store');
+    const { loadHistory } = await import('./history');
+
+    const original = formatVolume({ filesystem: 'FFS', volumeName: 'HDDisk', density: 'hd' });
+    blobBytes.set(sha256Of(original), original);
+    const added = addFile(original, 1760, 'HELLO', new TextEncoder().encode('hi'));
+    if (!added.ok) throw new Error(`fixture: ${added.reason}`);
+
+    await recordVersion({
+      orgId: ORG, diskId: DISK,
+      headSha: sha256Of(original), head: original, next: added.adf,
+      source: 'amiga', deviceId: 'dev-1', sourceFilename: 'HDDisk.adf',
+    });
+
+    const history = await loadHistory(ORG, DISK, new Map([['dev-1', 'Bench board']]));
+    expect(history.map((v) => v.seq)).toEqual([1, 0]);
+    expect(history[0].changes).toEqual([{ path: 'HELLO', kind: 'added', isDir: false }]);
+    expect(history[0].sectorNote).toBeNull();
+  });
 });
