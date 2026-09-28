@@ -26,8 +26,8 @@
 #define RING_BYTES      (RING_WORDS * 4u)
 #define RING_ORDER      14              /* 2^14 == RING_BYTES */
 
-/* One track of MFM plus room for the Amiga writing a slightly long one. */
-#define MFM_BUF_BYTES   16384u
+/* One HD write, lead gap included (flux_bits.h says how it is sized). */
+#define MFM_BUF_BYTES   FLUX_CAPTURE_BUF_BYTES
 
 static uint32_t ring[RING_WORDS] __attribute__((aligned(RING_BYTES)));
 static uint8_t  mfm_buf[MFM_BUF_BYTES];

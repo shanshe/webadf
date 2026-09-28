@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "hardware/pio.h"
+#include "flux_bits.h"
 
 /** Claim a DMA channel and point it at `sm`'s RX FIFO. Call once, after
  *  flux_in_program_init and before anything arms a capture. */
@@ -28,7 +29,7 @@ void flux_capture_disarm(void);
 /**
  * Abandon a capture that has run too long to be a write.
  *
- * One track write is a single revolution -- ~200 ms. A WGATE that stays
+ * One track write is a single revolution -- 200 ms DD, 400 ms HD. A WGATE that stays
  * asserted far past that is not a write: it is a floating input, which is
  * exactly what the bus looks like when the Amiga is switched off and stops
  * driving it. Seen on real hardware 2026-09-13, where a power event asserted
@@ -38,9 +39,8 @@ void flux_capture_disarm(void);
  */
 bool flux_capture_timeout(uint32_t now_ms);
 
-/** How long a capture may run before flux_capture_timeout() abandons it.
- *  Generously more than the ~200 ms one revolution takes. */
-#define FLUX_CAPTURE_MAX_MS 400u
+/* How long a capture may run before flux_capture_timeout() abandons it:
+ * FLUX_CAPTURE_MAX_MS, in flux_bits.h (host-visible). */
 
 /**
  * Drain whatever the DMA has landed since the last call and turn it into
