@@ -2160,6 +2160,8 @@ separately.
 - **Redesign the create-ADF menu** (operator, 2026-09-27): choose OFS/FFS and 880 KB (DD) / 1.76 MB (HD) in a
   UX-friendly way that works on mobile. Today `src/components/library/create-adf.tsx` offers FFS/OFS only; blank HD
   disks also need the adffs geometry work (spec 2026-09-26 §9 item 1).
+- **Passthrough to a physical DF0 on the same cable** (operator, 2026-09-28): let a real floppy drive share the
+  ribbon with the board so the Amiga can use it too (the board answers only when its own disk is selected).
 - **An NFC card for swapping disks within the mounted game or utility** (operator, 2026-09-27): a dedicated tag
   that, when tapped, advances the drive to the next disk of the title that is mounted (rather than naming one disk).
   Relates to the multi-disk item below.
@@ -2570,6 +2572,15 @@ separately.
   - **Assembly BOM (the operator's side -- Shanshe only does layout and placement files; the
     operator orders and sources parts on LCSC):** U1, U2, J1, J2, J4, BZ1 are DNP (U2 is the SMD
     74LVC541A); C1, C3, D1 and the BSS138s have no LCSC number.
+  - **First rev B batch ordered at JLC 2026-09-27/28 from design commit `5b25572` (before PR #3):** has all eight
+    1 kΩ pull-ups (WDATA R3, WGATE R2, STEP R4, DIR R5, SIDE R1, SEL0 R8, SEL1 R7, MTR R6) and the Q8 flyback, but
+    NOT R12 (22 Ω) and only the 5 mm BZ1 footprint. The operator will fit the buzzer later / in a separate order;
+    the SEA-1295Y can go in with bent legs and no resistor (~120 mA, within the BSS138's rating, just louder).
+    PR #3 (R12 + double 6.5/5 mm BZ1 footprint) merged 2026-09-28 (`e2eb1f5`); later orders get it.
+  - **PENDING TEST ON REV B (when the batch arrives):** rerun the large HD copy (HANDOFF 3ao step 3) and check that
+    no capture's `write: backlog ... ns <min>-<max>` shows a minimum below ~3,500 ns. On the rev A2 bench board
+    with the A5000 (no floppy-line pull-ups on either side) one capture of 28 had a 1,640 ns spike and decoded to
+    nothing (3ao bench notes); rev B's WDATA pull-up should remove it. Also re-check the A5000 bus reads idle-high.
   - **Buzzer change requested from Shanshe (2026-09-26):** BZ1 → magnetic passive 5 V S&S SEA-1295Y-0520-42Ω-38P6.5
     (LCSC C2687681; Ø12×9.6 mm, pins Ø0.6 mm at 6.5 mm) with a 22 Ω in series from +5 V (Gotek style). The TDK piezo
     would only click once: nothing discharges a piezo behind a low-side switch. See wifi-floppy/hardware/SOURCING.md.
