@@ -567,8 +567,9 @@ test('write-next-card is visible and fits the viewport on Devices', async ({ pag
   const { orgId } = await signUpFresh(page);
   const { token } = await pairDevice(page, request);
   await seedDisk(orgId, { title: `Mobile Next ${runTag()}`, diskNo: 1, sha256: sha(runTag()) });
+  // `preload: null`: a 1.6.0+ board, the only kind offered the Next-disk card.
   expect((await request.post('/api/device/status', {
-    headers: authHeader(token), data: { mountedSha256: null, nfcReader: 'present' },
+    headers: authHeader(token), data: { mountedSha256: null, nfcReader: 'present', preload: null },
   })).status()).toBe(204);
 
   await page.goto('/devices');
