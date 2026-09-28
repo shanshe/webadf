@@ -42,12 +42,14 @@ type Phase =
  * closing, navigating away (unmount) -- withdraws it, and only THIS seq: a
  * newer request (the CLI, another tab) is left alone by the server.
  */
-export function FobButton({ testId, title, disks, devices }: {
+export function FobButton({ testId, title, disks, devices, mode = 'disk' }: {
   testId: string;
   /** The title the disk belongs to, for the accessible name and the dialog heading. */
   title: string;
   disks: FobDisk[];
   devices: FobDevice[];
+  /** 'next' writes a Next-disk card (no disk choice); default 'disk' writes a specific disk. */
+  mode?: 'disk' | 'next';
 }) {
   const [open, setOpen] = useState(false);
   const [phase, setPhase] = useState<Phase>({ k: 'choose' });
@@ -87,14 +89,14 @@ export function FobButton({ testId, title, disks, devices }: {
     setPhase({ k: 'choose' });
   }
 
-  async function start(disk: string, device: string) {
+  async function start(disk: string | null, device: string) {
     const gen = generation.current;
     setPhase({ k: 'starting' });
     let res: Response;
     try {
       res = await fetch('/api/nfc/write', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ diskId: disk, deviceId: device }),
+        body: JSON.stringify(disk ? { diskId: disk, deviceId: device } : { kind: 'next', deviceId: device }),
       });
     } catch {
       if (gen === generation.current) setPhase({ k: 'failed', text: 'Could not reach the server.' });
@@ -131,13 +133,13 @@ export function FobButton({ testId, title, disks, devices }: {
     e.preventDefault();
     e.stopPropagation();
     generation.current += 1;
-    const onlyDisk = disks.length === 1 ? disks[0].id : null;
+    const onlyDisk = mode === 'next' ? null : (disks.length === 1 ? disks[0].id : null);
     const onlyDevice = devices.length === 1 ? devices[0].id : null;
     setDiskId(onlyDisk);
     setDeviceId(onlyDevice);
     setOpen(true);
     // Nothing to choose: go straight to "tap a tag".
-    if (onlyDisk && onlyDevice) void start(onlyDisk, onlyDevice);
+    if ((mode === 'next' || onlyDisk) && onlyDevice) void start(onlyDisk, onlyDevice);
     else setPhase({ k: 'choose' });
   }
 
@@ -229,7 +231,13 @@ export function FobButton({ testId, title, disks, devices }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reads only refs and setters
   }, []);
 
-  const trigger = (
+  const trigger = mode === 'next' ? (
+    <button type="button" data-testid="write-next-card" onClick={onOpen}
+            className="flex h-8 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-semibold"
+            style={{ background: 'var(--on-dark)', color: '#16273a' }}>
+      <Nfc size={14} strokeWidth={1.75} aria-hidden /> Write a Next-disk card
+    </button>
+  ) : (
     <button
       type="button"
       data-testid={testId}
@@ -248,7 +256,7 @@ export function FobButton({ testId, title, disks, devices }: {
   if (!open) return trigger;
 
   const chosenDisk = disks.find((d) => d.id === diskId);
-  const heading = disks.length > 1 && chosenDisk ? `${title} — Disk ${chosenDisk.diskNo}` : title;
+  const heading = mode === 'next' ? 'Next-disk card' : (disks.length > 1 && chosenDisk ? `${title} — Disk ${chosenDisk.diskNo}` : title);
   const remaining = waiting ? Math.max(0, waiting.deadline - now) : 0;
   const mmss = `${Math.floor(remaining / 60_000)}:${String(Math.floor((remaining % 60_000) / 1000)).padStart(2, '0')}`;
   const uid = phase.k === 'written' ? formatTagUid(phase.uid) : null;
@@ -287,6 +295,9 @@ export function FobButton({ testId, title, disks, devices }: {
               Write to an NFC tag
             </h2>
             <p className="break-words text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>{heading}</p>
+            {mode === 'next' && (
+              <p className="text-[12px]" style={{ color: 'var(--muted)' }}>This card switches whatever is mounted to its next disk.</p>
+            )}
 
             {phase.k === 'choose' && (
               <>
@@ -321,8 +332,8 @@ export function FobButton({ testId, title, disks, devices }: {
                 <div className="mt-2 flex items-center justify-end gap-2">
                   <button type="button" onClick={close} className={pill} style={{ color: 'var(--muted)' }}>Cancel</button>
                   <button type="button" data-testid="fob-start" autoFocus
-                          disabled={!diskId || !deviceId}
-                          onClick={() => { if (diskId && deviceId) void start(diskId, deviceId); }}
+                          disabled={!(mode === 'next' || diskId) || !deviceId}
+                          onClick={() => { if ((mode === 'next' || diskId) && deviceId) void start(mode === 'next' ? null : diskId, deviceId); }}
                           className={`${pill} text-white`} style={{ background: 'var(--primary-action)' }}>
                     Start
                   </button>

@@ -5,15 +5,17 @@ import { firmwareState, countBehind, buildRegistry } from '@/lib/firmware-state'
 import { refuseTarget } from '@/lib/firmware-update-rules';
 import { isOnline } from '@/lib/device-state';
 import { readNextForDevices, nextInfo } from '@/lib/next-disk';
+import { listNfcReaders } from '@/lib/nfc/store';
 import { PageHeader } from '@/components/shell/page-header';
 import { DeviceList } from '@/components/devices/device-list';
 import { PairButton } from '@/components/devices/pair-button';
 import { FirmwareNotice } from '@/components/devices/firmware-notice';
+import { FobButton } from '@/components/nfc/fob-button';
 
 export default async function DevicesPage() {
   const { orgId } = await requireOrg();
   // Independent reads, so they go together rather than in series.
-  const [devices, releases] = await Promise.all([listDevices(orgId), listReleases()]);
+  const [devices, releases, readers] = await Promise.all([listDevices(orgId), listReleases(), listNfcReaders(orgId)]);
 
   // One clock for the whole render, so two cards can never disagree about what
   // "now" is and flip each other across the staleness boundary.
@@ -53,7 +55,7 @@ export default async function DevicesPage() {
         eyebrow="Hardware"
         title="Devices"
         subtitle={`${devices.length} paired · ${online} online · long-poll every 25 s`}
-        actions={<PairButton />}
+        actions={<div className="flex items-center gap-2">{readers.length > 0 && <FobButton mode="next" testId="write-next-card" title="Next-disk card" disks={[]} devices={readers} />}<PairButton /></div>}
       />
       <div className="flex flex-col gap-3 px-4 pb-10 sm:px-7">
         {registry.latest && (
