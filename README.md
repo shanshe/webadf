@@ -8,7 +8,7 @@ Two halves that work together:
   against TOSEC, OpenRetro and Demozoo, organise them into collections, browse and
   edit the files inside a disk, and rewind a disk to any earlier version.
 - **A drive replacement.** An RP2350 board plugs into the Amiga's floppy connector,
-  behaves like a floppy drive (DD, and HD read-only), and plays whichever disk you pick in the web app.
+  behaves like a DD or HD floppy drive, and plays whichever disk you pick in the web app.
   When the Amiga saves, the changes go back to the library.
 
 Pick a disk in the browser, or tap its NFC tag on the drive, and the Amiga reads it.
@@ -28,8 +28,9 @@ ordering. The current bench board is rev A2.*
 
 - Upload `.adf`, `.adz`, `.dms` and `.hfe`; drop `.lha` and `.zip` archives onto a disk
   to pick files out of them.
-- HD (1.76 MB) ADFs are recognised and tagged HD. They play on the Amiga read-only;
-  they can't be browsed or edited in the browser yet.
+- HD (1.76 MB) ADFs are recognised and tagged HD, and are disks like any other: browsed
+  and edited in the browser, with full history. Blank HD disks can be made from the
+  Create ADF menu.
 - Each unique disk is stored once, however many times it is uploaded.
 - Disks are identified against TOSEC, OpenRetro and Demozoo, and grouped into titles
   with cover art, screenshots, publisher, year and type.
@@ -56,10 +57,11 @@ ordering. The current bench board is rev A2.*
 - Reads and writes on a real Amiga. Saves reach the library as new disk versions,
   including saves made while the board was offline.
 - Works as DF0 or alongside a second drive as DF1.
-- Plays HD disks read-only: the board tells the Amiga it is an HD drive while an HD
-  disk is in, and asserts write protect. Needs Kickstart 3.0 or later, and firmware
-  1.4.1 or later (the web app refuses to mount an HD disk on older firmware and says
-  so).
+- Plays HD disks: the board tells the Amiga it is an HD drive while an HD disk is in.
+  Needs Kickstart 3.0 or later. Playing needs firmware 1.4.1 or later (the web app
+  refuses to mount an HD disk on older firmware and says so); saving to an HD disk
+  needs 1.5.0 (1.4.x keeps HD write-protected on the board whatever the web app
+  says).
 - Write protection can be switched from the web app while the disk is in the drive.
 - OLED status display: WiFi strength, what it is doing, the disk's name and the
   current track. An activity LED blinks on reads.
@@ -98,6 +100,8 @@ An HD disk is the exception. The server sends the board the ADF itself (a small
 WFAD header, then 1,802,240 bytes), and the board encodes each track to MFM as the
 head reaches it, in about 4 ms, well inside the head's settle time. A PIO program
 answers the Amiga's drive-ID read on RDY with the HD ID while an HD disk is mounted.
+When the Amiga saves to an HD disk, the board checks all 22 sectors of the written
+track, keeps them as ADF bytes, and uploads those bytes as they are.
 
 When the Amiga writes, the board decodes the written tracks, uploads them, and the
 server records them as a new version of the disk. Versions are stored as sector
@@ -118,6 +122,7 @@ deltas.
 | Second drive (DF1) alongside the board | verified on hardware |
 | HFE, including long-track (Turrican) | verified on hardware; weak-bit titles not yet tested |
 | HD disks, read-only (Kickstart 3.0+) | verified on hardware (firmware 1.4.1, Kickstart 3.1) |
+| HD disks: Amiga saves, history, browser editing, blank HD disks | built and host-tested (firmware 1.5.0, not yet published); bench checklist owed (HANDOFF 3ao) |
 | Firmware updates from the web app | verified on hardware (current: 1.3.1; 1.4.0 built, not yet published) |
 | NFC: tap to mount, write tags from the web | verified on hardware |
 | Rev B board | in design (Shanshe) |
