@@ -634,6 +634,11 @@ static bool st_read(nfc_reader_t *r) {
     if (res == NFC_TAG_OK) {
         finish(r, NFC_EV_TAG_READ, NULL);
         memcpy(r->built.disk_id, id, sizeof id);
+    } else if (res == NFC_TAG_NEXT) {
+        // No disk id to carry -- finish() already zeroed built.disk_id, so
+        // it comes out empty. Same presence/3 s-absence gating as TAG_READ:
+        // this is decided in the same place, after the same debounce.
+        finish(r, NFC_EV_TAG_NEXT, NULL);
     } else if (res == NFC_TAG_NOT_OURS) {
         finish(r, NFC_EV_NOT_OURS, NULL);
     } else {
@@ -817,6 +822,17 @@ void nfc_arm_write(nfc_reader_t *r, uint32_t seq, const char *disk_id) {
     if (r->held) r->last_seen = now;
     r->arm_seq = seq;
     r->armed = disk_id != NULL && nfc_tag_encode(disk_id, r->arm_payload);
+    r->arm_bad = !r->armed;
+}
+
+void nfc_arm_write_next(nfc_reader_t *r, uint32_t seq) {
+    // Identical gating to nfc_arm_write; only the payload differs, and
+    // nfc_tag_encode_next always succeeds, so this never arms "bad".
+    uint32_t now = r->now_ms();
+    if (r->state != ST_ABSENT) expire_hold(r, now);
+    if (r->held) r->last_seen = now;
+    r->arm_seq = seq;
+    r->armed = nfc_tag_encode_next(r->arm_payload);
     r->arm_bad = !r->armed;
 }
 

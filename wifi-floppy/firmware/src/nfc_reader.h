@@ -31,7 +31,8 @@ typedef struct {
 } nfc_bus_t;
 
 typedef enum { NFC_EV_NONE, NFC_EV_TAG_READ, NFC_EV_NOT_OURS, NFC_EV_UNREADABLE,
-               NFC_EV_WRITE_DONE, NFC_EV_PRESENT, NFC_EV_ABSENT } nfc_ev_kind_t;
+               NFC_EV_WRITE_DONE, NFC_EV_PRESENT, NFC_EV_ABSENT,
+               NFC_EV_TAG_NEXT } nfc_ev_kind_t;
 
 typedef struct {
     nfc_ev_kind_t kind;
@@ -155,6 +156,10 @@ bool nfc_take_gap(nfc_reader_t *r, nfc_gap_t *out);
 // replaces the request. An id without the disk-id shape is
 // refused with WRITE_DONE{seq, ok=false, why="bad data"} on the next step.
 void nfc_arm_write(nfc_reader_t *r, uint32_t seq, const char *disk_id);
+// Identical to nfc_arm_write, except the payload is the WFDK v2 "next" card
+// (nfc_tag_encode_next) rather than a disk id -- always well-formed, so this
+// never refuses with "bad data".
+void nfc_arm_write_next(nfc_reader_t *r, uint32_t seq);
 // Withdraws the armed write. A write already under way finishes and reports.
 void nfc_disarm(nfc_reader_t *r);
 

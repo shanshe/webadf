@@ -585,6 +585,74 @@ static void chip_outage_keeps_a_lying_tag_held(void) { chip_outage_under_a_lying
 static void chip_outage_does_not_write_a_lying_tag_armed_before(void) { chip_outage_under_a_lying_tag(true, false); }
 static void chip_outage_does_not_write_a_lying_tag_armed_during(void) { chip_outage_under_a_lying_tag(true, true); }
 
+// ---- WFDK v2: the "next" action card ---------------------------------------
+
+static void put_next(void) { CHECK(nfc_tag_encode_next(F.sector1), "encode next"); }
+
+// A v2 tag goes through exactly the same presence/3 s-absence gating as a
+// v1 tag: one NFC_EV_TAG_NEXT while it arrives, none while it stays held.
+static void next_tag_reports_tag_next_once(void) {
+    setup();
+    put_next();
+    run(10000);
+    CHECK_EQ_INT(count(NFC_EV_TAG_NEXT), 1);
+    CHECK_EQ_INT(nev, 2);                    // PRESENT and the one NEXT
+    const nfc_event_t *e = first(NFC_EV_TAG_NEXT);
+    if (e) {
+        CHECK_EQ_INT(e->uid_len, 4);
+        CHECK(memcmp(e->uid, F.uid, 4) == 0, "uid");
+        CHECK(e->disk_id[0] == '\0', "empty disk id");
+        CHECK(e->why == NULL, "no why");
+    }
+    end_checks();
+}
+
+static void arm_write_next_writes_the_next_card(void) {
+    setup();
+    uint8_t want[NFC_TAG_BYTES];
+    CHECK(nfc_tag_encode_next(want), "encode next");
+    nfc_arm_write_next(&R, 15);
+    run(1000);
+    CHECK_EQ_INT(count(NFC_EV_WRITE_DONE), 1);
+    const nfc_event_t *e = first(NFC_EV_WRITE_DONE);
+    if (e) {
+        CHECK_EQ_INT(e->seq, 15);
+        CHECK(e->ok, "ok");
+        CHECK(e->why == NULL, "no why");
+    }
+    CHECK(memcmp(F.sector1, want, NFC_TAG_BYTES) == 0, "the tag holds the next payload");
+    CHECK_EQ_INT(count(NFC_EV_TAG_NEXT), 0);
+    CHECK_EQ_INT(count(NFC_EV_TAG_READ), 0);
+    end_checks();
+}
+
+// nfc_arm_write_next must gate exactly like nfc_arm_write: a tag already on
+// the reader when it is armed is not written until it has been unseen for a
+// full 3 s window and returns.
+static void arm_write_next_over_a_lying_tag_waits_for_it_to_return(void) {
+    setup();
+    put_id(ID2);
+    run(2000);
+    CHECK_EQ_INT(count(NFC_EV_TAG_READ), 1);
+    nfc_arm_write_next(&R, 16);
+    run(1000);                               // held: nothing happens
+    CHECK_EQ_INT(count(NFC_EV_WRITE_DONE), 0);
+    F.tag_present = false;
+    run(3500);
+    F.tag_present = true;
+    run(1000);
+    CHECK_EQ_INT(count(NFC_EV_WRITE_DONE), 1);
+    const nfc_event_t *e = first(NFC_EV_WRITE_DONE);
+    if (e) {
+        CHECK_EQ_INT(e->seq, 16);
+        CHECK(e->ok, "ok");
+    }
+    uint8_t want[NFC_TAG_BYTES];
+    nfc_tag_encode_next(want);
+    CHECK(memcmp(F.sector1, want, NFC_TAG_BYTES) == 0, "written");
+    end_checks();
+}
+
 int main(void) {
     RUN(absent_chip_stays_absent_and_rechecks);
     RUN(present_chip_inits_and_emits_present);
@@ -616,5 +684,8 @@ int main(void) {
     RUN(chip_outage_keeps_a_lying_tag_held);
     RUN(chip_outage_does_not_write_a_lying_tag_armed_before);
     RUN(chip_outage_does_not_write_a_lying_tag_armed_during);
+    RUN(next_tag_reports_tag_next_once);
+    RUN(arm_write_next_writes_the_next_card);
+    RUN(arm_write_next_over_a_lying_tag_waits_for_it_to_return);
     return REPORT();
 }

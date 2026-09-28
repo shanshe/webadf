@@ -54,9 +54,37 @@ static void decoded_id_is_revalidated(void) {
     uint16_t crc = nfc_crc16(b, 42); b[42] = (uint8_t)(crc >> 8); b[43] = (uint8_t)crc;
     CHECK_EQ_INT(nfc_tag_decode(b, out), NFC_TAG_BAD_DATA);
 }
+
+// ---- WFDK v2: the "next" action card ---------------------------------------
+
+static void next_card_round_trips(void) {
+    uint8_t buf[NFC_TAG_BYTES]; char id[NFC_DISK_ID_LEN + 1];
+    CHECK(nfc_tag_encode_next(buf), "encode");
+    CHECK(memcmp(buf, "WFDK", 4) == 0, "marker");
+    CHECK_EQ_INT(buf[4], 2); CHECK_EQ_INT(buf[5], 4);
+    CHECK(memcmp(buf + 6, "next", 4) == 0, "next");
+    CHECK_EQ_INT(nfc_tag_decode(buf, id), NFC_TAG_NEXT);
+}
+static void next_card_crc_is_checked(void) {
+    uint8_t buf[NFC_TAG_BYTES]; char id[NFC_DISK_ID_LEN + 1];
+    nfc_tag_encode_next(buf);
+    buf[7] ^= 1;
+    CHECK_EQ_INT(nfc_tag_decode(buf, id), NFC_TAG_BAD_DATA);
+}
+static void v2_with_other_payload_is_bad(void) {
+    // A correct CRC over a v2 payload that isn't "next": still refused, not
+    // decoded as some other action -- v2 has exactly one meaning so far.
+    uint8_t buf[NFC_TAG_BYTES]; char id[NFC_DISK_ID_LEN + 1];
+    nfc_tag_encode_next(buf);
+    memcpy(buf + 6, "prev", 4);
+    uint16_t crc = nfc_crc16(buf, 42); buf[42] = (uint8_t)(crc >> 8); buf[43] = (uint8_t)crc;
+    CHECK_EQ_INT(nfc_tag_decode(buf, id), NFC_TAG_BAD_DATA);
+}
 int main(void) {
     RUN(crc_check_value); RUN(round_trip); RUN(refuses_bad_ids); RUN(blank_tag_is_not_ours);
     RUN(flipped_bit_is_bad_data); RUN(wrong_version_or_length_is_bad_data);
     RUN(half_written_tag_is_bad_data); RUN(decoded_id_is_revalidated);
+    RUN(next_card_round_trips); RUN(next_card_crc_is_checked);
+    RUN(v2_with_other_payload_is_bad);
     return REPORT();
 }
