@@ -43,7 +43,8 @@ describe('POST /api/disks/[id]/undo-move', () => {
 
   it('drops a client-sent sortTitle (the store derives it) and defaults a missing diskOrderSource to null (I4)', async () => {
     undoMove.mockResolvedValue({ gameId: 'NEW' });
-    const { diskOrderSource: _omit, ...old } = snapshot;
+    const old: Partial<typeof snapshot> = { ...snapshot };
+    delete old.diskOrderSource;
     const res = await POST(req({ snapshot: { ...old, sortTitle: 'zzz forged' } }), ctx);
     expect(res.status).toBe(200);
     expect(undoMove).toHaveBeenCalledWith('org-1', { ...old, diskOrderSource: null });
