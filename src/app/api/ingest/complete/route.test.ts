@@ -15,9 +15,11 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'node:crypto';
+import { drizzle as pgProxyDrizzle } from 'drizzle-orm/pg-proxy';
 import { blobs, disks, entitlements } from '@/db/schema/catalog';
 import { diskVersions } from '@/db/schema/disk-history';
 import { fixture } from '@/lib/hfe/__fixtures__/load';
+import { stableId } from '@/lib/ingest';
 
 vi.mock('@/lib/session', () => ({
   requireOrg: () => Promise.resolve({ orgId: 'org-1', userId: 'user-1', email: 'a@b.test' }),
@@ -39,6 +41,16 @@ vi.mock('@/lib/storage', () => ({
 let byTable: Map<unknown, unknown[][]>;
 const selectedFrom: unknown[] = [];
 
+// db.delete is a REAL drizzle builder run through pg-proxy (never actually
+// executed -- the callback just records the rendered SQL), the same trick
+// disk-set-store.test.ts uses: it is the only way to see the NOT EXISTS
+// guard on the games delete in the statement's own shape, not by running it.
+const deleteCalls: { sql: string; params: unknown[] }[] = [];
+const deleteProxy = pgProxyDrizzle(async (sql, params) => {
+  deleteCalls.push({ sql, params });
+  return { rows: [] };
+});
+
 function fakeDb() {
   const select = () => {
     let table: unknown;
@@ -53,7 +65,7 @@ function fakeDb() {
   };
   const insert = () => ({ values: () => ({ onConflictDoNothing: () => Promise.resolve(undefined) }) });
   const update = () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) });
-  return { select, selectDistinct: select, insert, update };
+  return { select, selectDistinct: select, insert, update, delete: deleteProxy.delete.bind(deleteProxy) };
 }
 vi.mock('@/db', () => ({ getDb: () => fakeDb() }));
 
@@ -70,6 +82,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   byTable = new Map();
   selectedFrom.length = 0;
+  deleteCalls.length = 0;
 });
 
 describe('POST /api/ingest/complete: a refused HFE', () => {
@@ -109,5 +122,45 @@ describe('POST /api/ingest/complete: a refused HFE', () => {
     byTable.set(blobs, [[], [{ sha256: V3_SHA }]]);
     await complete();
     expect(remove).not.toHaveBeenCalled();
+  });
+});
+
+// Disk sets spec P4 / Task 6 controller ruling 3: a disk already moved into a
+// set keeps its id (stableId of its ORIGINAL game), so re-uploading it
+// re-creates that original game row, with no disks. The route must delete
+// it. Reuses the V3 bytes/hash above under a plain .adf name, which is not
+// an HFE and so lands normally (not refused).
+describe('POST /api/ingest/complete: a game this call inserted with no disks', () => {
+  const completeAdf = async () => {
+    const { POST } = await import('./route');
+    return POST(new Request('http://test/api/ingest/complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ files: [{ sha256: V3_SHA, sizeBytes: V3.length, filename: 'SomeGame.adf' }] }),
+    }));
+  };
+
+  it('is deleted at the end, guarded so only a game left with none is touched', async () => {
+    const res = await completeAdf();
+    expect(res.status).toBe(200);
+    expect((await res.json()).created).toBe(1);
+
+    expect(deleteCalls).toHaveLength(1);
+    const [{ sql, params }] = deleteCalls;
+    expect(sql).toMatch(/delete from "games"/);
+    // The guard itself: it must be there, or a title that still holds a disk
+    // (org_id drift aside) could be deleted by this statement.
+    expect(sql).toMatch(/not exists \(select 1 from disks d where d\.game_id = "games"\."id"\)/);
+
+    const gameId = stableId('game', 'org-1', 'somegame', '');
+    expect(params).toContain(gameId);
+    expect(params).toContain('org-1');
+  });
+
+  it('is not called at all when nothing was inserted', async () => {
+    // Rejected (HFE v3): landed.length === 0, so the route returns before
+    // ever building gameRows -- no delete should be issued.
+    await complete();
+    expect(deleteCalls).toHaveLength(0);
   });
 });

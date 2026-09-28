@@ -2,7 +2,7 @@ import { after } from 'next/server';
 import { sweep } from '@/lib/tosec-sweep';
 import { gzipSync } from 'node:zlib';
 import { z } from 'zod';
-import { and, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { BlobServiceRateLimited } from '@vercel/blob';
 import { getDb } from '@/db';
 import { blobs, entitlements, games, disks } from '@/db/schema/catalog';
@@ -403,6 +403,18 @@ export async function POST(request: Request) {
         maxTrackBits: sql`excluded.max_track_bits`,
       },
     });
+  }
+
+  // Disk sets spec P4: a disk already moved into a set keeps its id
+  // (stableId of its ORIGINAL game), so re-uploading it re-inserts that
+  // original game with no disks. Remove any game this call inserted that
+  // ended up with none.
+  const insertedGameIds = [...gameRows.keys()];
+  if (insertedGameIds.length > 0) {
+    await db.delete(games).where(and(
+      inArray(games.id, insertedGameIds), eq(games.orgId, orgId),
+      sql`not exists (select 1 from disks d where d.game_id = ${games.id})`,
+    ));
   }
 
   // applyMatch rewrites the games/disks rows that exist when it runs, so a blob
