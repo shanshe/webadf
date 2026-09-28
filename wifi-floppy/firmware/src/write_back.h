@@ -47,6 +47,16 @@ const char *write_back_reason(wb_verdict_t v, unsigned nsec);
 // are encoded on read. True if it landed.
 bool write_back_apply(int slot, int track, const uint8_t *adf_track);
 
+// The write generation, a seqlock (final review F1). core0 brackets every
+// store to the board's copy of the disk -- write_back_apply, DD and HD alike --
+// with these: odd from before the first byte is copied until after the track
+// is DIRTY, even once it has settled. core1's close (up_close) hashes only
+// between two reads of the same EVEN value; anything else means a store was
+// in progress or happened, and the close is retried, never sent. Each carries
+// the fence its side of the ordering needs; single writer (core0's loop).
+void write_back_gen_begin(volatile uint32_t *gen);   // odd: storing
+void write_back_gen_end(volatile uint32_t *gen);     // even: settled
+
 // Whether WPROT is asserted: nothing mounted, the server's flag, or the
 // uploader's force (up_forces_wprot). An HD disk follows the same three (HD
 // writes spec §4.5); 1.4.x also forced it for HD, whatever the server sent.

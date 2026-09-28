@@ -16,7 +16,15 @@ static device_client_t c;
 static uploader_t u;
 static uint32_t gen, last_ms;
 static bool gen_moves;                           // Task 6: a write lands mid-hash
-static uint32_t write_gen(void) { return gen_moves ? gen++ : gen; }
+// Final review F1: runs just AFTER write_gen() has been read -- the moment
+// core0 can start a store between the uploader's read and whatever the
+// uploader does next (its hash, or its close).
+static void (*after_gen_read)(void);
+static uint32_t write_gen(void) {
+    uint32_t g = gen_moves ? gen++ : gen;
+    if (after_gen_read) { void (*f)(void) = after_gen_read; after_gen_read = NULL; f(); }
+    return g;
+}
 static uint32_t last_write(void) { return last_ms; }
 
 // Everything the uploader logged, drained into one buffer: the WARN/ERROR
@@ -51,14 +59,17 @@ static void mounted(void) {
     dc_init(&c, fake_transport(), fake_clock_ms, "h", "tok");
     strcpy(c.mounted_sha256, "aa"); strcpy(c.mounted_disk_id, "d1");
     c.mounted_version = 7; c.since = 7;
-    gen = 0; last_ms = 10000; gen_moves = false;
+    gen = 0; last_ms = 10000; gen_moves = false; after_gen_read = NULL;
     up_init(&u, &c, "boot-abc", write_gen, last_write);
 }
 
+// core0's store, as main.c does it (write_back_gen_begin/_end): the
+// generation is odd for the whole store and even once it has settled.
 static void amiga_writes(int t, uint8_t fill) {
+    gen++;
     memset(adf + t * TB, fill, TB);
     store_track(t, adf + t * TB, true);
-    gen++; last_ms = fake_clock_ms();
+    last_ms = fake_clock_ms(); gen++;
 }
 
 static void push_json(const char *status, const char *body) {
@@ -88,14 +99,15 @@ static void mounted_hd(void) {
     dc_init(&c, fake_transport(), fake_clock_ms, "h", "tok");
     strcpy(c.mounted_sha256, "aa"); strcpy(c.mounted_disk_id, "d1");
     c.mounted_version = 7; c.since = 7;
-    gen = 0; last_ms = 10000; gen_moves = false;
+    gen = 0; last_ms = 10000; gen_moves = false; after_gen_read = NULL;
     up_init(&u, &c, "boot-abc", write_gen, last_write);
 }
 
 static void amiga_writes_hd(int t, uint8_t fill) {
     memset(hd_adf + t * HB, fill, HB);
+    gen++;
     CHECK(psram_image_store_adf(0, t, hd_adf + t * HB), "core0 stored the verified track");
-    gen++; last_ms = fake_clock_ms();
+    last_ms = fake_clock_ms(); gen++;
 }
 
 static void hd_digest(char hex[65]) {
@@ -664,6 +676,138 @@ static void a_torn_track_during_the_hash_backs_off(void) {
     CHECK(u.open, "the session is kept");
 }
 
+// ---- Final review F1: a store still in progress is never closed over ------
+//
+// core0's store is memcpy, barrier, DIRTY, then the generation. Before 1.5.0's
+// final review the generation moved only at the end, so a store that began
+// before the close read it and was still copying when the close re-checked it
+// left both reads equal and no track dirty: the close hashed a half-written
+// track and sent it, the server answered 409 mismatch, and up_server_wins
+// threw the new track away. The generation is now odd for the whole store.
+
+// A DD track torn at a sector boundary: the first sectors already copied are
+// the new write, the rest the old -- and every sector decodes, so the torn-
+// read check (up_read_whole_track) cannot see it. Returns the byte count the
+// copy has reached.
+static size_t dd_split_that_decodes(const uint8_t *old_mfm, const uint8_t *new_mfm,
+                                    size_t nbytes, int t) {
+    static uint8_t mixed[MFM_TRACK_BYTES], out[TB];
+    for (size_t n = nbytes / 2; n < nbytes; n++) {
+        memcpy(mixed, new_mfm, n);
+        memcpy(mixed + n, old_mfm + n, nbytes - n);
+        mfm_decode_result_t d;
+        memset(&d, 0, sizeof d);
+        mfm_decode_track(mixed, nbytes, out, &d);
+        if (d.found == 0x7ffu && d.track_no_consistent && d.track_no == (uint8_t)t &&
+            memcmp(out, adf + t * TB, TB) != 0) return n;
+    }
+    return 0;
+}
+
+static void a_dd_store_in_progress_is_never_closed_over(void) {
+    close_due();
+    const int t = 100;
+    static uint8_t old_mfm[MFM_TRACK_BYTES], new_mfm[MFM_TRACK_BYTES], nt[TB];
+    uint32_t bits = 0;
+    psram_image_read(0, t, old_mfm, &bits);
+    memset(nt, 0xc3, TB);
+    CHECK_EQ_INT(mfm_encode_track(nt, (uint8_t)t, new_mfm), bits);
+    const size_t nbytes = (bits + 7) / 8;
+    const size_t n = dd_split_that_decodes(old_mfm, new_mfm, nbytes, t);
+    CHECK(n > 0, "a torn copy that decodes cleanly exists (sector boundaries)");
+
+    // core0 began the store before the close read the generation, and has
+    // copied n bytes: odd generation, track still PRESENT.
+    gen++;
+    psram_image_write_at(0, t, 0, new_mfm, (int)n);
+    CHECK_EQ_INT(psram_image_state(0, t), TRK_PRESENT);
+    CHECK_EQ_INT(up_step(&u), UP_WAITING);
+    CHECK_EQ_INT(fake_request_count(), 1);              // no close sent
+    CHECK(u.open, "the session is kept");
+
+    // The store finishes: DIRTY, then the generation settles.
+    memcpy(adf + t * TB, nt, TB);
+    store_track(t, nt, true);
+    last_ms = fake_clock_ms(); gen++;
+    push_json("HTTP/1.1 200 OK", "{\"staged\":100}");
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    CHECK(strstr(fake_last_request(), "track=100&session=boot-abc&seq=2") != NULL,
+          "the finished track goes up in the same session");
+    fake_set_clock(last_ms + UP_IDLE_CLOSE_MS);
+    char want[65]; board_digest(want);
+    char body[128]; snprintf(body, sizeof body, "{\"sha256\":\"%s\"}", want);
+    push_json("HTTP/1.1 200 OK", body);
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    char line[256];
+    snprintf(line, sizeof line, "close?disk=d1&mount=7&session=boot-abc&seq=2&sha256=%s", want);
+    CHECK(strstr(fake_last_request(), line) != NULL, "then the close, over the whole new track");
+    CHECK(!u.open, "closed");
+}
+
+static void hd_close_due(void) {
+    mounted_hd();
+    amiga_writes_hd(40, 0x77);
+    push_json("HTTP/1.1 200 OK", "{\"staged\":40}");
+    up_step(&u);
+    fake_set_clock(last_ms + UP_IDLE_CLOSE_MS);
+}
+
+// core0 has begun storing HD track 90 and copied half of its 11,264 bytes.
+// The close hashes an HD track in place, straight from PSRAM, with no
+// checksum at all: only the generation can say the bytes are mid-copy.
+static uint8_t hd_new[HB];
+static void hd_store_begins(void) {
+    gen++;
+    memset(hd_new, 0xe1, HB);
+    psram_image_write_at(0, 90, 0, hd_new, HB / 2);
+}
+static void hd_store_finishes(void) {
+    memcpy(hd_adf + 90 * HB, hd_new, HB);
+    CHECK(psram_image_store_adf(0, 90, hd_new), "stored");
+    last_ms = fake_clock_ms(); gen++;
+}
+
+static void hd_close_then_over_the_whole_track(void) {
+    push_json("HTTP/1.1 200 OK", "{\"staged\":90}");
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    int n = fake_last_request_len();
+    CHECK(memcmp(fake_last_request() + n - HB, hd_adf + 90 * HB, HB) == 0,
+          "the finished track goes up whole");
+    fake_set_clock(last_ms + UP_IDLE_CLOSE_MS);
+    char want[65]; hd_digest(want);
+    char body[128]; snprintf(body, sizeof body, "{\"sha256\":\"%s\"}", want);
+    push_json("HTTP/1.1 200 OK", body);
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
+    char line[256];
+    snprintf(line, sizeof line, "close?disk=d1&mount=7&session=boot-abc&seq=2&sha256=%s", want);
+    CHECK(strstr(fake_last_request(), line) != NULL, "then the close, over the whole new track");
+    CHECK(!u.open, "closed");
+}
+
+// Began before the close read the generation; still copying at the re-check.
+static void an_hd_store_begun_before_the_close_is_never_closed_over(void) {
+    hd_close_due();
+    hd_store_begins();
+    CHECK_EQ_INT(up_step(&u), UP_WAITING);
+    CHECK_EQ_INT(fake_request_count(), 1);              // no close sent
+    CHECK(u.open, "the session is kept");
+    hd_store_finishes();
+    hd_close_then_over_the_whole_track();
+}
+
+// Began just after the close read the generation (even), before the hash
+// reached track 90; still copying at the re-check.
+static void an_hd_store_begun_during_the_close_is_never_closed_over(void) {
+    hd_close_due();
+    after_gen_read = hd_store_begins;
+    CHECK_EQ_INT(up_step(&u), UP_WAITING);
+    CHECK(after_gen_read == NULL, "the store began inside the close");
+    CHECK_EQ_INT(fake_request_count(), 1);              // no close sent
+    CHECK(u.open, "the session is kept");
+    hd_store_finishes();
+    hd_close_then_over_the_whole_track();
+}
+
 int main(void) {
     size_t len = (size_t)TRACK_MAX_BYTES * NUM_TRACKS * SLOT_COUNT;
     void *mem = malloc(len);
@@ -705,6 +849,9 @@ int main(void) {
     RUN(an_hd_track_is_uploaded_as_its_stored_bytes);
     RUN(an_hd_close_hashes_160_tracks_of_11264_bytes);
     RUN(an_offline_hd_write_is_kept_and_sent_later);
+    RUN(a_dd_store_in_progress_is_never_closed_over);
+    RUN(an_hd_store_begun_before_the_close_is_never_closed_over);
+    RUN(an_hd_store_begun_during_the_close_is_never_closed_over);
     free(mem);
     return REPORT();
 }

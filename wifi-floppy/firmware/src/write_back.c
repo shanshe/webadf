@@ -2,6 +2,11 @@
 #include "psram_image.h"
 #include <stdbool.h>
 
+// A full barrier, for the compiler and the core alike: `dmb` on the RP2350,
+// the host's fence under test -- as nfc_handoff.c. This file stays free of
+// pico-sdk headers so it is host-tested.
+#define FENCE() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+
 unsigned write_back_sectors(int32_t token) {
     return psram_image_slot_kind(psram_token_slot(token)) == SLOT_KIND_ADF_HD
         ? MFM_HD_SECTORS : MFM_SECTORS;
@@ -61,6 +66,21 @@ bool write_back_apply(int slot, int track, const uint8_t *adf_track) {
     const uint32_t bits = mfm_encode_track(adf_track, (uint8_t)track, mfm);
     psram_image_mark_dirty(slot, track, mfm, bits);
     return psram_image_state(slot, track) == TRK_DIRTY;
+}
+
+// Begin: the odd value is published BEFORE any byte of the track is written
+// (the fence after it), so a reader that sees the old even value cannot have
+// read any of this store's bytes -- see up_close for the whole argument.
+void write_back_gen_begin(volatile uint32_t *gen) {
+    *gen = *gen + 1u;
+    FENCE();
+}
+
+// End: every byte, DIRTY and g_write_last_ms are visible before the even
+// value (the fence before it), so a reader that sees it sees all of them.
+void write_back_gen_end(volatile uint32_t *gen) {
+    FENCE();
+    *gen = *gen + 1u;
 }
 
 bool write_back_wprot(bool mounted, bool server_protected, bool uploader_forced) {

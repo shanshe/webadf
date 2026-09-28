@@ -25,7 +25,7 @@ export function WriteProtectToggle({ diskId, writeProtected }: {
             aria-pressed={writeProtected}
             title={writeProtected
               ? 'Write protected — the device will refuse writes'
-              : 'Writable — the device may write to this disk once write-back ships'}
+              : 'Writable — the Amiga can save to this disk; each save becomes a new version'}
             className="rounded-md border px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wide disabled:opacity-50"
             style={writeProtected
               // --hairline is 8% and read as no border at all, which made this

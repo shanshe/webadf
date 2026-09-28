@@ -4489,7 +4489,9 @@ What it does:
   still protected on such a board until it updates to 1.5.0. No capability flag; this note and the README are
   the documentation.
 - New or changed log lines to read on the bench: `write: trk N <iv> iv <bytes> B sec 0x3fffff/22 ALL bad 0
-  foreign 0 …` (the `B` figure is the capture size), `write: trk N rejected: not all 22 sectors verified` /
+  foreign 0 rng 0 dec <us> us` (` OVERFLOWED` appended when the capture filled its buffer; the `B` figure is the
+  capture size, and `dec` is the decode's own time in microseconds -- ~6-7 ms expected for HD, during which
+  core0 serves no read), `write: trk N rejected: not all 22 sectors verified` /
   `sectors numbered 11 or more: an HD track on a DD disk` (DD) / `sectors numbered 22 or more` (HD), `wprot: …
   (mounted=… server=… uploader=…)` (no `hd=` field any more), `hd: track N encoded in X us (new max)` (watch
   this while an HD close is hashing -- the hash runs alongside the next capture, so PSRAM contention could show
@@ -4501,8 +4503,9 @@ What it does:
 1. Deploy the web app first (merge to master ships it). 1.4.1 boards keep protecting HD, so this is safe.
 2. Build 1.5.0 from the committed tree and publish it to the registry marked as a bench candidate -- OTA install
    needs a registry entry, so there is no way to get 1.5.0 onto the board without publishing it first. Install it
-   on the bench board over OTA. Only announce it, or leave it published, once bench steps 1 and 2 below pass;
-   withdraw it otherwise.
+   on the bench board over OTA. Announce it only once bench steps 1 and 2 below pass. The registry is
+   append-only and a release installs only on boards someone targets at it, so a candidate that fails the bench
+   is simply left untargeted and superseded by the next version -- there is nothing to withdraw.
 3. The HD Workbench test disk from 3an (`HDBench.adf`, `scripts/hd-test-disk.sh`) is in the library. Set it
    writable in the web app. Have a DD Workbench 3.1 disk, set writable, for step 1.
 
@@ -4523,6 +4526,12 @@ What it does:
    require it stay at or above roughly 20,000.
 6. Restore: put an older HD version back from the history panel (eject first); the Amiga sees it after the
    disk change.
+7. Back-to-back track writes: on a scratch HD disk (the library's "Create HD ADF (FFS)"), set writable,
+   `Format DRIVE DF0: NAME HDFmt` -- no `QUICK`, so every track is written -- or a `DiskCopy` onto it; either
+   writes all 160 tracks one after the other. Every `write: trk`
+   line says `ALL`; record the largest `dec … us` figure (the decode time, ~6-7 ms expected) and any `not a
+   write` / `rejected` line or track missing from the sequence (a lost capture). The library's newest version is
+   the formatted (or copied) disk.
 
 ### 3an. HD floppies, read-only -- 2026-09-26 (spec/plan 2026-09-26-hd-floppies-read-only)
 

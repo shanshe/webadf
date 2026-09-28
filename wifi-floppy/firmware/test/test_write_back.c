@@ -128,6 +128,21 @@ static void an_hd_disk_refuses_a_real_dd_track(void) {
     psram_image_reset_slot(0);
 }
 
+// Final review F1: the write generation is odd for exactly the length of a
+// store and moves by two per store -- what up_close's parity test relies on.
+static void the_write_generation_is_odd_only_while_storing(void) {
+    volatile uint32_t g = 6;
+    write_back_gen_begin(&g);
+    CHECK_EQ_INT(g, 7);
+    CHECK(g & 1u, "odd: a store is in progress");
+    write_back_gen_end(&g);
+    CHECK_EQ_INT(g, 8);
+    CHECK(!(g & 1u), "even: settled");
+    g = 0xffffffffu;                       // odd at the wrap: storing
+    write_back_gen_end(&g);
+    CHECK_EQ_INT(g, 0);                    // and even after it
+}
+
 // HD writes spec §4.5: three gates, DD and HD alike. The read-only-image term
 // 1.4.x had for HD is gone; a board that still has it is a 1.4.x board.
 static void wprot_follows_three_gates(void) {
@@ -320,6 +335,7 @@ int main(void) {
     RUN(a_dd_disk_refuses_a_real_hd_track);
     RUN(an_hd_disk_refuses_a_real_dd_track);
     RUN(wprot_follows_three_gates);
+    RUN(the_write_generation_is_odd_only_while_storing);
     RUN(the_hd_store_takes_only_an_hd_slot);
     RUN(an_hd_write_is_stored_and_served_back);
     free(mem);

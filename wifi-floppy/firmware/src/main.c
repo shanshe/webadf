@@ -563,9 +563,12 @@ static volatile int32_t write_token;
 static volatile uint32_t writes_other_drive;
 static volatile bool     write_ours;
 
-// Written by core0 when a write lands, read by core1's uploader. last_ms
-// first, then the barrier, then gen: a reader that sees the new gen also
-// sees the time of the write that made it.
+// Written by core0 when a write lands, read by core1's uploader. g_write_gen
+// is a seqlock (write_back_gen_begin/_end, final review F1): odd from before
+// the store's first byte until the track is DIRTY and g_write_last_ms is set,
+// even once all of that is visible -- so a reader that sees the new even gen
+// also sees the time of the write that made it, and up_close can tell a store
+// in progress from a settled one.
 static volatile uint32_t g_write_last_ms;
 static volatile uint32_t g_write_gen;
 // Stamped in the WGATE ISR on both edges (see gpio_isr below) -- unlike
@@ -2467,15 +2470,21 @@ int main(void) {
                 static uint8_t decoded[MFM_HD_TRACK_DATA_BYTES];
                 mfm_decode_result_t d;
                 memset(decoded, 0, sizeof decoded);
+                // Final review F2: the decode's own time, for the bench -- an
+                // HD capture is twice a DD one (~6-7 ms expected), and core0
+                // serves no read while it runs.
+                const uint64_t dec_t0 = time_us_64();
                 mfm_decode_track_n(cap.mfm, cap.mfm_bytes, decoded, &d, nsec);
+                const unsigned long dec_us = (unsigned long)(time_us_64() - dec_t0);
                 wf_logf(WF_INFO,
-                        "write: trk %d %u iv %u B sec 0x%06lx/%u%s bad %u foreign %u rng %u%s",
+                        "write: trk %d %u iv %u B sec 0x%06lx/%u%s bad %u foreign %u rng %u "
+                        "dec %lu us%s",
                         wt,
                         (unsigned)cap.intervals, (unsigned)cap.mfm_bytes,
                         (unsigned long)d.found, nsec,
                         d.found == want ? " ALL" : " PART",
                         (unsigned)d.bad_checksums, (unsigned)d.foreign_sectors,
-                        (unsigned)cap.out_of_range,
+                        (unsigned)cap.out_of_range, dec_us,
                         cap.overflowed ? " OVERFLOWED" : "");
                 wf_logf(WF_INFO, "write: first id %u sync@%lu, last id %u end@%lu, of %lu bits",
                         (unsigned)d.first_id, (unsigned long)d.first_sync_bit,
@@ -2502,22 +2511,30 @@ int main(void) {
                     if (v != WB_APPLY) {
                         wf_logf(WF_WARN, "write: trk %d rejected: %s",
                                 wt, write_back_reason(v, nsec));
-                    } else if (write_back_apply(psram_token_slot(now_tok), wt, decoded)) {
-                        // The SRAM copy is keyed on (track, token) and a write
-                        // changes neither: drop it, and if the head is still on
-                        // this track re-serve it now rather than at the next seek.
-                        track_cache_invalidate(wt);
-                        if (loaded == wt) loaded = -1;
-                        // Publish to core1's uploader: last_ms first, then the
-                        // barrier, then gen -- see g_write_last_ms's comment.
-                        g_write_last_ms = clock_ms();
-                        __dmb();
-                        g_write_gen++;
-                        const uint64_t us = time_us_64() - t0;
-                        wf_logf(WF_INFO, "write: trk %d applied in %lu us",
-                                wt, (unsigned long)us);
                     } else {
-                        wf_logf(WF_ERR, "write: trk %d apply failed (PSRAM)", wt);
+                        // Final review F1: g_write_gen goes odd BEFORE the
+                        // store's first byte and even only after the track is
+                        // DIRTY and last_ms is set, so core1's close never
+                        // hashes a half-copied track (up_close has the
+                        // interleavings). A failed apply still moves it by two:
+                        // the close is retried once, harmlessly.
+                        write_back_gen_begin(&g_write_gen);
+                        const bool ok = write_back_apply(psram_token_slot(now_tok), wt, decoded);
+                        if (ok) g_write_last_ms = clock_ms();
+                        write_back_gen_end(&g_write_gen);
+                        if (ok) {
+                            // The SRAM copy is keyed on (track, token) and a
+                            // write changes neither: drop it, and if the head is
+                            // still on this track re-serve it now rather than at
+                            // the next seek.
+                            track_cache_invalidate(wt);
+                            if (loaded == wt) loaded = -1;
+                            const uint64_t us = time_us_64() - t0;
+                            wf_logf(WF_INFO, "write: trk %d applied in %lu us",
+                                    wt, (unsigned long)us);
+                        } else {
+                            wf_logf(WF_ERR, "write: trk %d apply failed (PSRAM)", wt);
+                        }
                     }
                 }
             }
