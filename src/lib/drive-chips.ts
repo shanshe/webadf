@@ -4,6 +4,8 @@ import { isDefaultDeviceName } from '@/lib/device-name';
 // Type-only: live-state.ts pulls in node:crypto, and this module's output is
 // handed to a client component. The import is erased at compile time.
 import type { LiveStateRow } from '@/lib/live-state';
+// Type-only, for the same reason: drive-chips.ts is handed to a client component.
+import type { NextInfo } from '@/lib/next-disk';
 
 /**
  * What a drive chip in the header says about one board (HANDOFF §4 backlog,
@@ -66,6 +68,13 @@ export interface DriveChip {
   canGoTo: boolean;
   canToggleProtect: boolean;
   canEject: boolean;
+  /**
+   * The next-disk verdict (multi-disk plan R3), set only once the board has
+   * CONVERGED on its current disk -- the same gate canToggleProtect uses, for
+   * the same reason: while loading or ejecting, "next" would describe a swap
+   * layered on top of one already in flight.
+   */
+  next: NextInfo | null;
 }
 
 export function toDriveChip(r: LiveStateRow, now: number): DriveChip {
@@ -112,6 +121,7 @@ export function toDriveChip(r: LiveStateRow, now: number): DriveChip {
     // The same condition DeviceCard draws its Eject button on. It is a
     // desired-state write, so an offline board can still be asked.
     canEject: r.desiredSha256 !== null || r.mountedSha256 !== null,
+    next: phase === 'loaded' ? r.next : null,
   };
 }
 

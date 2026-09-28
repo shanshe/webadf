@@ -4,6 +4,7 @@ import { listReleases } from '@/lib/firmware-releases';
 import { firmwareState, countBehind, buildRegistry } from '@/lib/firmware-state';
 import { refuseTarget } from '@/lib/firmware-update-rules';
 import { isOnline } from '@/lib/device-state';
+import { readNextForDevices, nextInfo } from '@/lib/next-disk';
 import { PageHeader } from '@/components/shell/page-header';
 import { DeviceList } from '@/components/devices/device-list';
 import { PairButton } from '@/components/devices/pair-button';
@@ -19,6 +20,13 @@ export default async function DevicesPage() {
   const now = Date.now();
 
   const online = devices.filter((d) => isOnline(d.lastSeenAt, now)).length;
+
+  // The same next-disk verdict the drive chips render (multi-disk plan R3),
+  // computed once here and handed down by device id rather than per card.
+  const nexts = await readNextForDevices(orgId, devices);
+  const nextById = Object.fromEntries(
+    devices.map((d) => [d.id, nextInfo(nexts.get(d.id), d.preloadSha256, d.preloadState)]),
+  );
 
   // The registry is indexed ONCE and shared, so "which release is newest" is
   // computed in exactly one place -- the notice and the cards cannot disagree
@@ -58,7 +66,7 @@ export default async function DevicesPage() {
           </div>
         ) : (
           <DeviceList devices={devices} now={now} states={states}
-                      selectableIds={selectableIds} latest={registry.latest} />
+                      selectableIds={selectableIds} latest={registry.latest} nextById={nextById} />
         )}
       </div>
     </>

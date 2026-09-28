@@ -5,6 +5,7 @@ import type { getDb } from '@/db';
 import { devices } from '@/db/schema/devices';
 import { disks, games } from '@/db/schema/catalog';
 import { deviceState, isOnline, relative } from '@/lib/device-state';
+import { readNextForDevices, nextInfo, type NextInfo } from '@/lib/next-disk';
 
 /**
  * What every open browser watches to know when to re-render (spec
@@ -54,6 +55,19 @@ export interface LiveStateRow {
   desiredGameTitle: string | null;
   /** Only to recognise the default "Device <MAC>" name, which the chip shortens. */
   macAddress: string | null;
+  /**
+   * What this board's firmware holds and reports, feeding readNextForDevices
+   * (next-disk.ts) and its preload verdict (plan R3, nextInfo). Every one of
+   * these is a page input for the "Next disk" line the chip and the card both
+   * render, so each has to be in the fingerprint below -- the same reasoning
+   * as every other field on this row.
+   */
+  trackMaxBytes: number | null;
+  playsHd: boolean;
+  preloadSha256: string | null;
+  preloadState: string | null;
+  /** The computed next-disk verdict for this device, or null (multi-disk plan R3). */
+  next: NextInfo | null;
 }
 
 /**
@@ -106,6 +120,7 @@ export function liveFingerprint(
         r.mountedGameId ?? '', r.mountedGameTitle ?? '', r.mountedDiskNo ?? '',
         r.mountedDiskCount ?? '', r.mountedImageFormat ?? '', r.mountedSizeBytes ?? '', r.desiredGameTitle ?? '',
         r.macAddress ?? '',
+        r.next ? `${r.next.diskNo}/${r.next.diskCount}/${r.next.wraps ? 1 : 0}/${r.next.preload ?? ''}` : '',
         isOnline(r.lastSeenAt, now) ? '1' : '0',
         // Every offline card, not just 'stale' -- see the doc comment above.
         isOnline(r.lastSeenAt, now) ? '' : relative(r.lastSeenAt, now),
@@ -132,7 +147,7 @@ export async function liveStateRows(db: ReturnType<typeof getDb>, orgId: string)
   const mountedGame = alias(games, 'mounted_game');
   const desiredGame = alias(games, 'desired_game');
 
-  return db
+  const rows = await db
     .select({
       id: devices.id, name: devices.name,
       desiredDiskId: devices.desiredDiskId, desiredSha256: devices.desiredSha256,
@@ -162,6 +177,8 @@ export async function liveStateRows(db: ReturnType<typeof getDb>, orgId: string)
       mountedSizeBytes: mountedDisk.sizeBytes,
       desiredGameTitle: desiredGame.title,
       macAddress: devices.macAddress,
+      trackMaxBytes: devices.trackMaxBytes, playsHd: devices.playsHd,
+      preloadSha256: devices.preloadSha256, preloadState: devices.preloadState,
     })
     .from(devices)
     // Org-scoped on both sides of both joins: without `disks.orgId`, a
@@ -175,4 +192,9 @@ export async function liveStateRows(db: ReturnType<typeof getDb>, orgId: string)
     .leftJoin(desiredGame, and(eq(desiredGame.id, disks.gameId), eq(desiredGame.orgId, orgId)))
     .where(eq(devices.orgId, orgId))
     .orderBy(asc(devices.id));
+
+  // readNextForDevices uses getDb() itself (next-disk.ts) -- `db` above is
+  // only for this function's own select, matching every other query here.
+  const nexts = await readNextForDevices(orgId, rows);
+  return rows.map((r) => ({ ...r, next: nextInfo(nexts.get(r.id), r.preloadSha256, r.preloadState) }));
 }

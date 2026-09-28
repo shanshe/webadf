@@ -2,7 +2,9 @@ import { deviceState, isOnline, relative } from '@/lib/device-state';
 import { firmwareLabel, updateLabel, type FirmwareState } from '@/lib/firmware-state';
 import { isDefaultDeviceName } from '@/lib/device-name';
 import type { DeviceListItem } from '@/lib/queries';
+import type { NextInfo } from '@/lib/next-disk';
 import { EjectButton } from './eject-button';
+import { NextDiskButton } from './next-disk-button';
 import { DeviceAlias } from './device-alias';
 
 /**
@@ -13,12 +15,14 @@ import { DeviceAlias } from './device-alias';
  * full-width row.
  */
 export function DeviceCard(
-  { device, now, firmware, selection, onCancelUpdate }: {
+  { device, now, firmware, selection, onCancelUpdate, next }: {
     device: DeviceListItem; now: number; firmware: FirmwareState;
     /** Absent when this board cannot be updated -- no checkbox is drawn at all. */
     selection?: { selected: boolean; onToggle: (id: string) => void };
     /** Absent when no update is pending. */
     onCancelUpdate?: (id: string) => void;
+    /** The next-disk verdict (multi-disk plan R3), or null/absent when there is none. */
+    next?: NextInfo | null;
   },
 ) {
   const state = deviceState(device, now);
@@ -162,6 +166,12 @@ export function DeviceCard(
           {bigText}
         </span>
         <span className="text-[12px]" style={{ color: 'var(--muted)' }}>{subText}</span>
+        {next?.preload && (
+          <span className="text-[11px]" style={{ color: 'var(--muted)' }} data-testid={`device-preload-${device.id}`}
+                data-preload={next.preload}>
+            {next.preload === 'ready' ? `Disk ${next.diskNo} ready (instant swap)` : `Disk ${next.diskNo} loading…`}
+          </span>
+        )}
       </div>
 
       <div className="flex-1" />
@@ -220,7 +230,10 @@ export function DeviceCard(
               Select for update
             </label>
           ) : <span />}
-          {(device.desiredSha256 || device.mountedSha256) && <EjectButton deviceId={device.id} />}
+          <div className="flex items-center gap-2">
+            {next && state === 'converged' && <NextDiskButton deviceId={device.id} next={next} />}
+            {(device.desiredSha256 || device.mountedSha256) && <EjectButton deviceId={device.id} />}
+          </div>
         </div>
       </div>
 
