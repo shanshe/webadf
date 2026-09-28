@@ -61,19 +61,31 @@ export async function suggestFromUpload(
       sql`(select count(*) from disks d2 where d2.game_id = ${games.id} and d2.org_id = ${orgId}) = 1`,
     ));
 
-  const inputs: SuggestInput[] = [];
-  for (const r of rows) {
-    inputs.push({
-      diskId: r.diskId,
-      gameId: r.gameId,
-      // The entitlement is this org's own record of what it called the file;
-      // a disk somehow missing one (should not happen post-ingest) falls
-      // back to the catalog filename rather than dropping out of the batch.
-      filename: r.sourceFilename ?? r.tosecName ?? '',
-      volumeName: await readVolumeName(r.sha256),
-      relativePath: paths?.[r.sha256],
-    });
-  }
+  // sha256s is capped at 32 by the route, but disks.sha256 is not unique per
+  // game: stableId('disk', gameId, sha256) means the same bytes uploaded
+  // under two filenames are two different one-disk games, so this join can
+  // return more rows than hashes. That would silently break the "at most 32
+  // disks per request" constraint (and read the store more than 32 times);
+  // refuse the suggestion instead of reading past it.
+  if (rows.length > 32) return null;
+
+  // One read per DISTINCT hash, not per row: several disk rows can share a
+  // sha256 (see above), and the volume name depends only on the bytes. Fired
+  // together, not one after another, for every hash this batch touches.
+  const distinctShas = [...new Set(rows.map((r) => r.sha256))];
+  const reads = new Map(distinctShas.map((s) => [s, readVolumeName(s)]));
+  await Promise.all(reads.values());
+
+  const inputs: SuggestInput[] = await Promise.all(rows.map(async (r) => ({
+    diskId: r.diskId,
+    gameId: r.gameId,
+    // The entitlement is this org's own record of what it called the file;
+    // a disk somehow missing one (should not happen post-ingest) falls
+    // back to the catalog filename rather than dropping out of the batch.
+    filename: r.sourceFilename ?? r.tosecName ?? '',
+    volumeName: await reads.get(r.sha256)!,
+    relativePath: paths?.[r.sha256],
+  })));
   return suggestSet(inputs);
 }
 

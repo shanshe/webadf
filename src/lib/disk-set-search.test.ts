@@ -131,6 +131,38 @@ describe('suggestFromUpload', () => {
     ]);
     expect(result).toBe(suggestion);
   });
+
+  it('two disk rows sharing one hash (the same bytes under two filenames) read the store exactly once', async () => {
+    const sha = 'f'.repeat(64);
+    volumeFor.set(sha, { ok: true, volume: { name: 'Shared' } });
+    answer(disks, [
+      { diskId: 'd1', gameId: 'g1', sha256: sha, sourceFilename: 'One.adf', tosecName: null },
+      { diskId: 'd2', gameId: 'g2', sha256: sha, sourceFilename: 'Two.adf', tosecName: null },
+    ]);
+    suggestSet.mockReturnValue(null);
+
+    await suggestFromUpload('org-1', [sha], new Date(), undefined);
+
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(sha);
+    expect(suggestSet).toHaveBeenCalledWith([
+      { diskId: 'd1', gameId: 'g1', filename: 'One.adf', volumeName: 'Shared', relativePath: undefined },
+      { diskId: 'd2', gameId: 'g2', filename: 'Two.adf', volumeName: 'Shared', relativePath: undefined },
+    ]);
+  });
+
+  it('more than 32 rows (shared hashes can outnumber the <=32 requested) returns null without reading anything', async () => {
+    const rows = Array.from({ length: 33 }, (_, i) => ({
+      diskId: `d${i}`, gameId: `g${i}`, sha256: 'a'.repeat(64), sourceFilename: `F${i}.adf`, tosecName: null,
+    }));
+    answer(disks, rows);
+
+    const result = await suggestFromUpload('org-1', ['a'.repeat(64)], new Date(), undefined);
+
+    expect(result).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    expect(suggestSet).not.toHaveBeenCalled();
+  });
 });
 
 describe('searchCandidates', () => {
