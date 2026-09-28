@@ -47,8 +47,9 @@ const BTN_CLASS =
 const BTN_STYLE = { borderColor: 'var(--hairline-strong)', background: 'var(--glass-strong)', color: 'var(--ink)' };
 const BTN_PRIMARY_STYLE = { borderColor: 'var(--primary-action)', background: 'var(--primary-action)', color: '#fff' };
 
+// The same fallback DiskRow uses, so a disk has one name on this page.
 function diskName(d: GameDetailDisk): string {
-  return d.label ?? d.tosecName ?? d.sourceFilename ?? `Disk ${d.diskNo}`;
+  return d.tosecName ?? d.sourceFilename ?? `Disk ${d.diskNo}`;
 }
 
 export function DiskSetSection({ gameId, entries, from, fobDevices = [], onAddDisks }: {
@@ -289,7 +290,7 @@ function ReorderRow({ entry, position, canUp, canDown, onUp, onDown }: {
         {...attributes}
         {...listeners}
         style={{ touchAction: 'none', color: 'var(--muted-2)' }}
-        className="grid h-11 w-8 shrink-0 cursor-grab place-items-center active:cursor-grabbing sm:h-8"
+        className="grid h-11 w-11 shrink-0 cursor-grab place-items-center active:cursor-grabbing sm:h-8 sm:w-8"
       >
         <GripVertical size={16} />
       </button>
