@@ -128,21 +128,25 @@ export function SetSuggestion({ suggestion, onDone }: {
               className="flex items-center gap-2 rounded-[10px] border px-2 py-1.5 sm:gap-3 sm:px-3"
               style={{ borderColor: 'var(--hairline)', background: 'var(--glass)' }}
             >
-              <input
-                type="checkbox"
-                aria-label={`Include ${d.label}`}
-                data-testid={`set-suggestion-tick-${id}`}
-                checked={!!ticked[id]}
-                onChange={() => setTicked((t) => ({ ...t, [id]: !t[id] }))}
-                className="h-5 w-5 shrink-0 sm:h-4 sm:w-4"
-              />
-              <span
-                className="min-w-0 flex-1 truncate text-[13px] font-semibold"
-                title={d.label}
-                style={{ color: 'var(--ink)' }}
-              >
-                {d.label}
-              </span>
+              {/* The whole row toggles the tick -- a bare 20px input would be
+                  a 20px tap target below `sm`. Same pattern as
+                  add-disks-dialog.tsx's title-pick rows. */}
+              <label className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-2 sm:min-h-0">
+                <input
+                  type="checkbox"
+                  data-testid={`set-suggestion-tick-${id}`}
+                  checked={!!ticked[id]}
+                  onChange={() => setTicked((t) => ({ ...t, [id]: !t[id] }))}
+                  className="h-5 w-5 shrink-0 sm:h-4 sm:w-4"
+                />
+                <span
+                  className="min-w-0 flex-1 truncate text-[13px] font-semibold"
+                  title={d.label}
+                  style={{ color: 'var(--ink)' }}
+                >
+                  {d.label}
+                </span>
+              </label>
               <button
                 type="button"
                 aria-label={`Move ${d.label} up`}
