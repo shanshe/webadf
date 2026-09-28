@@ -191,8 +191,12 @@ _Static_assert(DC_POST_BODY_MAX >= MFM_HD_TRACK_DATA_BYTES, "dc_post must carry 
 // torn by core0's store, and none is needed: up_send_track clears the dirty
 // flag BEFORE dc_post reads the bytes and psram_image_store_adf sets it AFTER
 // its own copy, so a track rewritten mid-read is always sent again (the
-// server keeps a track's last upload); and up_close re-checks write_gen() and
-// the dirty flags after hashing.
+// server keeps a track's last upload); and up_close re-checks write_gen()
+// and the dirty flags after hashing -- a rate assumption, not a proof: core0's
+// 11 KB psram_image_store_adf (one memcpy, then DIRTY) finishes and bumps
+// g_write_gen long before core1's close hash, which sha256_updates a whole
+// 160-track image per pass, gets back around to and past that same track, so
+// the one post-hash recheck always lands after the write it needs to catch.
 static const uint8_t *up_read_whole_track(int slot, int t, uint32_t *len) {
     if (psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD) {
         const uint8_t *p = psram_image_track_data(slot, t);

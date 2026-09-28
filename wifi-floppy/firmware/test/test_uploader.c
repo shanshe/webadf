@@ -440,7 +440,7 @@ static void a_refused_attempt_also_spends_its_seq(void) {
     up_step(&u);
     fake_set_clock(fake_clock_ms() + u.backoff_ms);
     push_json("HTTP/1.1 200 OK", "{\"staged\":6}");
-    up_step(&u);
+    CHECK_EQ_INT(up_step(&u), UP_DID_REQUEST);
     CHECK(strstr(fake_last_request(), "track=6&session=boot-abc&seq=3 ") != NULL, "seq 3");
     CHECK_EQ_INT(u.seq, 3);
 }

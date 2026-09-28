@@ -128,14 +128,13 @@ static void an_hd_disk_refuses_a_real_dd_track(void) {
     psram_image_reset_slot(0);
 }
 
-// The four gates on WPROT, one function so the HD one is tested (main.c's
-// core1 loop only feeds it).
-static void wprot_is_forced_for_an_hd_disk(void) {
-    CHECK(write_back_wprot(true, false, false, true), "HD mounted, server says writable: still protected");
-    CHECK(!write_back_wprot(true, false, false, false), "DD, writable, nothing forcing: released");
-    CHECK(write_back_wprot(false, false, false, false), "nothing mounted: protected");
-    CHECK(write_back_wprot(true, true, false, false), "the server's flag");
-    CHECK(write_back_wprot(true, false, true, false), "the uploader's force");
+// HD writes spec §4.5: three gates, DD and HD alike. The read-only-image term
+// 1.4.x had for HD is gone; a board that still has it is a 1.4.x board.
+static void wprot_follows_three_gates(void) {
+    CHECK(!write_back_wprot(true, false, false), "mounted, writable, nothing forcing: released");
+    CHECK(write_back_wprot(false, false, false), "nothing mounted: protected");
+    CHECK(write_back_wprot(true, true, false), "the server's flag");
+    CHECK(write_back_wprot(true, false, true), "the uploader's force");
 }
 
 /* A disk in slot 0 whose track `t` holds the encoding of `data`. */
@@ -320,7 +319,7 @@ int main(void) {
     RUN(a_dd_disk_refuses_sectors_past_10);
     RUN(a_dd_disk_refuses_a_real_hd_track);
     RUN(an_hd_disk_refuses_a_real_dd_track);
-    RUN(wprot_is_forced_for_an_hd_disk);
+    RUN(wprot_follows_three_gates);
     RUN(the_hd_store_takes_only_an_hd_slot);
     RUN(an_hd_write_is_stored_and_served_back);
     free(mem);

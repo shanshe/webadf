@@ -1742,11 +1742,9 @@ static void core1_main(void) {
             // boot-time default); this is now the only place that updates it
             // afterward.
             bool up_forced = up_forces_wprot(&up);
-            // HD spec §5.3: an HD disk is read-only here, and not only because
-            // the server sends writeProtected: the board holds the line itself.
-            bool hd_mounted = mounted &&
-                psram_image_slot_kind(psram_active_slot()) == SLOT_KIND_ADF_HD;
-            bool wprot = write_back_wprot(mounted, c.mounted_write_protected, up_forced, hd_mounted);
+            // HD writes spec §4.5: an HD disk follows the same three gates as
+            // DD. (1.4.x held WPROT for HD whatever the server sent.)
+            bool wprot = write_back_wprot(mounted, c.mounted_write_protected, up_forced);
             bus_out_set(PIN_WPROT, wprot);
             // The pin is set first, THEN the change is announced: the Amiga
             // must read the new state when it looks.
@@ -1760,22 +1758,21 @@ static void core1_main(void) {
              *
              * Added after a write test that produced nothing: WGATE never
              * fired, and working out why meant inferring the pin's state from
-             * the absence of an event. FOUR separate gates force WPROT --
-             * no disk, the server's flag, the uploader (up_forces_wprot:
-             * after a refused write, or while parked) and an HD image --
-             * and none folds into another, so each is its own field below.
-             * Without them the reasons were indistinguishable from the log.
-             * A gate nobody can observe is a gate nobody can debug.
+             * the absence of an event. THREE separate gates force WPROT --
+             * no disk, the server's flag and the uploader (up_forces_wprot:
+             * after a refused write, or while parked) -- and none folds into
+             * another, so each is its own field below. Without them the
+             * reasons were indistinguishable from the log. A gate nobody can
+             * observe is a gate nobody can debug.
              */
             static int last_wprot = -1;
             if ((int)wprot != last_wprot) {
                 last_wprot = (int)wprot;
-                wf_logf(WF_INFO, "wprot: %s (mounted=%s server=%s uploader=%s hd=%s)",
+                wf_logf(WF_INFO, "wprot: %s (mounted=%s server=%s uploader=%s)",
                         wprot ? "ASSERTED -- the Amiga cannot write" : "RELEASED -- the Amiga may write",
                         mounted ? "yes" : "no",
                         mounted ? (c.mounted_write_protected ? "protected" : "writable") : "n/a",
-                        up_forced ? "forced" : "ok",
-                        hd_mounted ? "read-only" : "no");
+                        up_forced ? "forced" : "ok");
             }
             // The panel's pencil, from the same value and at the same moment
             // -- lit exactly when the Amiga may actually write, which now
@@ -2306,8 +2303,9 @@ int main(void) {
                 // prompts sees the new disk's density. Taken at the next
                 // answer -- the first motor-off select after a motor-on one,
                 // or the 32-bit repeat -- never mid-answer (bus_out.c). Whether Kickstart re-reads the ID
-                // on a change at all is bench step 9. The same HD derivation
-                // as the WPROT rule on core1 (write_back_wprot).
+                // on a change at all is bench step 9. HD writes spec §4.5:
+                // WPROT no longer derives HD from the slot kind
+                // (write_back_wprot) -- this is now the only place that does.
                 const bool hd = psram_image_slot_kind(slot) == SLOT_KIND_ADF_HD;
                 if (bus_out_drive_id_set_hd(hd))
                     wf_logf(WF_INFO, "drive-id: now answering %s 0x%08lx",

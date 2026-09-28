@@ -63,7 +63,6 @@ bool write_back_apply(int slot, int track, const uint8_t *adf_track) {
     return psram_image_state(slot, track) == TRK_DIRTY;
 }
 
-bool write_back_wprot(bool mounted, bool server_protected, bool uploader_forced,
-                      bool read_only_image) {
-    return !mounted || server_protected || uploader_forced || read_only_image;
+bool write_back_wprot(bool mounted, bool server_protected, bool uploader_forced) {
+    return !mounted || server_protected || uploader_forced;
 }

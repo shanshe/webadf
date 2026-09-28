@@ -193,15 +193,17 @@ static void dc_image_sink(void *ctx, const uint8_t *b, int n) {
 //     core1_main -> up_step -> dc_post -> dc_exchange (uploader.c,
 //     Task 5: one dirty track at a time), and its close counterpart,
 //     core1_main -> up_step -> (sha256_*, psram_image_read,
-//     mfm_decode_track_r) -> dc_post -> dc_exchange (uploader.c, Task 6:
-//     hashes the whole image, then posts the digest), and the NFC pair,
+//     mfm_decode_track_r, psram_image_track_data) -> dc_post -> dc_exchange
+//     (uploader.c, Task 6: hashes the whole image, then posts the digest --
+//     psram_image_track_data is the HD track's read, HD writes spec §4.4:
+//     no decode, no copy, a pointer straight into PSRAM), and the NFC pair,
 //     core1_main -> dc_tap / dc_tap_write_report -> dc_post -> dc_exchange,
 //     sent BETWEEN dc_steps -- an interrupted poll returns first, and only
 //     then does the tap go out. Every path is a
 //     straight line, including the close's hash loop -- sha256_*,
-//     psram_image_read and mfm_decode_track_r never call back into any
-//     dc_*/up_* function, so nothing here is re-entered while its statics
-//     are live; dc_exchange is shared by five callers but is never nested
+//     psram_image_read, mfm_decode_track_r and psram_image_track_data never
+//     call back into any dc_*/up_* function, so nothing here is re-entered
+//     while its statics are live; dc_exchange is shared by five callers but is never nested
 //     inside itself, and dc_post/dc_fetch_firmware are never nested inside dc_step -- the
 //     uploader runs from its own call site in the main loop, not from inside the
 //     poll.

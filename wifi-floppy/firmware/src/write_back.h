@@ -47,11 +47,10 @@ const char *write_back_reason(wb_verdict_t v, unsigned nsec);
 // are encoded on read. True if it landed.
 bool write_back_apply(int slot, int track, const uint8_t *adf_track);
 
-// Whether WPROT is asserted: nothing mounted, the server's flag, the
-// uploader's force (up_forces_wprot), or a read-only image -- an HD disk,
-// read-only in this release whatever the server sent (HD spec §5.3). Pure;
-// main.c's core1 loop feeds it and drives the pin.
-bool write_back_wprot(bool mounted, bool server_protected, bool uploader_forced,
-                      bool read_only_image);
+// Whether WPROT is asserted: nothing mounted, the server's flag, or the
+// uploader's force (up_forces_wprot). An HD disk follows the same three (HD
+// writes spec §4.5); 1.4.x also forced it for HD, whatever the server sent.
+// Pure; main.c's core1 loop feeds it and drives the pin.
+bool write_back_wprot(bool mounted, bool server_protected, bool uploader_forced);
 
 #endif
