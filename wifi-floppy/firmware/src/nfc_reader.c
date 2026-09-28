@@ -810,17 +810,24 @@ bool nfc_take_gap(nfc_reader_t *r, nfc_gap_t *out) {
     return true;
 }
 
-void nfc_arm_write(nfc_reader_t *r, uint32_t seq, const char *disk_id) {
-    // A tag held right now was on the reader before the write existed: the
-    // arm counts as a sighting of it, so it is written only after a full
-    // window away that began after the arm -- even if it was already part-
-    // way through a dropout. A different tag is still written at once.
-    // While the chip is ABSENT the hold cannot expire (see st_absent): the
-    // chip's return decides it, not this call.
+// The gating shared by every arm call, whatever the payload: a tag held
+// right now was on the reader before the write existed, so the arm counts
+// as a sighting of it, and it is written only after a full window away that
+// began after the arm -- even if it was already part-way through a dropout.
+// A different tag is still written at once. While the chip is ABSENT the
+// hold cannot expire (see st_absent): the chip's return decides it, not
+// this call. nfc_arm_write and nfc_arm_write_next must never drift apart
+// here -- this is the one gate that stops a write landing on a tag already
+// on the reader.
+static void arm_gate(nfc_reader_t *r, uint32_t seq) {
     uint32_t now = r->now_ms();
     if (r->state != ST_ABSENT) expire_hold(r, now);
     if (r->held) r->last_seen = now;
     r->arm_seq = seq;
+}
+
+void nfc_arm_write(nfc_reader_t *r, uint32_t seq, const char *disk_id) {
+    arm_gate(r, seq);
     r->armed = disk_id != NULL && nfc_tag_encode(disk_id, r->arm_payload);
     r->arm_bad = !r->armed;
 }
@@ -828,10 +835,7 @@ void nfc_arm_write(nfc_reader_t *r, uint32_t seq, const char *disk_id) {
 void nfc_arm_write_next(nfc_reader_t *r, uint32_t seq) {
     // Identical gating to nfc_arm_write; only the payload differs, and
     // nfc_tag_encode_next always succeeds, so this never arms "bad".
-    uint32_t now = r->now_ms();
-    if (r->state != ST_ABSENT) expire_hold(r, now);
-    if (r->held) r->last_seen = now;
-    r->arm_seq = seq;
+    arm_gate(r, seq);
     r->armed = nfc_tag_encode_next(r->arm_payload);
     r->arm_bad = !r->armed;
 }
