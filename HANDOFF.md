@@ -4509,7 +4509,8 @@ What it does:
 Rulings (all in the plan/spec): minimal `next` shape (budget); a changed `next` does not drop the preload record at lift
 (the swap compares sha256); preload line shows "not preloaded yet" rather than a false "loading".
 
-**Bench acceptance owed (operator):**
+**Bench acceptance owed (operator):** (2026-09-28 19:49: 1.6.0 confirmed on WifiFloppy1; card tap on a two-disk title
+swapped as expected at 19:22, last_tap_outcome `mounting`, preload reported `ready` -- steps 1-2 PASS.)
 1. 1.6.0 installs (Amiga on and idle); the Devices page then offers "Write a Next-disk card".
 2. Write a Next-disk card from the Devices page; tap it with a 2-disk title mounted -> OLED "Next: disk 2 of 2", swap in
    under ~1 s once the web shows "Disk 2 ready (instant swap)" (compare ~5 s without preload).
