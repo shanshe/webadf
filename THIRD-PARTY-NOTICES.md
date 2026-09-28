@@ -3,8 +3,8 @@
 webadf and the wifi-floppy board are meant for anyone to use, modify and build as they see fit:
 
 - **Software** (the web app, scripts and the wifi-floppy firmware source): the MIT licence, in [`LICENSE`](LICENSE).
-- **Hardware** (`wifi-floppy/hardware/`): CERN-OHL-P-2.0 is intended. It becomes effective once the rev B layout
-  author has granted it; see the "Licence" section of the README.
+- **Hardware** (`wifi-floppy/hardware/`): CERN-OHL-P-2.0, in `wifi-floppy/hardware/LICENSE`; anyone may build,
+  modify and sell their own boards. See `wifi-floppy/hardware/NOTICE.md`.
 
 They stand on the work below.
 
@@ -27,7 +27,7 @@ They stand on the work below.
 - **amiga-hddlw** by Tube Time / schlae (https://github.com/schlae/amiga-hddlw): its PAL equations are the reference
   for the HD drive-ID answer.
 - The Gotek-style buzzer driver, and the original Gotek floppy emulators.
-- **Rev B PCB layout** by Shanshe.
+- **Rev B PCB layout** by **Shanshe** (https://github.com/shanshe), who agreed to its release under CERN-OHL-P-2.0.
 - **HxC Floppy Emulator** by Jean-François Del Nero, author of the HFE disk-image format.
 
 ## Software included in this repository
