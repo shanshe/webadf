@@ -4536,12 +4536,6 @@
 		(uuid "11c09388-fb37-430c-86b2-a08e927467a7")
 	)
 	(junction
-		(at 171.45 109.22)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "1b46ec4a-d976-4807-9dbf-d180ca7f0c4f")
-	)
-	(junction
 		(at 22.86 80.01)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -4582,6 +4576,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "4bd8f6ed-40ad-4fcd-bb03-32c4cd2a21de")
+	)
+	(junction
+		(at 171.45 109.22)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "596b2878-be59-4d16-95f8-e4c95a938580")
 	)
 	(junction
 		(at 60.96 31.75)
@@ -4752,6 +4752,16 @@
 			(type default)
 		)
 		(uuid "011eaf5d-639f-4ce8-9aac-066a2750196a")
+	)
+	(wire
+		(pts
+			(xy 171.45 107.95) (xy 171.45 109.22)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0121ec45-56a9-42f0-94a2-4385eb9f5172")
 	)
 	(wire
 		(pts
@@ -8408,7 +8418,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "0c1fbc78-d58d-435f-82a6-be2d3601213a")
 		(property "Reference" "J3"
@@ -9144,7 +9154,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "2628604b-d3ab-46c1-8524-b8c77e768d93")
 		(property "Reference" "J2"
@@ -10905,7 +10915,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "7645b0b6-4993-416b-9a4c-cb81521f8e00")
 		(property "Reference" "J1"
@@ -11836,7 +11846,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "a3452b4d-7772-4179-a463-cbc60259b093")
 		(property "Reference" "J4"
@@ -11934,7 +11944,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp no)
+		(dnp yes)
 		(uuid "a41695b7-0a03-48c9-b4b9-b504d78fa5dd")
 		(property "Reference" "BZ1"
 			(at 165.1138 114.3578 0)
@@ -11991,7 +12001,7 @@
 				)
 			)
 		)
-		(property "LCSC" "DNP"
+		(property "LCSC" "C2687681"
 			(at 168.91 115.57 0)
 			(hide yes)
 			(show_name no)
@@ -12764,7 +12774,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "ceb4e07b-c9ed-43bf-96ec-a1267facc96b")
 		(property "Reference" "U1"
@@ -13123,6 +13133,99 @@
 			(project "wifi_floppy"
 				(path "/c9178abf-c4d6-4242-b99e-f9f08c77f33c"
 					(reference "Q3")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "wifi-floppy-lib:R_Small")
+		(at 171.45 105.41 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "d6d9a37e-f69f-49f4-807a-2d0b7afd385b")
+		(property "Reference" "R12"
+			(at 172.9486 104.1978 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.016 1.016)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "22"
+			(at 172.9486 106.4177 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "wifi-floppy-lib:R_1206_3216Metric_Pad1.30x1.75mm_HandSolder"
+			(at 171.45 105.41 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 171.45 105.41 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Resistor, small symbol"
+			(at 171.45 105.41 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C2925020"
+			(at 171.45 105.41 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "38c07809-62b6-400b-be72-ee280b08ffd2")
+		)
+		(pin "2"
+			(uuid "a119ba1d-5693-4ce1-8660-1b18e8774578")
+		)
+		(instances
+			(project "wifi_floppy"
+				(path "/c9178abf-c4d6-4242-b99e-f9f08c77f33c"
+					(reference "R12")
 					(unit 1)
 				)
 			)
@@ -14047,7 +14150,7 @@
 	)
 	(symbol
 		(lib_id "power:+5V")
-		(at 171.45 109.22 0)
+		(at 171.45 102.87 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -14058,7 +14161,7 @@
 		(fields_autoplaced yes)
 		(uuid "ff9ce204-47cc-4dd0-a526-f78407e48292")
 		(property "Reference" "#PWR028"
-			(at 171.45 113.03 0)
+			(at 171.45 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14069,7 +14172,7 @@
 			)
 		)
 		(property "Value" "+5V"
-			(at 171.45 105.0869 0)
+			(at 171.45 98.7369 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -14079,7 +14182,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 171.45 109.22 0)
+			(at 171.45 102.87 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14090,7 +14193,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 171.45 109.22 0)
+			(at 171.45 102.87 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -14101,7 +14204,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 171.45 109.22 0)
+			(at 171.45 102.87 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
