@@ -62,6 +62,7 @@ SHA-256; you browse them and press mount; a custom board emulates the floppy dri
 | **HD floppies, read-only** | ✅ **merged; firmware 1.4.1 verified on hardware 2026-09-27** (A5000, Kickstart 3.1); see 3an |
 | **HD disks: writes, history, editing, blank disks** | ✅ **merged 2026-09-28; firmware 1.5.1 (seq 31) on the board.** Bench steps 4-7 and the rev B `short 0` retest owed; see 3ao |
 | **Multi-disk "Next disk" + Next-disk NFC card + preload** | 🟡 **merged 2026-09-28 (`92ec133`), web live; firmware 1.6.0 (seq 32) published and targeted, installs when the Amiga is on and idle.** Bench acceptance owed; see 3ap |
+| **Disk sets** | ✅ **merged 2026-09-29 (`aa3520d`), live; migration 0028 applied.** A title with several disks, arranged by a person: upload suggestion, title-page Disk set section (add, reorder, move out, undo). See 3aq |
 | **Drive chips in the header** | ✅ **done 2026-09-25, merged and live.** Every paired board as a chip beside the wordmark: status dot, name, mounted disk; caret menu with Go to disk (the game page), Disk is Protected/Writable, and Eject (no confirm, below a divider). Pending states while a mount or eject converges. 1 chip + "+k" at 1280, 2 at 1536, 3 at 1920; below 1280 a single "Drives" list. Fed by `liveStateRows` (now carries the mounted game/title/disk no/format, all in `liveFingerprint`); `src/lib/drive-chips.ts`, `src/components/shell/drive-chips.tsx`. Unverified: 640–700 px the Drives button overlaps the pill (the search box already does, 640–767 px, on master). **2026-09-26 (`b40699c`): the chips are centred in the gap between the wordmark and the pill** (`src/components/shell/header-start.tsx` measures the pill's width; equal gaps at 1280/1536/1920, with and without Admin), and the "+k" chip shows one number at ≥1920 (a Tailwind breakpoint-order bug had shown "+2 +1") |
 | **Five minors, 2026-09-25** | ✅ **merged and live.** Update confirm is a real modal (role=dialog, Escape, focus, Enter submits); the 50-board cap (`MAX_UPDATE_BATCH`) shows in the update bar; re-extracting an EDITED extract is a 409 `already_extracted` with a link; the not-extractable reason is visible text; a refused HFE's bytes are deleted when nothing references them (a two-round-trip race is documented in `releaseRefused`) |
 | **Hardware** | rev A scrap (mirrored), **rev A2 in hand and working**. **Rev B is Shanshe's KiCad project, merged 2026-09-26 (PR #1, `22d3556`) and now the primary PCB** -- the generated-board toolchain (`generate_pcb.py`, `verify_board.py`, `export_gerbers.py`, renders) is gone. `pnpm hw:verify` (`wifi-floppy/hardware/hw_verify.py`) runs KiCad ERC/DRC + parity and checks the netlist against the firmware and §4c. **PR #2 (2026-09-26, `d871430`): `hw:verify` PASSES** -- 1k pull-ups to +5V on all eight host-driven lines (WGATE, WDATA, MTR, DIR, STEP, SIDE, SEL0, SEL1), power flags fixed, J2 moved 0.1 mm to clear U1's RF keepout (keepout zones verified unchanged; J2 now sits right at its edge); the assembly BOM (DNP flags, LCSC numbers) is for the operator to complete when sourcing; GP20 (NFC reset) is not wired. See the rev B entry in §4 |
@@ -2188,7 +2189,7 @@ separately.
   Candidates beyond the Next-disk card: the NFC fob button, "Disk set" / Add disks / Reorder, the preload line,
   write-protect WP/RW, "Extract as ADF" for HFE, the time machine (history / restore), firmware update states.
   Must work at 390 px (popover, not hover-only tooltips).
-- **Disk groups for sets without disk numbers** (operator, 2026-09-28): an OS or application install such as Workbench
+- ~~**Disk groups for sets without disk numbers**~~ DONE 2026-09-29 as "Disk sets", see 3aq (operator, 2026-09-28): an OS or application install such as Workbench
   3.1 (Install, Workbench, Locale, Extras, Fonts, Storage) is a set of disks mostly needed together, e.g. installing
   Workbench to a hard drive, but the disks carry no "disk N of M". Today each one lands as its own one-disk title
   (the live library has `amiga-wb31_workbench` as a lone disk 1), so Next disk and the Next-disk card (3ap) can't
@@ -4521,6 +4522,38 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 - **Screenshot redirects:** screenshot fetches follow redirects, so the `media.demozoo.org` host
   allowlist checks only the first URL (the raster content-type allowlist and `nosniff` still apply).
 - **Cron drift:** the daily 01:30 cron against a 7-day gate can drift a refetch to 8 days.
+
+### 3aq. Disk sets -- 2026-09-29 (spec/plan 2026-09-28-disk-sets)
+
+**STATUS: MERGED (`aa3520d`) and deployed; migration 0028 (`games.disk_order_source`) applied.** Subagent-driven, 10 tasks each
+reviewed; final whole-branch review found no Critical; one fix wave plus two narrow follow-ups. Full e2e: every spec green
+(timeouts on 2026-09-29 were a slow Neon link, ~105 ms per query; they passed on re-run and breadcrumb failed on master too).
+vitest 1452.
+
+What it is: a disk set is a title (games row) with several disks, ordered by disk_no, so Next disk and the Next-disk card
+step through it. "Collections" stays the higher-level grouping; "Disk set" is on the title page.
+- Upload: after a drop, un-numbered lone disks sharing a version tag (e.g. 3_1_4 / 3.1.4) or a folder are suggested as one
+  set ("These N disks look like one set", name, tick, reorder, Make disk set / Not a set). Install first, then Workbench,
+  then drop order. Fonts/Locale-style disks without the tag are listed unticked.
+- Title page: Disk set section (2+ disks) with Add disks… (search by title, filename, TOSEC name), Reorder (drag or ▲▼),
+  row ⋯ menu Move up / Move down / Move out of set; a lone disk has "Add to a disk set…"; Undo in the toast (refuses if
+  things changed since; does not restore covers/Demozoo/collections of the old title).
+- Protection: games.disk_order_source='human' -> TOSEC never renumbers/retitles/merges the set; an upload that would land in
+  a human-arranged set goes into a separate sibling title instead; deleting a middle disk of a set closes the gap.
+- Boards: moves/reorders update devices' desired/mounted game+number (guarded, never the disk id), nothing ejects.
+
+Known behaviour (not a bug): after a reorder or add, a board's preloaded "next" and its OLED "Disk N" stay stale until its
+next swap, because the poll only re-sends when desired_version moves (bumping it could strand an Amiga write). Taps are
+still correct (next is computed from the new order on the server).
+
+Deferred (triaged "can wait" by the final review): re-upload of a disk already in a set can flash an empty title for a few
+DB round trips (fix: skip inserting games whose disk ids all exist), and the attempted-vs-inserted ingest cleanup race;
+move-out freezes metadata ('human') and loses inline rename; move out has no undo; Demozoo/OpenRetro can still retitle a set
+built without a rename.
+
+**Bench (operator):** build a set of 2+ disks (e.g. upload the AmigaOS 3.1.4 disks, accept the suggestion), mount disk 1,
+Next through it with the card, and write to disk 2 (protected disk 1 -> writable disk 2: Info must not show write-protected;
+the save lands as a history version on disk 2).
 
 ### 3ap. Multi-disk "Next disk", the Next-disk NFC card, and preloading -- 2026-09-28 (spec/plan 2026-09-28-multi-disk-next)
 
