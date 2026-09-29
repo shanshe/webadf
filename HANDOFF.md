@@ -61,7 +61,7 @@ SHA-256; you browse them and press mount; a custom board emulates the floppy dri
 | **NFC tap-to-mount** | ✅ **merged and live 2026-09-26 (master 0f6fbd1); firmware 1.3.0 (seq 10) confirmed on the board.** Tap a tag → the board mounts that disk from its own org's library (swap; same tag = no-op; 1 s rate limit). Claude writes tags: `pnpm nfc:write "<disk>"` arms the board through the poll, you tap a blank tag, the read-back is reported. HW-147C/Si512 reader on I2C1 (0x28). **Firmware 1.3.1 (seq 11, 2026-09-26): a tap needs 3 s of absence; a write never lands on a tag already on the reader.** Bench: write + tap-mount + same-tag proven; see §3am. **Fob button (2026-09-26, b6c4e7c):** an NFC icon on every library card and disk row writes that disk to a tag from the web (dialog picks disk and board, 2:00 countdown, read-back shown; withdraws on close/cancel/leave); shown only when a board reports a reader |
 | **HD floppies, read-only** | ✅ **merged; firmware 1.4.1 verified on hardware 2026-09-27** (A5000, Kickstart 3.1); see 3an |
 | **HD disks: writes, history, editing, blank disks** | ✅ **merged 2026-09-28; firmware 1.5.1 (seq 31) on the board.** Bench steps 4-7 and the rev B `short 0` retest owed; see 3ao |
-| **Multi-disk "Next disk" + Next-disk NFC card + preload** | ✅ **bench-proven 2026-09-29 (all 3ap steps).** 🟡→✅ **merged 2026-09-28 (`92ec133`), web live; firmware 1.6.0 (seq 32) published and targeted, installs when the Amiga is on and idle.** Bench acceptance owed; see 3ap |
+| **Multi-disk "Next disk" + Next-disk NFC card + preload** | ✅ **bench-proven 2026-09-29 (all 3ap steps).** ⚠️ **Step 4 lost a file header on Locale (block 597): the swap did not wait for the Amiga to finish writing. Fixed in firmware 1.6.1 (swap waits for the drive light); bench retest owed, see 3ar.** 🟡→✅ **merged 2026-09-28 (`92ec133`), web live; firmware 1.6.0 (seq 32) published and targeted, installs when the Amiga is on and idle.** Bench acceptance owed; see 3ap |
 | **Disk sets** | ✅ **merged 2026-09-29 (`aa3520d`), live; migration 0028 applied.** A title with several disks, arranged by a person: upload suggestion, title-page Disk set section (add, reorder, move out, undo). See 3aq |
 | **Drive chips in the header** | ✅ **done 2026-09-25, merged and live.** Every paired board as a chip beside the wordmark: status dot, name, mounted disk; caret menu with Go to disk (the game page), Disk is Protected/Writable, and Eject (no confirm, below a divider). Pending states while a mount or eject converges. 1 chip + "+k" at 1280, 2 at 1536, 3 at 1920; below 1280 a single "Drives" list. Fed by `liveStateRows` (now carries the mounted game/title/disk no/format, all in `liveFingerprint`); `src/lib/drive-chips.ts`, `src/components/shell/drive-chips.tsx`. Unverified: 640–700 px the Drives button overlaps the pill (the search box already does, 640–767 px, on master). **2026-09-26 (`b40699c`): the chips are centred in the gap between the wordmark and the pill** (`src/components/shell/header-start.tsx` measures the pill's width; equal gaps at 1280/1536/1920, with and without Admin), and the "+k" chip shows one number at ≥1920 (a Tailwind breakpoint-order bug had shown "+2 +1") |
 | **Five minors, 2026-09-25** | ✅ **merged and live.** Update confirm is a real modal (role=dialog, Escape, focus, Enter submits); the 50-board cap (`MAX_UPDATE_BATCH`) shows in the update bar; re-extracting an EDITED extract is a 409 `already_extracted` with a link; the not-extractable reason is visible text; a refused HFE's bytes are deleted when nothing references them (a two-round-trip race is documented in `releaseRefused`) |
@@ -1478,6 +1478,9 @@ separately.
 
 ### 4. Backlog, not blocking anything
 
+- **Mount/Eject button on the Browse disk pages** (operator, 2026-09-29). The disk pages under Browse should carry
+  the same Mount / Eject a title card and the drive chips already offer, so a disk can be mounted from where it is
+  being looked at.
 - ~~**Make uploads faster by reusing the TLS connection**~~ **DONE 2026-09-21 — see 4k.** Keep-alive
   shipped; session tickets were tried, measured wrong, and cannot work in this mbedTLS build.
   The original entry, for the reasoning it records: Every request
@@ -4522,6 +4525,53 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
 - **Screenshot redirects:** screenshot fetches follow redirects, so the `media.demozoo.org` host
   allowlist checks only the first URL (the raster content-type allowlist and `nosniff` still apply).
 - **Cron drift:** the daily 01:30 cron against a 7-day gate can drift a refetch to 8 days.
+
+### 3ar. A disk is released only when the Amiga has finished with it -- firmware 1.6.1 (2026-09-29)
+
+**STATUS: on `fix/swap-waits-for-idle`; host tests green; built. Publish + bench retest below.**
+
+**What happened (bench 3ap step 4, 18:45):** a Next-disk tap during a save on Locale (disk 5 of the Workbench 3.1 set,
+RW) swapped to disk 6 after the save uploaded -- as designed -- and Locale then reported a checksum error on block 597.
+Measured from the server's versions (`disk_versions` seq 0-3, images read from the blob store and compared per block):
+seq 2 (36 sectors) wrote the new directory `Copy_of_Languages` (block 591) whose hash slot 72 points at 597, and wrote
+track 54's sectors 594-596, 598, 599, 601, 604 -- but 597, 600, 602, 603 (also track 54) are old data in every version.
+So the Amiga wrote track 54 twice: once with the file data (captured), once more with the file header, and that second
+write never reached the server. Disk 6 got no writes; no write session was left open. The operator rewound Locale
+(seq 4, `rewind`, 18:54), so the disk is clean again.
+
+**Cause:** the swap hold (`up_holds`) waits only for tracks the board has already CAPTURED. AmigaDOS writes a file's
+data first and its header/directory blocks a moment later from buffers it still holds; the uploader closes after 3 s of
+no writes, the hold lifts, and the swap can land in that gap. It is ejecting a real floppy with the drive light on.
+(Whether the header write came after the swap or was captured and dropped on the mount change -- a parked/new session's
+tracks are discarded on a mount change, see 3ap -- the server cannot tell; the serial log was not running. Both are
+fixed by the same rule.)
+
+**Fix:** `src/swap_gate.[ch]` (pure, `test/test_swap_gate.c`): a disk is released (swap, Next tap, eject -- anything
+`dc_held` guards) only when the Amiga is idle: motor off (the drive light; AmigaDOS switches it off after flushing),
+WGATE clear, and no write activity (applied or merely attempted, the later of `g_write_last_ms`/`g_wgate_last_ms`) for
+`SWAP_IDLE_MS` = 3 s. Starvation: no activity for `SWAP_FORCE_MS` = 20 s releases regardless -- a powered-off
+Amiga leaves WGATE asserted forever, and a trackloader game keeps the motor on all session but never writes; a copy
+that keeps writing is never forced. "Activity" is the write path AND the motor switching on
+(`swap_gate_last_activity`, core0 publishes `g_motor_on_ms`): review I1 found that measured from writes alone, a save
+started 20 s+ after the previous one was unprotected during its read-before-write phase. `main.c`'s `swap_holds` = `up_holds || !swap_gate_idle(...)` is now
+dc_set_hold's fn and what the OLED's "Saving, then disk N" follows. The preload gate keeps plain `up_holds` (a preload
+never touches the disk in use). `device_client` gained `held` (this step's poll was refused by the hold; an interrupted poll keeps the previous
+value): main.c sleeps 1 s after such a poll, since `since` did not advance and the next poll is answered at once; the "hold:" log line is
+now printed only when a hold begins. The panel's "Saving" query uses `swap_hold_check(up, false)`, which never logs.
+Review (independent, opus): no Critical; I1 fixed as above; M2-M4 fixed. **Accepted:** WGATE is not per-drive, so a
+real DF1 being written also holds the swap (fails safe); the panel says "Saving, then disk N" whenever the light is
+on, even with nothing to upload (wording only); and a save that follows 20 s+ of continuous motor-on READING with no
+write can still be force-released before its first write (STEP pulses would be a better activity signal than the
+motor edge -- not done; revisit if the bench ever shows it).
+
+**Bench retest (operator), after 1.6.1 installs:**
+1. On a writable disk of a set, start copying a directory of several files (e.g. `copy Locale:Languages to Locale:x all`)
+   and tap the Next-disk card while it runs. The OLED shows "Saving, then disk N" and the swap happens only after the
+   drive light goes out and ~3 s pass.
+2. Tap back to the disk; `dir` the copy and run a full read of it (e.g. `copy x to nil: all`). No checksum error. Also check the new version in the disk's History.
+3. Trackloader game with the motor on constantly (Turrican): a Next tap/web mount still swaps, within ~20 s at most.
+4. (Review M5) Amiga powered OFF with a disk mounted: an eject or mount from the web still happens within ~20 s. If
+   it never does, WGATE is floating/chattering with the Amiga off and keeps stamping activity.
 
 ### 3aq. Disk sets -- 2026-09-29 (spec/plan 2026-09-28-disk-sets)
 

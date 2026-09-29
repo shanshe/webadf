@@ -244,6 +244,12 @@ typedef struct {
     // --- write-back, see dc_set_hold / dc_force_refetch ---
     dc_hold_fn _hold;
     void      *_hold_ctx;
+    // True when THIS dc_step's poll asked for a disk change (swap, fetch,
+    // eject) that the hold refused. The poll's `since` did not advance, so
+    // the next poll is answered at once: the caller paces it (main.c) rather
+    // than spin TLS requests until the hold lifts.
+    bool       held;
+    bool       _was_held;   // `held` of the previous step: log a hold once
     bool       _refetch;
 
     // The in-flight disk's identity, so a progress observation can carry the

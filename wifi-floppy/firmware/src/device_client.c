@@ -859,10 +859,14 @@ void dc_adopt_image(device_client_t *c, const char *sha256) {
 
 // D7: a disk with writes the server has not got is never released. Only
 // when something IS mounted -- with nothing mounted there is nothing to lose.
+// Sets c->held for the caller's pacing (main.c), and logs only when a hold
+// begins: a hold on an idle-waiting Amiga is re-asked every paced poll.
 static bool dc_held(device_client_t *c) {
     if (c->mounted_sha256[0] == '\0' || !c->_hold) return false;
     if (!c->_hold(c->_hold_ctx)) return false;
-    wf_logf(WF_INFO, "hold: writes pending, not releasing the disk yet");
+    if (!c->_was_held)
+        wf_logf(WF_INFO, "hold: the disk is busy (unsent writes, or the Amiga not idle), not releasing it yet");
+    c->held = true;
     return true;
 }
 
@@ -1360,6 +1364,8 @@ int dc_fetch_firmware(device_client_t *c, const char *version,
 dc_state_t dc_step(device_client_t *c) {
     // Describes THIS step only: cleared before any return below.
     c->poll_interrupted = false;
+    c->_was_held = c->held;
+    c->held = false;
     if (c->state == DC_UNPROVISIONED) {
         // No token yet; Task 10 adds dc_register() to get one. Nothing to
         // poll with in the meantime.
@@ -1408,6 +1414,7 @@ dc_state_t dc_step(device_client_t *c) {
         // DC_BACKOFF, and is NOT a result. The caller checks poll_interrupted
         // first and skips its backoff sleep (device_client.h).
         c->poll_interrupted = true;
+        c->held = c->_was_held;   // decided nothing: the hold is as it was
         return c->state;
     }
 
