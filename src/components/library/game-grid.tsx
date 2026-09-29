@@ -1,10 +1,10 @@
 'use client';
 
 import { Link } from '@/components/shell/link';
-import { useId, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { useDraggable } from '@dnd-kit/core';
+import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { History, Minus } from 'lucide-react';
@@ -65,9 +65,9 @@ export function GameGrid({ games, fob = null }: {
   // Cards are draggable everywhere (dropping one onto a rail collection
   // works from anywhere), but only wrapped in a SortableContext -- and only
   // sortable among themselves -- while filtered: there is no single ordered
-  // list a game-on-game drop could mean in the unfiltered recently-added
-  // view (collection-provider.tsx's onDragEnd guards this too, but the
-  // point here is to not offer the drop target at all).
+  // list to reorder in the unfiltered views. There each card is a plain drop
+  // target instead (DraggableCard), and a card dropped on it asks to make
+  // the two one disk set (collection-provider.tsx's onDragEnd, Case 2).
   if (!filteredCollectionId) return grid;
   return (
     <SortableContext items={gameIds} strategy={rectSortingStrategy}>
@@ -341,7 +341,31 @@ function CardBody({ game: g, collectionId, fob }: { game: GameListItem; collecti
   );
 }
 
-/** Unfiltered recently-added view: draggable onto a rail collection, not sortable against siblings. */
+/**
+ * What a card shows while another card is held over it in the unfiltered
+ * views: an outline and the words for what a drop will offer. Nothing at
+ * rest -- the state only exists mid-drag.
+ */
+function SetDropHint() {
+  return (
+    <div
+      data-testid="set-drop-target"
+      className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[inherit] border-2"
+      style={{ borderColor: 'var(--primary-action)', background: 'rgb(11 18 28 / 0.35)' }}
+    >
+      <span className="rounded-full px-3 py-1 text-[12px] font-semibold text-white"
+            style={{ background: 'var(--primary-action)' }}>
+        Add to disk set
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Unfiltered views ("All titles", "Uncategorized"): draggable onto a rail
+ * collection, and a drop target for another card (make a disk set) -- not
+ * sortable against siblings.
+ */
 function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }) {
   // `role` is pulled OUT of dnd-kit's attributes and thrown away: it is
   // "button", and this card is an <a href> that really does navigate. Spread
@@ -349,12 +373,20 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
   // as a button, and the 8px activation constraint exists precisely so the
   // link half keeps working. The rest of the attributes (tabIndex,
   // aria-roledescription, aria-describedby) are kept.
-  const { attributes: dragAttributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: g.id,
-    data: { type: 'game', id: g.id } satisfies GameDragData,
-  });
+  const data = { type: 'game', id: g.id, title: g.title, diskCount: g.diskCount } satisfies GameDragData;
+  const { attributes: dragAttributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({ id: g.id, data });
+  // The same id as the draggable, as useSortable does: dnd-kit keeps the two
+  // registries apart. Droppable rects are measured without transforms, so
+  // the dragged card's own drop area stays where the card started, and
+  // onDragEnd ignores a card dropped back on itself.
+  const { setNodeRef: setDropRef, isOver, active } = useDroppable({ id: g.id, data });
+  // Stable, so React does not detach and re-attach the node on every render
+  // of a drag (an inline ref callback is a new function each time).
+  const setNodeRef = useCallback((el: HTMLElement | null) => { setDragRef(el); setDropRef(el); }, [setDragRef, setDropRef]);
   const attributes = { ...dragAttributes, role: undefined };
   const style = dragStyle(CSS.Translate.toString(transform), isDragging);
+  const hinting = isOver && active !== null && active.id !== g.id
+    && (active.data.current as { type?: string } | undefined)?.type === 'game';
 
   return (
     <Link
@@ -368,12 +400,13 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
       // failure (the click the browser fires at the end of a drag) is fixed
       // in collection-provider.tsx, which is the only place it CAN be fixed.
       draggable={false}
-      className="glass-card flex flex-col p-2.5"
+      className="glass-card relative flex flex-col p-2.5"
       style={style}
       {...attributes}
       {...listeners}
     >
       <CardBody game={g} fob={fob} />
+      {hinting && <SetDropHint />}
     </Link>
   );
 }

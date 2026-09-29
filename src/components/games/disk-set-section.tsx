@@ -29,7 +29,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
+import { ChevronDown, ChevronUp, GripVertical, Pencil } from 'lucide-react';
 import type { GameDetailDisk } from '@/lib/queries';
 import type { MountChoice } from '@/lib/mount-choice';
 import type { FobDevice } from '@/components/nfc/fob-button';
@@ -158,8 +158,9 @@ export function DiskSetSection({ gameId, title, entries, from, fobDevices = [] }
   return (
     <section className="flex flex-col gap-3" data-testid="disk-set-section">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          <span className="text-[13px] font-bold" style={{ color: 'var(--ink)' }}>Disk set</span>{' '}
+        <div className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+          <span className="text-[13px] font-bold" style={{ color: 'var(--ink)' }}>Disk set</span>
+          <SetName gameId={gameId} title={title} />
           <span className="text-[11.5px]" style={{ color: 'var(--muted)' }}>
             {reordering
               ? '· drag to reorder, saved as you go'
@@ -217,6 +218,90 @@ export function DiskSetSection({ gameId, title, entries, from, fobDevices = [] }
         })
       )}
     </section>
+  );
+}
+
+/**
+ * The set's name in the header, with a pencil to rename it in place. Saved
+ * through the title editor's own PATCH /api/games/[id], so the name is
+ * recorded as human-edited exactly as an edit there would be. Enter saves;
+ * Escape and leaving the field cancel -- a rename is never saved by accident.
+ */
+function SetName({ gameId, title }: { gameId: string; title: string }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  // Shown from Enter until the refresh brings the new title, so the old name
+  // does not flash back meanwhile.
+  const [pending, setPending] = useState<string | null>(null);
+  const [seenTitle, setSeenTitle] = useState(title);
+  if (seenTitle !== title) {
+    setSeenTitle(title);
+    setPending(null);
+  }
+
+  function start() {
+    setDraft(pending ?? title);
+    setEditing(true);
+  }
+
+  async function save() {
+    const name = draft.trim();
+    setEditing(false);
+    if (name === '' || name === title) return;
+    setPending(name);
+    let res: Response;
+    try {
+      res = await fetch(`/api/games/${gameId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: name }),
+      });
+    } catch {
+      setPending(null);
+      toast.error('Could not reach the server', { description: 'The set was not renamed.' });
+      return;
+    }
+    if (!res.ok) {
+      setPending(null);
+      toast.error('Could not rename the set', {
+        description: res.status === 404 ? 'This title is no longer in your library.' : 'The name was not accepted.',
+      });
+      router.refresh();
+      return;
+    }
+    router.refresh();
+  }
+
+  if (editing) {
+    return (
+      <input
+        data-testid="set-rename-input" aria-label="Set name" autoFocus maxLength={80}
+        value={draft} onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); void save(); }
+          if (e.key === 'Escape') { e.preventDefault(); setEditing(false); }
+        }}
+        onBlur={() => setEditing(false)}
+        className="h-11 min-w-0 max-w-full rounded-[8px] border px-2 text-[13px] font-semibold outline-none sm:h-[28px]"
+        style={{ borderColor: 'var(--hairline-strong)', background: 'var(--glass)', color: 'var(--ink)' }}
+      />
+    );
+  }
+  const shown = pending ?? title;
+  return (
+    <span className="inline-flex min-w-0 items-center gap-0.5">
+      <span className="truncate text-[13px] font-semibold" style={{ color: 'var(--ink)' }}
+            data-testid="set-name" title={shown}>
+        {shown}
+      </span>
+      <button type="button" data-testid="set-rename" aria-label={`Rename set ${shown}`} title="Rename set"
+              onClick={start}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full transition-colors hover:bg-[var(--glass-strong)] sm:h-7 sm:w-7"
+              style={{ color: 'var(--muted)' }}>
+        <Pencil size={13} aria-hidden />
+      </button>
+    </span>
   );
 }
 

@@ -216,6 +216,27 @@ describe('addDisksToSet', () => {
       ['human', 'The Secret of Monkey Island', 'secret of monkey island, the', 'G', 'org-1']));
   });
 
+  it('a rename equal to the current title writes neither title nor metadataSource, and still compacts', async () => {
+    // A drop onto a TOSEC-identified title with the prefilled name untouched
+    // must not freeze that title against later corrections.
+    answer(games, [{ id: 'G', title: 'Lemmings' }], [game('S')]);
+    answer(disks,
+      [{ id: 'd2', gameId: 'G', diskNo: 2 }],
+      [{ id: 's1', gameId: 'S', diskNo: 1 }],
+      [{ id: 's1', gameId: 'S', diskNo: 1 }],
+    );
+    answer(collectionGames, []); answer(devices, []);
+    await addDisksToSet('org-1', 'G', ['s1'], ' Lemmings ');
+    const b = only();
+    const t = b.find((s) => /^update "games"/.test(s.sql))!;
+    expect(t.sql).toMatch(/^update "games" set "disk_order_source" = \$1 where/);
+    expect(t.sql).not.toMatch(/"title"|"metadata_source"/);
+    expect(b.filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params)).toEqual([
+      ['G', 1, 'd2', 'org-1', 'G'],
+      ['G', 2, 's1', 'org-1', 'S'],
+    ]);
+  });
+
   it('without a rename leaves the title alone', async () => {
     addScenario();
     await addDisksToSet('org-1', 'G', ['s2']);
@@ -280,6 +301,82 @@ describe('addDisksToSet', () => {
     answer(disks, [{ id: 'd1', gameId: 'G', diskNo: 1 }], [{ id: 'd1', gameId: 'G', diskNo: 1 }]);
     await expect(addDisksToSet('org-1', 'G', ['d1'])).rejects.toMatchObject({ code: 'same_title' });
     expect(batches).toHaveLength(0);
+  });
+});
+
+describe('addDisksToSet by source titles (drag a card onto a card)', () => {
+  /** Target G with d1; source titles P (p1, p2) and Q (q1), all org-1. */
+  function titlesScenario() {
+    answer(games,
+      [{ id: 'G' }],                                  // requireGame
+      [{ id: 'Q' }, { id: 'P' }],                     // the sources, org-scoped (any order)
+      [game('P'), game('Q')],                         // the common path's source read
+    );
+    answer(disks,
+      // every disk of the sources, in whatever order the database likes
+      [{ id: 'q1', gameId: 'Q', diskNo: 1 }, { id: 'p2', gameId: 'P', diskNo: 2 }, { id: 'p1', gameId: 'P', diskNo: 1 }],
+      [{ id: 'd1', gameId: 'G', diskNo: 1 }],         // target's disks
+      [{ id: 'q1', gameId: 'Q', diskNo: 1 }, { id: 'p1', gameId: 'P', diskNo: 1 }, { id: 'p2', gameId: 'P', diskNo: 2 }],
+      [{ id: 'q1', gameId: 'Q', diskNo: 1 }, { id: 'p1', gameId: 'P', diskNo: 1 }, { id: 'p2', gameId: 'P', diskNo: 2 }],
+    );
+    answer(collectionGames, []);
+    answer(devices, []);
+  }
+
+  it('moves ALL disks of each source title, sources in the order sent, each in disk order', async () => {
+    titlesScenario();
+    await addDisksToSet('org-1', 'G', { sourceGameIds: ['P', 'Q'] }, 'My Set');
+    const b = only();
+    expect(b.filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params)).toEqual([
+      ['G', 1, 'd1', 'org-1', 'G'],
+      ['G', 2, 'p1', 'org-1', 'P'],
+      ['G', 3, 'p2', 'org-1', 'P'],
+      ['G', 4, 'q1', 'org-1', 'Q'],
+    ]);
+    // Same batch as the disk path: the target renamed, both sources deleted, guarded.
+    const t = b.find((s) => /^update "games"/.test(s.sql))!;
+    expect(t.params).toEqual(expect.arrayContaining(['human', 'My Set', 'G', 'org-1']));
+    const del = b.find((s) => /^delete from "games"/.test(s.sql))!;
+    expect(del.params).toEqual(expect.arrayContaining(['P', 'Q', 'org-1']));
+    expect(del.sql).toMatch(/not exists \(select 1 from "disks" "d" where "d"\."game_id" = "games"\."id"\)/);
+  });
+
+  it('every read is org-scoped', async () => {
+    titlesScenario();
+    await addDisksToSet('org-1', 'G', { sourceGameIds: ['P', 'Q'] });
+    for (const q of selects) {
+      const parts = [q.where, ...q.joins].filter(Boolean).map((w) => render(w as SQL));
+      expect(parts.some((p) => /"org_id" = \$\d+/.test(p.sql) && p.params.includes('org-1'))).toBe(true);
+    }
+  });
+
+  it('a source title of another org is NotFound, and nothing is written', async () => {
+    answer(games, [{ id: 'G' }], [{ id: 'P' }]);   // the org-scoped read does not return FOREIGN
+    await expect(addDisksToSet('org-1', 'G', { sourceGameIds: ['P', 'FOREIGN'] })).rejects.toBeInstanceOf(NotFound);
+    expect(batches).toHaveLength(0);
+  });
+
+  it('the target itself as a source is same_title, and nothing is written', async () => {
+    answer(games, [{ id: 'G' }]);
+    await expect(addDisksToSet('org-1', 'G', { sourceGameIds: ['G'] })).rejects.toMatchObject({ code: 'same_title' });
+    expect(batches).toHaveLength(0);
+  });
+
+  it('a source title with no disks is nothing_to_add, and nothing is written', async () => {
+    answer(games, [{ id: 'G' }], [{ id: 'P' }, { id: 'E' }]);
+    answer(disks, [{ id: 'p1', gameId: 'P', diskNo: 1 }]);
+    await expect(addDisksToSet('org-1', 'G', { sourceGameIds: ['P', 'E'] })).rejects.toMatchObject({ code: 'nothing_to_add' });
+    expect(batches).toHaveLength(0);
+  });
+
+  it('an unknown target is NotFound before any source is read', async () => {
+    answer(games, []);
+    await expect(addDisksToSet('org-1', 'G', { sourceGameIds: ['P'] })).rejects.toBeInstanceOf(NotFound);
+    expect(batches).toHaveLength(0);
+  });
+
+  it('an empty list is nothing_to_add', async () => {
+    await expect(addDisksToSet('org-1', 'G', { sourceGameIds: [] })).rejects.toMatchObject({ code: 'nothing_to_add' });
   });
 });
 

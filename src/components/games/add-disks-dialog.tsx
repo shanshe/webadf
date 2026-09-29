@@ -23,8 +23,7 @@ import { Search } from 'lucide-react';
 import type { CandidateTitle } from '@/lib/disk-set-search';
 import type { UndoSnapshot } from '@/lib/disk-set-store';
 import { addErrorText } from '@/lib/disk-set-errors';
-
-type AppRouter = ReturnType<typeof useRouter>;
+import { movedToast } from './moved-toast';
 
 export type AddDisksMode =
   /** Add other titles' disks to `gameId` (a set). */
@@ -33,8 +32,6 @@ export type AddDisksMode =
   | { kind: 'target'; gameId: string; diskId: string };
 
 const DEBOUNCE_MS = 250;
-const UNDO_TOAST_MS = 10_000;
-const EXTRAS_NOTE = 'Covers, Demozoo links and collections of the old title are not restored by Undo.';
 
 // 44px below `sm` (touch), the house 30px pill from `sm` up.
 const PILL =
@@ -46,73 +43,6 @@ function diskName(d: CandidateTitle['disks'][number]): string {
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
-}
-
-/**
- * Put every picked title back, one snapshot at a time. Stops at the first
- * refusal: a 409 means the set was changed since the add (a disk moved out,
- * the set reordered into another title), and the server writes nothing then.
- */
-async function undoMoves(undo: UndoSnapshot[], router: AppRouter): Promise<void> {
-  const restored: string[] = [];
-  // Why the loop stopped early, if it did: one reason, reported once below,
-  // together with how much WAS undone -- a partial undo must never be silent.
-  let failure: 'unreachable' | 'stale' | 'other' | null = null;
-  for (const snapshot of undo) {
-    let res: Response;
-    try {
-      res = await fetch(`/api/disks/${snapshot.diskIds[0]}/undo-move`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ snapshot }),
-      });
-    } catch {
-      failure = 'unreachable';
-      break;
-    }
-    if (res.status === 409) { failure = 'stale'; break; }
-    if (!res.ok) { failure = 'other'; break; }
-    const body = (await res.json().catch(() => null)) as { gameId?: string } | null;
-    // Counted even without an id: the server said it was done.
-    restored.push(body?.gameId ?? '');
-  }
-
-  if (failure) {
-    const reason = failure === 'stale' ? 'the set has changed since'
-      : failure === 'unreachable' ? 'the server could not be reached'
-        : 'the server refused it';
-    if (restored.length === 0) {
-      toast.error(failure === 'stale' ? "Can't undo — the set has changed since"
-        : failure === 'unreachable' ? 'Could not reach the server' : 'Could not undo',
-      failure === 'unreachable' ? { description: 'Nothing was undone.' } : undefined);
-    } else {
-      toast.error(`Undid ${restored.length} of ${undo.length} — the rest could not be undone because ${reason}`);
-    }
-    router.refresh();
-    return;
-  }
-
-  // One title put back: go to it, as the lone disk's own page was left for the
-  // set. Several: stay where the person is (the set) and redraw it -- there
-  // is no one title to land on.
-  if (undo.length === 1 && restored[0]) {
-    toast.success('Undone');
-    router.push(`/games/${restored[0]}`);
-  } else {
-    toast.success(undo.length === 1 ? 'Undone' : `Undone — ${plural(restored.length, 'title', 'titles')} restored`);
-    router.refresh();
-  }
-}
-
-/** "Moved to <set>", with Undo when the server returned anything to undo. */
-function movedToast(setTitle: string, undo: UndoSnapshot[], router: AppRouter): void {
-  toast.success(`Moved to ${setTitle}`, {
-    description: undo.some((s) => s.hadExtras) ? EXTRAS_NOTE : undefined,
-    duration: undo.length > 0 ? UNDO_TOAST_MS : undefined,
-    action: undo.length > 0
-      ? { label: 'Undo', onClick: () => { void undoMoves(undo, router); } }
-      : undefined,
-  });
 }
 
 /**

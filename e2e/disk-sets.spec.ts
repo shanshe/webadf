@@ -428,6 +428,8 @@ test('org scoping: another org\'s title and disks answer 404', async ({ page, br
 
     expect((await pageB.request.post(`/api/games/${set.gameId}/disks`, { data: { diskIds: [mine.diskId] } })).status()).toBe(404);
     expect((await pageB.request.post(`/api/games/${mine.gameId}/disks`, { data: { diskIds: [set.ids[0]] } })).status()).toBe(404);
+    // A title of another org is not a source either (drag a card onto a card).
+    expect((await pageB.request.post(`/api/games/${mine.gameId}/disks`, { data: { sourceGameIds: [set.gameId] } })).status()).toBe(404);
     expect((await pageB.request.put(`/api/games/${set.gameId}/disk-order`, { data: { diskIds: [...set.ids].reverse() } })).status()).toBe(404);
     expect((await pageB.request.post(`/api/disks/${set.ids[0]}/move-out`)).status()).toBe(404);
   } finally {
@@ -436,4 +438,173 @@ test('org scoping: another org\'s title and disks answer 404', async ({ page, br
   const n = await diskNos(set.ids);
   expect(n[set.ids[0]]).toEqual({ gameId: set.gameId, diskNo: 1 });
   expect(n[set.ids[1]]).toEqual({ gameId: set.gameId, diskNo: 2 });
+});
+
+// ---------------------------------------------------------------------------
+// Drag a library card onto a card (approved 2026-09-29).
+
+/** The library card showing `title`. */
+const card = (page: Page, title: string) => page.getByTestId('game-card').filter({ hasText: title });
+
+/**
+ * dragOnto, but it stops over the target to prove the hint is drawn there
+ * (and only there) before letting go.
+ */
+async function dragCardOnto(page: Page, source: Locator, target: Locator) {
+  const from = (await source.boundingBox())!;
+  const to = (await target.boundingBox())!;
+  const sx = from.x + from.width / 2;
+  const sy = from.y + from.height / 2;
+  const tx = to.x + to.width / 2;
+  const ty = to.y + to.height / 2;
+  await page.mouse.move(sx, sy);
+  await page.mouse.down();
+  await page.mouse.move(sx + 14, sy + 14, { steps: 6 });
+  await page.mouse.move(tx, ty, { steps: 15 });
+  await page.mouse.move(tx, ty, { steps: 2 });
+  await expect(target.getByTestId('set-drop-target')).toBeVisible();
+  await expect(target.getByTestId('set-drop-target')).toHaveText('Add to disk set');
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(1);
+  await page.mouse.up();
+  // dnd-kit's pointer sensor keeps a document-level capture listener that
+  // stops every click for 50ms after a drop (AbstractPointerSensor.detach:
+  // setTimeout(removeAll, 50)). The dialog is up well within that, and a
+  // Playwright click on it that soon is swallowed -- no person clicks that
+  // fast, so wait the window out rather than race it.
+  await page.waitForTimeout(100);
+}
+
+test('All titles: a card dropped on a card asks, then makes one set named as typed, target\'s disks first', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const a = await seedSet(orgId, `DropA ${tag}`, 2);
+  const b = await seedDisk(orgId, { title: `DropB ${tag}`, diskNo: 1, sha256: sha(`${tag}-b`) });
+
+  await page.goto('/library?collection=all');
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  await dragCardOnto(page, card(page, `DropB ${tag}`), card(page, `DropA ${tag}`));
+
+  const dialog = page.getByTestId('set-drop-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Add to a disk set' })).toBeVisible();
+  await expect(dialog.getByTestId('set-drop-order-1')).toContainText(`DropA ${tag}`);
+  await expect(dialog.getByTestId('set-drop-order-1')).toContainText('2 disks');
+  await expect(dialog.getByTestId('set-drop-order-2')).toContainText(`DropB ${tag}`);
+  await expect(dialog.getByTestId('set-drop-order-2')).toContainText('1 disk');
+  // Still on the library: the click that ends a drag did not follow the card's link.
+  await expect(page).toHaveURL(/\/library\?collection=all$/);
+
+  const name = dialog.getByTestId('set-drop-name');
+  await expect(name).toHaveValue(`DropA ${tag}`);
+  await name.fill('');
+  await expect(dialog.getByTestId('set-drop-confirm')).toBeDisabled();
+  await name.fill(`Dropped ${tag}`);
+  await dialog.getByTestId('set-drop-confirm').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: `Moved to Dropped ${tag}` })).toBeVisible();
+
+  await expect(page.getByTestId('game-card')).toHaveCount(1);
+  await expect(card(page, `Dropped ${tag}`)).toBeVisible();
+  await expect(card(page, `Dropped ${tag}`)).toContainText('3');
+
+  const nos = await diskNos([...a.ids, b.diskId]);
+  expect([nos[a.ids[0]], nos[a.ids[1]], nos[b.diskId]]).toEqual([
+    { gameId: a.gameId, diskNo: 1 }, { gameId: a.gameId, diskNo: 2 }, { gameId: a.gameId, diskNo: 3 },
+  ]);
+  expect(await orgGames(orgId)).toEqual([{ id: a.gameId, title: `Dropped ${tag}` }]);
+
+  await page.goto(`/games/${a.gameId}`);
+  await expect(page.getByRole('heading', { level: 1, name: `Dropped ${tag}` }).first()).toBeVisible();
+  await expect(page.getByTestId('set-name')).toHaveText(`Dropped ${tag}`);
+  expect(await rowOrder(page)).toEqual([...a.ids, b.diskId]);
+  expect((await page.goto(`/games/${b.gameId}`))?.status()).toBe(404);
+});
+
+test('Swap: the dragged title becomes the set, and its disks come first', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const a = await seedDisk(orgId, { title: `SwapA ${tag}`, diskNo: 1, sha256: sha(`${tag}-a`) });
+  const b = await seedSet(orgId, `SwapB ${tag}`, 2);
+
+  await page.goto('/library?collection=all');
+  await dragCardOnto(page, card(page, `SwapB ${tag}`), card(page, `SwapA ${tag}`));
+  const dialog = page.getByTestId('set-drop-dialog');
+  await expect(dialog.getByTestId('set-drop-name')).toHaveValue(`SwapA ${tag}`);
+  await dialog.getByTestId('set-drop-swap').click();
+  await expect(dialog.getByTestId('set-drop-order-1')).toContainText(`SwapB ${tag}`);
+  await expect(dialog.getByTestId('set-drop-order-2')).toContainText(`SwapA ${tag}`);
+  // The untouched name follows the new target.
+  await expect(dialog.getByTestId('set-drop-name')).toHaveValue(`SwapB ${tag}`);
+  await dialog.getByTestId('set-drop-confirm').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('game-card')).toHaveCount(1);
+
+  const nos = await diskNos([...b.ids, a.diskId]);
+  expect([nos[b.ids[0]], nos[b.ids[1]], nos[a.diskId]]).toEqual([
+    { gameId: b.gameId, diskNo: 1 }, { gameId: b.gameId, diskNo: 2 }, { gameId: b.gameId, diskNo: 3 },
+  ]);
+  expect(await gameExists(a.gameId)).toBe(false);
+  await page.goto(`/games/${b.gameId}`);
+  expect(await rowOrder(page)).toEqual([...b.ids, a.diskId]);
+});
+
+test('Uncategorized: Cancel (and Escape) leave both titles untouched', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const a = await seedDisk(orgId, { title: `KeepA ${tag}`, diskNo: 1, sha256: sha(`${tag}-a`) });
+  const b = await seedDisk(orgId, { title: `KeepB ${tag}`, diskNo: 1, sha256: sha(`${tag}-b`) });
+
+  await page.goto('/library');   // the landing view is Uncategorized
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  await dragCardOnto(page, card(page, `KeepB ${tag}`), card(page, `KeepA ${tag}`));
+  await expect(page.getByTestId('set-drop-dialog')).toBeVisible();
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+
+  await dragCardOnto(page, card(page, `KeepA ${tag}`), card(page, `KeepB ${tag}`));
+  await expect(page.getByTestId('set-drop-dialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+
+  await expect(page).toHaveURL(/\/library$/);
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  const nos = await diskNos([a.diskId, b.diskId]);
+  expect(nos[a.diskId]).toEqual({ gameId: a.gameId, diskNo: 1 });
+  expect(nos[b.diskId]).toEqual({ gameId: b.gameId, diskNo: 1 });
+  expect((await orgGames(orgId)).map((g) => g.id).sort()).toEqual([a.gameId, b.gameId].sort());
+  // After a drag, a plain click on a card still opens it.
+  await card(page, `KeepA ${tag}`).click();
+  await expect(page).toHaveURL(new RegExp(`/games/${a.gameId}$`));
+});
+
+test('the rename pencil renames the set; Escape cancels; the library card shows the new name', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const set = await seedSet(orgId, `Rename ${tag}`, 2);
+
+  await page.goto(`/games/${set.gameId}`);
+  await expect(page.getByTestId('set-name')).toHaveText(`Rename ${tag}`);
+
+  await page.getByTestId('set-rename').click();
+  const input = page.getByTestId('set-rename-input');
+  await expect(input).toBeFocused();
+  await expect(input).toHaveAttribute('maxlength', '80');
+  await input.fill('Not this');
+  await input.press('Escape');
+  await expect(input).toHaveCount(0);
+  await expect(page.getByTestId('set-name')).toHaveText(`Rename ${tag}`);
+
+  await page.getByTestId('set-rename').click();
+  await page.getByTestId('set-rename-input').fill(`Renamed ${tag}`);
+  await page.getByTestId('set-rename-input').press('Enter');
+  await expect(page.getByTestId('set-name')).toHaveText(`Renamed ${tag}`);
+  // The DB first, then the page: the header shows the new name at once, but
+  // the h1 waits for router.refresh(), which is slow on a loaded machine.
+  await expect.poll(async () => (await orgGames(orgId))[0]?.title).toBe(`Renamed ${tag}`);
+  await expect(page.getByRole('heading', { level: 1, name: `Renamed ${tag}` }).first()).toBeVisible({ timeout: 15_000 });
+  const [row] = await getDb().select({ metadataSource: games.metadataSource }).from(games).where(eq(games.id, set.gameId));
+  expect(row.metadataSource).toBe('human');
+
+  await page.goto('/library?collection=all');
+  await expect(card(page, `Renamed ${tag}`)).toBeVisible();
 });
