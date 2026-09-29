@@ -26,10 +26,12 @@ import {
   useSensor,
   useSensors,
   type Active,
+  type ClientRect,
   type Collision,
   type CollisionDetection,
   type DragEndEvent,
   type DragMoveEvent,
+  type DroppableContainer,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
 import { SetDropDialog, type DropTitle } from '@/components/library/set-drop-dialog';
@@ -100,6 +102,15 @@ export const collectionCollisionDetection: CollisionDetection = (args) => {
  * `pointerWithin` finds) is untouched. Only a GAME drag gets the fallback: a
  * collection dragged in the rail has no business landing on a card.
  *
+ * One exception to "nearest": the empty cells after the LAST card, in a
+ * partial last row. Nearest would give them to the card above (at 1280 with
+ * six cards, index 3 rather than the end), and to a different card at phone
+ * width than at desktop. A person dropping there means "at the end", so a
+ * pointer in the last card's row band, to its right, goes to the last card
+ * (operator ruling 2026-09-29: append). With a single row there are no such
+ * cells inside the box -- the box ends at the last card -- so a drop to the
+ * right of a lone row stays outside the grid and does nothing.
+ *
  * Not used in the unfiltered views: there any card-on-card drop offers a
  * disk set, and a near miss must not open that dialog.
  */
@@ -109,29 +120,35 @@ export const collectionGridCollisionDetection: CollisionDetection = (args) => {
   if (hits.length > 0 || !p) return hits;
   if ((args.active.data.current as CollectionsDragData | undefined)?.type !== 'game') return hits;
 
-  const cards = args.droppableContainers.flatMap((c) => {
-    const rect = args.droppableRects.get(c.id);
-    const isCard = (c.data.current as CollectionsDragData | undefined)?.type === 'game';
-    return isCard && rect ? [{ container: c, rect }] : [];
-  });
-  if (cards.length === 0) return hits;
-  const left = Math.min(...cards.map(({ rect }) => rect.left));
-  const top = Math.min(...cards.map(({ rect }) => rect.top));
-  const right = Math.max(...cards.map(({ rect }) => rect.right));
-  const bottom = Math.max(...cards.map(({ rect }) => rect.bottom));
+  type Card = { container: DroppableContainer; rect: ClientRect; distance: number };
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  let nearest: Card | null = null;
+  let last: Card | null = null;   // in reading order: the lowest row, then the rightmost in it
+  for (const container of args.droppableContainers) {
+    const rect = args.droppableRects.get(container.id);
+    if (!rect || (container.data.current as CollectionsDragData | undefined)?.type !== 'game') continue;
+    left = Math.min(left, rect.left); top = Math.min(top, rect.top);
+    right = Math.max(right, rect.right); bottom = Math.max(bottom, rect.bottom);
+    const card: Card = { container, rect, distance: Math.hypot(p.x - (rect.left + rect.width / 2), p.y - (rect.top + rect.height / 2)) };
+    if (!nearest || card.distance < nearest.distance) nearest = card;
+    if (!last || rect.top > last.rect.top + 1 || (Math.abs(rect.top - last.rect.top) <= 1 && rect.left > last.rect.left)) last = card;
+  }
+  if (!nearest || !last) return hits;
   if (p.x < left || p.x > right || p.y < top || p.y > bottom) return hits;
 
-  let best: { container: (typeof cards)[number]['container']; middle: Point; distance: number } | null = null;
-  for (const { container, rect } of cards) {
-    const middle: Point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    const distance = Math.hypot(p.x - middle.x, p.y - middle.y);
-    if (!best || distance < best.distance) best = { container, middle, distance };
-  }
-  if (!best) return hits;
+  const afterLast = p.y >= last.rect.top && p.y <= last.rect.bottom && p.x > last.rect.right;
+  const to = afterLast ? last : nearest;
   const zone: Zone = 'edge';
   return [{
-    id: best.container.id,
-    data: { droppableContainer: best.container, value: best.distance, zone, pointer: { x: p.x, y: p.y }, middle: best.middle },
+    id: to.container.id,
+    // `value` is what dnd-kit sorts collisions by (smaller first); there is
+    // only ever this one, so it is informational: the pointer's distance
+    // from the chosen card's middle.
+    data: {
+      droppableContainer: to.container, value: to.distance, zone,
+      pointer: { x: p.x, y: p.y },
+      middle: { x: to.rect.left + to.rect.width / 2, y: to.rect.top + to.rect.height / 2 },
+    },
   }];
 };
 

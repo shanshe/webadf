@@ -21,9 +21,10 @@
 //     card's middle spends well over ARM_DELAY_MS in its centre, and counting
 //     that armed the very reorder the operator was trying to make. A pointer
 //     passing through a centre on its way elsewhere never arms it.
-//   - A drop in the gap between cards counts as a drop on the nearest card
-//     (the provider's collision detection resolves it; see
-//     collection-provider.tsx). Outside the grid, nothing happens.
+//   - A drop in the gap between cards counts as a drop on the nearest card,
+//     and one in the empty cells after the last card as a drop on the last
+//     card (the end). The provider's collision detection resolves both; see
+//     collection-provider.tsx. Outside the grid, nothing happens.
 //
 // What MOVES while dragging:
 //   - Pointer in a card's edge: the reorder preview shows once the pointer
