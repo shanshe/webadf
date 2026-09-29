@@ -9,6 +9,7 @@ import { readVolume } from '@/lib/adffs';
 import { signUpFresh, runTag, createAdf } from './helpers';
 import { cleanupSeeded, seedDisk, addDisk, pairDevice, authHeader } from './device-helpers';
 import { synthDrop } from './drag-drop-helpers';
+import { zoneOf } from '@/lib/set-folder';
 import { seedProduction, seedSuggestion, cleanupDemozoo } from './demozoo-helpers';
 
 /**
@@ -748,4 +749,75 @@ test('a card held and dropped on a card at 390px opens the set dialog: it fits, 
   const titles = await getDb().select({ id: games.id }).from(games).where(eq(games.orgId, u.orgId));
   expect(titles).toHaveLength(6);
   void run;
+});
+
+test('in a collection at 390px: a finger walked slowly into a card\'s centre leaves it where it is; after the hold it offers the set, and Add makes it', async ({ page }) => {
+  const u = await signUpFresh(page);
+  const run = runTag();
+  const t = (x: string) => `Finger${x} ${run}`;
+  const seeded = [];
+  for (const x of ['A', 'B', 'C']) seeded.push(await seedDisk(u.orgId, { title: t(x), diskNo: 1, sha256: sha(`${run}-folder-${x}`) }));
+  const [a, b] = seeded;
+  const res = await page.request.post('/api/collections', { data: { name: `Finger ${run}` } });
+  expect(res.status()).toBe(200);
+  const collectionId = (await res.json()).id as string;
+  for (const g of seeded) {
+    expect((await page.request.post(`/api/collections/${collectionId}/games`, { data: { gameId: g.gameId } })).status()).toBe(200);
+  }
+
+  await page.goto(`/library?collection=${collectionId}`);
+  const cards = page.getByTestId('game-card');
+  await expect(cards).toHaveCount(3);
+  const cardOf = (title: string) => cards.filter({ hasText: title });
+  // Two columns: A and B side by side, so a finger walks across from one to the other.
+  const from = (await cardOf(t('A')).boundingBox())!;
+  const slot = (await cardOf(t('B')).boundingBox())!;
+  expect(Math.abs(from.y - slot.y)).toBeLessThan(2);
+  const inCentre = (p: { x: number; y: number }) =>
+    zoneOf(p, { left: slot.x, top: slot.y, width: slot.width, height: slot.height }) === 'centre';
+  const offBy = (bx: { x: number; y: number }) => Math.max(Math.abs(bx.x - slot.x), Math.abs(bx.y - slot.y));
+
+  // Press and hold past the TouchSensor's 250 ms, then walk 4 px a frame.
+  const cdp = await page.context().newCDPSession(page);
+  const y = from.y + from.height / 2;
+  let x = from.x + from.width / 2;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+  await page.waitForTimeout(400);
+  const walk: Array<{ centre: boolean; off: number }> = [];
+  const tx = slot.x + slot.width / 2;
+  while (x < tx) {
+    x = Math.min(tx, x + 4);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+    await page.waitForTimeout(16);
+    walk.push({ centre: inCentre({ x, y }), off: offBy((await cardOf(t('B')).boundingBox())!) });
+  }
+  const hold: number[] = [];
+  const t0 = Date.now();
+  while (Date.now() - t0 < 600) {
+    hold.push(offBy((await cardOf(t('B')).boundingBox())!));
+    await page.waitForTimeout(50);
+  }
+  console.log(`[folder finger A into B] walk: ${walk.map((w) => `${w.centre ? 'C' : 'e'}${Math.round(w.off)}`).join(' ')}; ` +
+    `hold: ${hold.map((o) => o.toFixed(1)).join(' ')}`);
+  const inside = walk.filter((w) => w.centre);
+  expect(inside.length, 'the finger reached B\'s centre').toBeGreaterThan(5);
+  expect(Math.max(...walk.map((w) => w.off)), 'B moved while the finger crossed its edge or sat in its centre').toBeLessThanOrEqual(2);
+  expect(Math.max(...hold), 'B moved during the hold').toBeLessThanOrEqual(2);
+  await expect(cardOf(t('B')).getByTestId('set-drop-target')).toBeVisible();
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(1);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await cdp.detach();
+
+  const dialog = page.getByTestId('set-drop-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('set-drop-order-1')).toContainText(t('B'));
+  await expect(dialog.getByTestId('set-drop-order-2')).toContainText(t('A'));
+  await page.waitForTimeout(100);   // dnd-kit swallows clicks for 50 ms after a drop
+  await page.getByTestId('set-drop-confirm').tap();
+  await expect(dialog).toHaveCount(0);
+  await expect(cards).toHaveCount(2);
+  const rows = await getDb().select({ gameId: disks.gameId }).from(disks).where(eq(disks.id, a.diskId));
+  expect(rows[0].gameId).toBe(b.gameId);
+  const left = await getDb().select({ id: games.id }).from(games).where(eq(games.orgId, u.orgId));
+  expect(left).toHaveLength(2);
 });
