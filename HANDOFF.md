@@ -61,7 +61,7 @@ SHA-256; you browse them and press mount; a custom board emulates the floppy dri
 | **NFC tap-to-mount** | ✅ **merged and live 2026-09-26 (master 0f6fbd1); firmware 1.3.0 (seq 10) confirmed on the board.** Tap a tag → the board mounts that disk from its own org's library (swap; same tag = no-op; 1 s rate limit). Claude writes tags: `pnpm nfc:write "<disk>"` arms the board through the poll, you tap a blank tag, the read-back is reported. HW-147C/Si512 reader on I2C1 (0x28). **Firmware 1.3.1 (seq 11, 2026-09-26): a tap needs 3 s of absence; a write never lands on a tag already on the reader.** Bench: write + tap-mount + same-tag proven; see §3am. **Fob button (2026-09-26, b6c4e7c):** an NFC icon on every library card and disk row writes that disk to a tag from the web (dialog picks disk and board, 2:00 countdown, read-back shown; withdraws on close/cancel/leave); shown only when a board reports a reader |
 | **HD floppies, read-only** | ✅ **merged; firmware 1.4.1 verified on hardware 2026-09-27** (A5000, Kickstart 3.1); see 3an |
 | **HD disks: writes, history, editing, blank disks** | ✅ **merged 2026-09-28; firmware 1.5.1 (seq 31) on the board.** Bench steps 4-7 and the rev B `short 0` retest owed; see 3ao |
-| **Multi-disk "Next disk" + Next-disk NFC card + preload** | ✅ **bench-proven 2026-09-29 (all 3ap steps).** ⚠️ **Step 4 lost a file header on Locale (block 597): the swap did not wait for the Amiga to finish writing. Fixed in firmware 1.6.1 (swap waits for the drive light); bench retest owed, see 3ar.** 🟡→✅ **merged 2026-09-28 (`92ec133`), web live; firmware 1.6.0 (seq 32) published and targeted, installs when the Amiga is on and idle.** Bench acceptance owed; see 3ap |
+| **Multi-disk "Next disk" + Next-disk NFC card + preload** | ✅ **bench-proven 2026-09-29 (all 3ap steps).** ⚠️→✅ **Step 4 lost a file header on Locale (block 597): the swap did not wait for the Amiga to finish writing. Fixed in firmware 1.6.1 (swap waits for the drive light), bench-proven 2026-09-29; see 3ar. Open: a restore under a running Amiga (3ar).** 🟡→✅ **merged 2026-09-28 (`92ec133`), web live; firmware 1.6.0 (seq 32) published and targeted, installs when the Amiga is on and idle.** Bench acceptance owed; see 3ap |
 | **Disk sets** | ✅ **merged 2026-09-29 (`aa3520d`), live; migration 0028 applied.** A title with several disks, arranged by a person: upload suggestion, title-page Disk set section (add, reorder, move out, undo). See 3aq |
 | **Drive chips in the header** | ✅ **done 2026-09-25, merged and live.** Every paired board as a chip beside the wordmark: status dot, name, mounted disk; caret menu with Go to disk (the game page), Disk is Protected/Writable, and Eject (no confirm, below a divider). Pending states while a mount or eject converges. 1 chip + "+k" at 1280, 2 at 1536, 3 at 1920; below 1280 a single "Drives" list. Fed by `liveStateRows` (now carries the mounted game/title/disk no/format, all in `liveFingerprint`); `src/lib/drive-chips.ts`, `src/components/shell/drive-chips.tsx`. Unverified: 640–700 px the Drives button overlaps the pill (the search box already does, 640–767 px, on master). **2026-09-26 (`b40699c`): the chips are centred in the gap between the wordmark and the pill** (`src/components/shell/header-start.tsx` measures the pill's width; equal gaps at 1280/1536/1920, with and without Admin), and the "+k" chip shows one number at ≥1920 (a Tailwind breakpoint-order bug had shown "+2 +1") |
 | **Five minors, 2026-09-25** | ✅ **merged and live.** Update confirm is a real modal (role=dialog, Escape, focus, Enter submits); the 50-board cap (`MAX_UPDATE_BATCH`) shows in the update bar; re-extracting an EDITED extract is a 409 `already_extracted` with a link; the not-extractable reason is visible text; a refused HFE's bytes are deleted when nothing references them (a two-round-trip race is documented in `releaseRefused`) |
@@ -4550,7 +4550,18 @@ row shows the larger disk count; what is applied is identical. Add "of M" to the
 
 ### 3ar. A disk is released only when the Amiga has finished with it -- firmware 1.6.1 (2026-09-29)
 
-**STATUS: on `fix/swap-waits-for-idle`; host tests green; built. Publish + bench retest below.**
+**STATUS: firmware 1.6.1+g207a202 published (seq 33), installed on WifiFloppy1, BENCH-PROVEN 2026-09-29: "everything
+now works for waiting until save is done, then moving to next disk" (operator, retest step 1). Eject with the Amiga
+switched off went through in 1.4 s (step 4, M5: WGATE does not hold a powered-off Amiga).**
+
+**Second finding, same evening -- restore under a running Amiga (NOT fixed yet, design owed):** after the operator
+restored Locale (seq 4, 18:54: eject, restore, remount), the Amiga wrote root 880 + bitmap 881 at 18:56 (seq 5) from
+its memory -- the root still listing `Copy_of_Languages` (slot 66 -> 591), so block 591 failed its checksum. The restored
+disk has the same volume name and date, so AmigaDOS took it for the volume it remembered. Recovered 2026-09-29 by
+restoring seq 1 again (seq 6) with the Amiga switched OFF; image verified (xdftool list, every header checksum). Proposed
+fix, to bring to the operator before building: a restore gives the volume a new date in the root block, so the Amiga
+treats it as a different disk (drops what it remembers; asks for the old one if it still has unsaved changes). Cost: the
+restored image is no longer byte-identical to the version it came from.
 
 **What happened (bench 3ap step 4, 18:45):** a Next-disk tap during a save on Locale (disk 5 of the Workbench 3.1 set,
 RW) swapped to disk 6 after the save uploaded -- as designed -- and Locale then reported a checksum error on block 597.
