@@ -29,15 +29,17 @@ const tag = () => Math.random().toString(36).slice(2, 8);
 
 /**
  * One two-disk TOSEC release, plus an [a] alternate dump of disk 1: three
- * rows that must come back as ONE search result reading "2 disks". Its title
- * is exactly `title`, which the search ranks first among matches.
+ * rows that must come back as ONE search result reading "2 disks". Each disk
+ * carries its own sub-label AFTER the disk clause, as real TOSEC names do
+ * ("(Disk 1 of 2)(Install)"), which must not split the release. Its title is
+ * exactly `title`, which the search ranks first among matches.
  */
 async function seedRelease(title: string, t: string) {
   const setName = `e2e-identify-search-${t}`;
   const publisher = `E2E Pub ${t}`;
   const base = `${title} (1993)(${publisher})`;
-  for (const [n, flag] of [[1, ''], [1, '[a]'], [2, '']] as const) {
-    const gameName = `${base}(Disk ${n} of 2)${flag}`;
+  for (const [n, label, flag] of [[1, '(Install)', ''], [1, '(Install)', '[a]'], [2, '(Extras)', '']] as const) {
+    const gameName = `${base}(Disk ${n} of 2)${label}${flag}`;
     await seedTosecEntry({
       setName, gameName, romName: `${gameName}.adf`,
       title, sortTitle: makeSortTitle(title), year: 1993, publisher, diskNo: n, diskCount: 2,
@@ -50,15 +52,22 @@ test('a TOSEC release sets title, year and publisher on an unidentified title', 
   const user = await signUpFresh(page);
   const t = tag();
   const { gameId } = await seedDisk(user.orgId, { title: `unknown-${t}`, diskNo: 1, sha256: freshSha() });
-  const rel = await seedRelease('Workbench', t);
+  // Unique per run: the production DB holds the real TOSEC import, whose
+  // releases could otherwise outrank the seed and push it past the limit.
+  const title = `Identify Release ${t}`;
+  const rel = await seedRelease(title, t);
 
   await page.goto(`/games/${gameId}`);
   const input = page.getByTestId('demozoo-search-input');
   await expect(input).toHaveAttribute('placeholder', 'Find on Demozoo or TOSEC');
-  await input.fill('workbench');
+  await input.fill(title);
   await page.getByTestId('identify-search-submit').click();
 
-  // Three seeded rows, one release.
+  // Three seeded rows, one release: EVERY TOSEC row naming the seed's
+  // unique publisher is counted, so a disk left ungrouped (a second row with
+  // another data-key) fails here instead of slipping past a key filter.
+  await expect(page.getByTestId('tosec-search-result').first()).toBeVisible();
+  await expect(page.getByTestId('tosec-search-result').filter({ hasText: rel.publisher })).toHaveCount(1);
   const row = page.locator(`[data-testid="tosec-search-result"][data-key="${rel.key}"]`);
   await expect(row).toHaveCount(1);
   await expect(row.getByTestId('identify-search-result-tosec')).toHaveText('TOSEC');
@@ -68,13 +77,52 @@ test('a TOSEC release sets title, year and publisher on an unidentified title', 
 
   await row.getByTestId(`tosec-use-${rel.key}`).click();
   await expect(page.getByText('Details set from TOSEC')).toBeVisible();
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Workbench');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
 
   const g = (await getDb().select().from(games).where(eq(games.id, gameId)))[0];
-  expect(g.title).toBe('Workbench');
+  expect(g.title).toBe(title);
   expect(g.year).toBe(1993);
   expect(g.publisher).toBe(rel.publisher);
   expect(g.metadataSource).toBe('human');
+});
+
+test('a TOSEC release with no year or publisher clears the old ones', async ({ page }) => {
+  const user = await signUpFresh(page);
+  const t = tag();
+  const { gameId } = await seedDisk(user.orgId, { title: `old-${t}`, diskNo: 1, sha256: freshSha() });
+  await getDb().update(games).set({ year: 1990, publisher: `Old Pub ${t}` }).where(eq(games.id, gameId));
+  // TOSEC's "(19xx)(-)": year and publisher both unknown.
+  const title = `Undated Release ${t}`;
+  const gameName = `${title} (19xx)(-)`;
+  await seedTosecEntry({
+    setName: `e2e-identify-search-${t}`, gameName, romName: `${gameName}.adf`,
+    title, sortTitle: makeSortTitle(title), year: null, publisher: '-',
+  });
+
+  await page.goto(`/games/${gameId}`);
+  await page.getByTestId('demozoo-search-input').fill(title);
+  await page.getByTestId('identify-search-submit').click();
+  const key = tosecKey(gameName);
+  await page.getByTestId(`tosec-use-${key}`).click();
+  await expect(page.getByText('Details set from TOSEC')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
+
+  const g = (await getDb().select().from(games).where(eq(games.id, gameId)))[0];
+  expect(g.title).toBe(title);
+  expect(g.year).toBeNull();
+  expect(g.publisher).toBeNull();
+});
+
+test('a query under two characters asks for more instead of saying nothing matched', async ({ page }) => {
+  const user = await signUpFresh(page);
+  const t = tag();
+  const { gameId } = await seedDisk(user.orgId, { title: `short-${t}`, diskNo: 1, sha256: freshSha() });
+
+  await page.goto(`/games/${gameId}`);
+  await page.getByTestId('demozoo-search-input').fill('w');
+  await page.getByTestId('identify-search-submit').click();
+  await expect(page.getByTestId('identify-search-status')).toHaveText('Type at least 2 characters to search.');
+  await expect(page.getByText('Nothing on Demozoo or TOSEC with that title.')).toHaveCount(0);
 });
 
 test('a Demozoo result in the same box still links on "Use this"', async ({ page }) => {

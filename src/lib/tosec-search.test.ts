@@ -32,7 +32,7 @@ const fakeDb = {
 };
 vi.mock('@/db', () => ({ getDb: () => fakeDb }));
 
-const { searchTosec, tosecKey, TOSEC_SEARCH_LIMIT } = await import('./tosec-search');
+const { searchTosec, tosecKey, tosecBaseName, baseNameSql, DISK_TAIL_PATTERN, FLAG_PATTERN, TOSEC_SEARCH_LIMIT } = await import('./tosec-search');
 
 const dialect = new PgDialect();
 // Columns and SQL alike: a bare column is wrapped so it renders qualified.
@@ -69,9 +69,12 @@ describe('searchTosec', () => {
     expect(group).toContain('"tosec_entries"."title"');
     expect(group).toContain('"tosec_entries"."year"');
     expect(group).toContain('"tosec_entries"."publisher"');
-    // The base name: "(Disk N of M)" and every [flag] stripped, so the disks
-    // of one release (and its [a] alternates) fold into one row.
-    expect(group).toMatch(/regexp_replace\(regexp_replace\("tosec_entries"\."game_name", '[^']*Disk[^']*', '', 'gi'\), '[^']*\\\[[^']*', '', 'g'\)/);
+    // The base name: cut at "(Disk N of M)" and every [flag] stripped, so the
+    // disks of one release (and its [a] alternates) fold into one row. The
+    // literals are exactly the patterns tosecBaseName uses, so its tests
+    // below are tests of this expression.
+    expect(group).toContain(
+      `regexp_replace(regexp_replace("tosec_entries"."game_name", '${DISK_TAIL_PATTERN}', '', 'i'), '${FLAG_PATTERN}', '', 'g')`);
   });
 
   it('asks for at most 10 releases, in a total order', async () => {
@@ -119,5 +122,60 @@ describe('searchTosec', () => {
 describe('tosecKey', () => {
   it('is lowercase, alphanumeric and dashes only', () => {
     expect(tosecKey('Lemmings 2 - The Tribes (1993)(Psygnosis)')).toBe('lemmings-2-the-tribes-1993-psygnosis');
+  });
+});
+
+describe('tosecBaseName (the grouping key, mirrored from the SQL)', () => {
+  const same = (names: string[]) => new Set(names.map(tosecBaseName));
+
+  it('folds disks with a per-disk sub-label after the disk clause into one release', () => {
+    const keys = same([
+      'Workbench v3.1 (1994)(Commodore)(Disk 1 of 6)(Install)',
+      'Workbench v3.1 (1994)(Commodore)(Disk 2 of 6)(Workbench)',
+      'Workbench v3.1 (1994)(Commodore)(Disk 3 of 6)(Extras)',
+      'Workbench v3.1 (1994)(Commodore)(Disk 4 of 6)(Save Disk)',
+      'Workbench v3.1 (1994)(Commodore)(Disk 5 of 6)(Program)[a]',
+      'Workbench v3.1 (1994)(Commodore)(Disk 6 of 6)(Data)[cr XYZ]',
+    ]);
+    expect([...keys]).toEqual(['Workbench v3.1 (1994)(Commodore)']);
+  });
+
+  it('folds numbered disks and their [flag] alternates', () => {
+    expect([...same([
+      'Lemmings (1991)(Psygnosis)(Disk 1 of 2)',
+      'Lemmings (1991)(Psygnosis)(Disk 1 of 2)[a]',
+      'Lemmings (1991)(Psygnosis)(Disk 2 of 2)[cr Skid Row]',
+    ])]).toEqual(['Lemmings (1991)(Psygnosis)']);
+  });
+
+  it('folds letter disks, with and without "of"', () => {
+    expect([...same([
+      'Game (1990)(Pub)(Disk A)',
+      'Game (1990)(Pub)(Disk B)[a]',
+      'Game (1990)(Pub)(Disk A of B)',
+    ])]).toEqual(['Game (1990)(Pub)']);
+  });
+
+  it('folds a disk clause with no "of M"', () => {
+    expect(tosecBaseName('Game (1990)(Pub)(Disk 3)(Level Data)')).toBe('Game (1990)(Pub)');
+  });
+
+  it('leaves a name without a disk clause as before: only [flags] removed', () => {
+    expect(tosecBaseName('Graphics Workbench v1.0 (1995)(Macks Conspiracy)(AGA)[a][cr X]'))
+      .toBe('Graphics Workbench v1.0 (1995)(Macks Conspiracy)(AGA)');
+    expect(tosecBaseName('Save Disk Utility (1990)(Pub)')).toBe('Save Disk Utility (1990)(Pub)');
+    // "(Disk" must open a disk clause; a word inside another clause is not one.
+    expect(tosecBaseName('Data (1990)(Disk Masters)')).toBe('Data (1990)(Disk Masters)');
+  });
+
+  it('keeps two different releases apart', () => {
+    expect(same(['X (1990)(Pub)(Disk 1 of 2)', 'X (1991)(Pub)(Disk 1 of 2)']).size).toBe(2);
+  });
+
+  it('is the expression the SQL renders, over any input', () => {
+    const q = render(baseNameSql(sql`${'Some Name (Disk 1 of 2)'}`));
+    // The user-side text stays a bound parameter; the patterns are literals.
+    expect(q.params).toEqual(['Some Name (Disk 1 of 2)']);
+    expect(q.sql).toBe(`regexp_replace(regexp_replace($1, '${DISK_TAIL_PATTERN}', '', 'i'), '${FLAG_PATTERN}', '', 'g')`);
   });
 });
