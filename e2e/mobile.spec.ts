@@ -701,3 +701,51 @@ test('a disk set at 390px: the ⋯ menus, their items and the ▲▼ buttons are
   await page.getByTestId('disk-set-done').tap();
   await expect(page.getByTestId(`disk-${d2}`)).toContainText('Disk 2');
 });
+
+test('a card held and dropped on a card at 390px opens the set dialog: it fits, its controls are 44px, nothing scrolls sideways', async ({ page }) => {
+  // Six, not three: enough page below the two cards to scroll them into
+  // the middle of the viewport (see below).
+  const { u, run } = await seedLibrary(page, 6);
+  await page.goto('/library');
+  const cards = page.getByTestId('game-card');
+  await expect(cards).toHaveCount(6);
+  const vw = page.viewportSize()!.width;
+
+  // Card 3 sits under card 1 (two columns), so a straight upward finger
+  // drag goes from one onto the other. Both go mid-viewport first: dnd-kit
+  // auto-scrolls the page while a drag's pointer is in the top or bottom
+  // fifth, and a scripted finger cannot chase a target that scrolls away
+  // (the same reason as the file-tree drag above).
+  const top0 = (await cards.nth(0).boundingBox())!;
+  await page.evaluate((dy) => window.scrollBy(0, dy), top0.y + top0.height / 2 - 280);
+  const from = (await cards.nth(2).boundingBox())!;
+  const to = (await cards.nth(0).boundingBox())!;
+  const start = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+  const drag = await touchDrag(page, start, (to.y + to.height / 2) - start.y, { holdMs: 400 });
+  await expect(cards.nth(0).getByTestId('set-drop-target')).toBeVisible();
+  await drag.end();
+
+  const dialog = page.getByTestId('set-drop-dialog');
+  await expect(dialog).toBeVisible();
+  const box = (await dialog.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(vw);
+  expect(box.width).toBeGreaterThanOrEqual(vw - 1);   // a full-width sheet
+  for (const id of ['set-drop-name', 'set-drop-swap', 'set-drop-cancel', 'set-drop-confirm']) {
+    const b = (await page.getByTestId(id).boundingBox())!;
+    expect(b.height).toBeGreaterThanOrEqual(44);
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(vw);
+  }
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(0);
+
+  await page.getByTestId('set-drop-cancel').tap();
+  await expect(dialog).toHaveCount(0);
+  await expect(cards).toHaveCount(6);
+  const titles = await getDb().select({ id: games.id }).from(games).where(eq(games.orgId, u.orgId));
+  expect(titles).toHaveLength(6);
+  void run;
+});
