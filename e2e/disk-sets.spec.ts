@@ -1119,6 +1119,83 @@ test('in a collection: a quick drop on a card\'s centre -- let go before it arms
   await expect(page).toHaveURL(new RegExp(`/library\\?collection=${s.collectionId}$`));
 });
 
+test('in a collection: a hand-paced drag to a card\'s MIDDLE, a short settle and a drop reorders -- nothing arms on the way or there', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Middle');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  const writes = watchOrderWrites(page);
+
+  // A walks straight across B's centre to the very middle of C, checking at
+  // every step that no card offers a set: moving through a centre is not a
+  // rest, so it never arms -- neither B on the way nor C on arrival.
+  const slot = (await card(page, s.title('C')).boundingBox())!;
+  const start = await pickUp(page, card(page, s.title('A')));
+  let hintSteps = 0;
+  await walk(page, start, at(slot, 0.5, 0.5), async () => {
+    if (await page.getByTestId('set-drop-target').count() > 0) hintSteps++;
+  });
+  expect(hintSteps, 'steps on which a card offered "Add to disk set"').toBe(0);
+  // The settle a hand makes before letting go: shorter than ARM_DELAY_MS.
+  await page.waitForTimeout(150);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  await page.mouse.up();
+
+  const expected = [s.b.gameId, s.c.gameId, s.a.gameId];
+  await expect.poll(() => membershipOf(s.collectionId)).toEqual(expected);
+  await expect.poll(() => gridIds(page)).toEqual(expected);
+  expect(writes).toHaveLength(1);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  expect((await orgGames(orgId)).length).toBe(3);
+});
+
+test('in a collection: a drop in an empty cell after the last card moves the card to the END', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+  const title = (x: string) => `Tail${x} ${tag}`;
+  const ids: string[] = [];
+  for (const x of letters) ids.push((await seedDisk(orgId, { title: title(x), diskNo: 1, sha256: sha(`${tag}-${x}`) })).gameId);
+  const res = await page.request.post('/api/collections', { data: { name: `Tail ${tag}` } });
+  expect(res.status()).toBe(200);
+  const collectionId = (await res.json()).id as string;
+  for (const id of ids) {
+    expect((await page.request.post(`/api/collections/${collectionId}/games`, { data: { gameId: id } })).status()).toBe(200);
+  }
+
+  await page.goto(`/library?collection=${collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(7);
+  expect(await gridIds(page)).toEqual(ids);
+  const writes = watchOrderWrites(page);
+
+  // Five across at 1280: F and G make a partial second row. The empty cell
+  // after G is in G's row, two columns right of it, under D.
+  const d = (await card(page, title('D')).boundingBox())!;
+  const g = (await card(page, title('G')).boundingBox())!;
+  expect(g.y - d.y, 'G is on a second row').toBeGreaterThan(d.height / 2);
+  const cell = { x: d.x + d.width / 2, y: g.y + g.height / 2 };
+  expect(cell.y, 'the empty cell is on screen').toBeLessThan(page.viewportSize()!.height);
+  expect(await page.getByTestId('game-card').evaluateAll((els, p) => els.some((el) => {
+    const r = el.getBoundingClientRect();
+    return p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+  }), cell), 'the cell is empty').toBe(false);
+
+  const start = await pickUp(page, card(page, title('A')));
+  await walk(page, start, cell);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  await page.mouse.up();
+
+  const expected = [...ids.slice(1), ids[0]];
+  await expect.poll(() => membershipOf(collectionId)).toEqual(expected);
+  await expect.poll(() => gridIds(page)).toEqual(expected);
+  expect(writes).toHaveLength(1);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  expect((await orgGames(orgId)).length).toBe(7);
+});
+
 test('in a collection: a drop in the gap between two cards reorders to the nearest card -- no dialog', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
   const s = await seedCollectionOfThree(page, orgId, 'Gutter');
