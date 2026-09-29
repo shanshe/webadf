@@ -1,6 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 import type { GameDetail } from '@/lib/queries';
 import { DemozooSuggestions, UnlinkButton } from './demozoo-actions';
+import { IdentifySearch } from './identify-search';
 
 /**
  * The linked production, or the suggestion card. Rendered OUTSIDE GameFacts,
@@ -11,12 +12,24 @@ export function DemozooPanel({ game }: { game: GameDetail }) {
   const { link, suggestions, isGame } = game.demozoo;
 
   if (!link) {
-    // Demozoo never answers for a game (spec §5.3.1) -- not even a search box.
-    // The one exception is the repair path: a game whose title Demozoo still
-    // owns (written before TOSEC identified a disk as a game) needs a way
-    // back, and TOSEC itself will not retitle a 'demozoo' title (R5).
+    // Demozoo never answers for a game (spec §5.3.1), so a game gets the
+    // search box over TOSEC only. The one exception is the repair path: a
+    // game whose title Demozoo still owns (written before TOSEC identified a
+    // disk as a game) needs a way back, and TOSEC itself will not retitle a
+    // 'demozoo' title (R5).
     if (isGame) {
-      if (game.metadataSource !== 'demozoo') return null;
+      if (game.metadataSource !== 'demozoo') {
+        return (
+          <div className="px-4 pb-3 sm:px-7" data-testid="identify-search-panel">
+            <div className="glass-card p-5">
+              <IdentifySearch gameId={game.id} sources="tosec" />
+              <div className="mt-4 text-[12px]" style={{ color: 'var(--muted)' }}>
+                Releases from TOSEC. Nothing changes until you choose.
+              </div>
+            </div>
+          </div>
+        );
+      }
       return (
         <div className="px-4 pb-3 sm:px-7" data-testid="demozoo-restore">
           <div className="glass-card flex flex-col gap-2 p-5 sm:flex-row sm:items-center sm:justify-between">
@@ -37,6 +50,7 @@ export function DemozooPanel({ game }: { game: GameDetail }) {
         // The suggestion card is the only place this game gets rendered, so
         // the explanation and its repair (unlink, relabelled) live here.
         restoreTitle={game.metadataSource === 'demozoo'}
+        search={<IdentifySearch gameId={game.id} sources="all" />}
       />
     );
   }
