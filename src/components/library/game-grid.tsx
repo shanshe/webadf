@@ -14,7 +14,7 @@ import { fromQuery } from '@/lib/trail';
 import { ejectMessage, isMountedReason, mountedReason } from '@/lib/mount-wording';
 import { Cover } from './cover';
 import type { GameListItem } from '@/lib/queries';
-import { useCollectionsContext, type GameDragData, type PendingSetDrop } from '@/components/collections/collection-provider';
+import { useCollectionsContext, type GameDragData, type PendingSetDrop, SET_DROP_RETURN_MS } from '@/components/collections/collection-provider';
 
 export function GameGrid({ games, fob = null }: {
   games: GameListItem[];
@@ -110,8 +110,8 @@ function dragStyle(translate: string | undefined, isDragging: boolean) {
   };
 }
 
-/** Matches the transition applied below -- kept as one constant so they cannot drift apart. */
-const RETURN_TRANSITION = 'opacity 200ms ease';
+/** SET_DROP_RETURN_MS (collection-provider.tsx) is the one place this duration lives. */
+const RETURN_TRANSITION = `opacity ${SET_DROP_RETURN_MS}ms ease`;
 
 /**
  * Overrides `dragStyle`'s opacity while the card is the one named by

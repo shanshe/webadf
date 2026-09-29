@@ -650,6 +650,59 @@ test('All titles: the dragged card hides while the dialog is open, fades back on
   expect(await gameExists(a.gameId)).toBe(false);
 });
 
+test('a failed Add keeps the dialog open and the dragged card hidden through it; Cancel still fades it back', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const a = await seedDisk(orgId, { title: `FailA ${tag}`, diskNo: 1, sha256: sha(`${tag}-a`) });
+  const b = await seedDisk(orgId, { title: `FailB ${tag}`, diskNo: 1, sha256: sha(`${tag}-b`) });
+
+  await page.route('**/api/games/*/disks', (route) => route.fulfill({
+    status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom' }),
+  }));
+
+  await page.goto('/library?collection=all');
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  const cardA = card(page, `FailA ${tag}`);
+  const cardB = card(page, `FailB ${tag}`);
+  const aBoxBefore = (await cardA.boundingBox())!;
+  const dialog = page.getByTestId('set-drop-dialog');
+
+  await dragCardOnto(page, cardA, cardB);
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+
+  // The POST fails: confirm() (set-drop-dialog.tsx) shows a toast and calls
+  // router.refresh(), but -- unlike Cancel -- never calls onClose. The
+  // dialog stays open, and A must stay hidden right through that refresh.
+  // This is the bug the review found: library/page.tsx hands the provider a
+  // brand-new `gameIds` array on every refresh, even one that changed
+  // nothing, and the reconciliation in collection-provider.tsx used to read
+  // any new array as "the drop is done" and pop A back to full view
+  // underneath the still-open dialog.
+  await dialog.getByTestId('set-drop-confirm').click();
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: 'Could not make the disk set' })).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+  // Give the refresh -- and any leftover reconciliation bug -- every chance
+  // to have shown A before saying it did not.
+  await page.waitForTimeout(3_000);
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+
+  // Cancel still works, and still fades A back to where it started.
+  await page.unroute('**/api/games/*/disks');
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(cardA).toBeVisible();
+  expect(await cardA.boundingBox()).toEqual(aBoxBefore);
+
+  // Nothing was actually moved.
+  const nos = await diskNos([a.diskId, b.diskId]);
+  expect(nos[a.diskId]).toEqual({ gameId: a.gameId, diskNo: 1 });
+  expect(nos[b.diskId]).toEqual({ gameId: b.gameId, diskNo: 1 });
+  expect((await orgGames(orgId)).map((g) => g.id).sort()).toEqual([a.gameId, b.gameId].sort());
+});
+
 test('the rename pencil renames the set; Escape cancels; the library card shows the new name', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
   const tag = runTag();

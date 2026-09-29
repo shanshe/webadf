@@ -187,8 +187,13 @@ export interface PendingSetDrop {
   returning: boolean;
 }
 
-/** How long the fade-back takes once a close-without-success starts it (ms). Matches the transition game-grid.tsx applies. */
-const RETURN_MS = 200;
+/**
+ * How long the fade-back takes once a close-without-success starts it (ms).
+ * The one place this number lives -- game-grid.tsx imports it rather than
+ * keeping its own copy, so the timer here and the CSS transition it starts
+ * cannot drift apart.
+ */
+export const SET_DROP_RETURN_MS = 200;
 
 const CollectionsContext = createContext<CollectionsContextValue | null>(null);
 
@@ -290,10 +295,21 @@ export function CollectionsProvider({
     // source game is gone from the grid for real (merged into the target),
     // and on a plain reorder/collection edit it was never the hidden card to
     // begin with. Either way any hide/return bookkeeping left over from a
-    // previous drop is stale once new data has landed, so it is cleared here
-    // rather than left to the return timer -- which never runs at all on the
-    // success path.
-    resetPendingSetDrop();
+    // PREVIOUS, already-closed drop is stale once new data has landed, so it
+    // is cleared here rather than left to the return timer -- which never
+    // runs at all on the success path.
+    //
+    // Gated on the dialog being closed (`setDrop === null`): an Add that
+    // FAILS still calls router.refresh() (confirm(), set-drop-dialog.tsx) to
+    // show a title that may have gone, but leaves the dialog OPEN. `games`
+    // (library/page.tsx) is rebuilt into a new array on every server render
+    // regardless of whether anything in it changed, so this branch runs on
+    // that refresh too -- and clearing pendingSetDrop then would pop the
+    // hidden card back to full visibility right underneath the still-open
+    // dialog. `closeSetDrop` (Cancel, Escape, the backdrop, or the dialog's
+    // own success close) is what resolves a pending hide while the dialog is
+    // up; this is only the cleanup for after it has closed.
+    if (setDrop === null) resetPendingSetDrop();
   }
 
   /**
@@ -561,7 +577,7 @@ export function CollectionsProvider({
     returnTimer.current = setTimeout(() => {
       returnTimer.current = null;
       setPendingSetDrop(null);
-    }, RETURN_MS);
+    }, SET_DROP_RETURN_MS);
   }
 
   return (
