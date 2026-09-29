@@ -320,7 +320,7 @@ test('reorder: Move up renumbers, and in reorder mode a drag and the ▲▼ butt
   await expect(page.getByTestId(`disk-${a}`)).toContainText('Disk 3');
 });
 
-test('move out makes a lone title named after the volume; Add to a disk set… and Undo from its toast put it back', async ({ page }) => {
+test('move out stays on the set and its toast opens a lone title named after the volume; Add to a disk set… and Undo from its toast put it back', async ({ page }) => {
   test.setTimeout(90_000);
   const { orgId } = await signUpFresh(page);
   const tag = runTag();
@@ -338,13 +338,24 @@ test('move out makes a lone title named after the volume; Add to a disk set… a
   await page.getByTestId(`disk-menu-${d[1].id}`).click();
   await page.getByTestId(`disk-move-out-${d[1].id}`).click();
 
-  // The page goes to the new title, named after disk 2's volume.
+  // The page stays on the set (operator, 2026-09-29): disk 2 leaves the list
+  // and the rest renumber from 1.
+  const moved = page.locator('[data-sonner-toast]').filter({ hasText: 'Moved out to its own title' });
+  await expect(moved).toBeVisible();
+  await expect(page.getByTestId(`disk-${d[1].id}`)).toHaveCount(0);
+  await expect(page).toHaveURL(new RegExp(`/games/${setId}$`));
+  expect(await rowOrder(page)).toEqual([d[0].id, d[2].id]);
+  await expect(page.getByTestId(`disk-${d[0].id}`)).toContainText('Disk 1');
+  await expect(page.getByTestId(`disk-${d[2].id}`)).toContainText('Disk 2');
+  // The set renumbered: old disk 3 is now disk 2.
+  expect((await diskNos([d[2].id]))[d[2].id]).toEqual({ gameId: setId, diskNo: 2 });
+
+  // The toast's Open goes to the new title, named after disk 2's volume.
+  await moved.getByRole('button', { name: 'Open' }).click();
   await expect(page).not.toHaveURL(new RegExp(`/games/${setId}$`));
   await expect(page.getByRole('heading', { level: 1, name: vols[1] }).first()).toBeVisible();
   const outId = page.url().split('/games/')[1].split(/[?#]/)[0];
   expect((await diskNos([d[1].id]))[d[1].id]).toEqual({ gameId: outId, diskNo: 1 });
-  // The set renumbered: old disk 3 is now disk 2.
-  expect((await diskNos([d[2].id]))[d[2].id]).toEqual({ gameId: setId, diskNo: 2 });
 
   // A lone disk has no Disk set section and no "Move out of set": only
   // "Add to a disk set…".
