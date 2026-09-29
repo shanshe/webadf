@@ -164,7 +164,7 @@ describe('the edge preview waits for the pointer to rest', () => {
     expect(s.targetId).toBeNull();
     s = folderTick(s, 300 + ARM_DELAY_MS * 3);
     expect(armedId(s)).toBeNull();
-    expect(dropOutcome(s, { overId: 'b', zone: 'centre' })).toBe('reorder');
+    expect(dropOutcome(s, 'b')).toBe('reorder');
   });
 
   it('leaving the slot and coming back into the centre starts a fresh arm', () => {
@@ -195,25 +195,31 @@ describe('the edge preview waits for the pointer to rest', () => {
 describe('dropOutcome', () => {
   const armedOnB = folderTick(folderOver(IDLE_FOLDER, 'b', 0), ARM_DELAY_MS);
 
-  it('the armed card\'s centre makes a set', () => {
-    expect(dropOutcome(armedOnB, { overId: 'b', zone: 'centre' })).toBe('set');
+  it('the armed card makes a set', () => {
+    expect(dropOutcome(armedOnB, 'b')).toBe('set');
   });
 
-  it('a centre before it arms does nothing', () => {
-    expect(dropOutcome(folderOver(IDLE_FOLDER, 'b', 0), { overId: 'b', zone: 'centre' })).toBe('none');
-    expect(dropOutcome(IDLE_FOLDER, { overId: 'b', zone: 'centre' })).toBe('none');
+  it('a quick drop in a centre, before it arms, reorders (the operator\'s bug: it used to do nothing)', () => {
+    const justEntered = folderOver(IDLE_FOLDER, 'b', 0);
+    expect(dropOutcome(justEntered, 'b')).toBe('reorder');
+    expect(dropOutcome(folderTick(justEntered, ARM_DELAY_MS - 1), 'b')).toBe('reorder');
+    // No move event reached the state machine at all: still a reorder.
+    expect(dropOutcome(IDLE_FOLDER, 'b')).toBe('reorder');
   });
 
-  it('another card\'s centre is not the armed one: nothing', () => {
-    expect(dropOutcome(armedOnB, { overId: 'c', zone: 'centre' })).toBe('none');
+  it('another card than the armed one reorders', () => {
+    expect(dropOutcome(armedOnB, 'c')).toBe('reorder');
   });
 
-  it('an edge reorders', () => {
-    expect(dropOutcome(IDLE_FOLDER, { overId: 'b', zone: 'edge' })).toBe('reorder');
-    expect(dropOutcome(armedOnB, { overId: 'c', zone: 'edge' })).toBe('reorder');
+  it('an edge reorders, resting or not', () => {
+    expect(dropOutcome(edge(IDLE_FOLDER, 'b', P, 0), 'b')).toBe('reorder');
+    expect(dropOutcome(folderTick(edge(IDLE_FOLDER, 'b', P, 0), EDGE_REST_MS), 'b')).toBe('reorder');
   });
 
-  it('the armed state is trusted over a last frame that drifted into the edge', () => {
-    expect(dropOutcome(armedOnB, { overId: 'b', zone: 'edge' })).toBe('set');
+  it('the armed state is trusted over the zone of the last frame', () => {
+    // The drop reads the state, not the zone: armed on B is a set wherever on B it lands.
+    expect(dropOutcome(armedOnB, 'b')).toBe('set');
+    // ...and leaving the centre, even into B's own edge, disarms before any drop.
+    expect(dropOutcome(edge(armedOnB, 'b', P, ARM_DELAY_MS + 1), 'b')).toBe('reorder');
   });
 });

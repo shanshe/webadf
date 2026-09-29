@@ -501,7 +501,7 @@ export function CollectionsProvider({
     // the flag set and eat the NEXT real click on the page.
     setTimeout(() => { suppressNextClick.current = false; }, 0);
 
-    const { active, over, collisions } = event;
+    const { active, over } = event;
     // Read before the reset: the arm state at the moment of release.
     const folderAtDrop = folderRef.current;
     resetFolder();
@@ -521,19 +521,14 @@ export function CollectionsProvider({
 
     // Case 2: a game dropped on another game. Unfiltered ("All titles",
     // "Uncategorized"), where there is no ordered list, any drop means "make
-    // these two one disk set". Filtered to one collection it depends where
-    // on the card the pointer was let go (src/lib/set-folder.ts): an edge
-    // reorders the collection; the centre, once armed, makes a set; the
-    // centre before it arms does nothing at all. A set deletes a title, so
-    // it only ever opens the confirm dialog and never acts on the drop itself.
+    // these two one disk set". Filtered to one collection
+    // (src/lib/set-folder.ts): a drop on a card whose centre the pointer has
+    // held still in until it armed makes a set; any other drop on a card --
+    // its edge, or its centre before it arms -- reorders. A set deletes a
+    // title, so it only ever opens the confirm dialog and never acts on the
+    // drop itself.
     if (activeData.type === 'game' && overData.type === 'game') {
-      // The zone comes from the same collision `over` was taken from. `over`
-      // trails the collisions by one render, so on the rare release where
-      // they disagree the drop counts as an edge: today's reorder.
-      const first = collisions?.[0];
-      const zone: Zone = first && first.id === over.id && first.data?.zone === 'centre' ? 'centre' : 'edge';
-      const outcome = filteredCollectionId ? dropOutcome(folderAtDrop, { overId: String(over.id), zone }) : 'set';
-      if (outcome === 'none') return;
+      const outcome = filteredCollectionId ? dropOutcome(folderAtDrop, String(over.id)) : 'set';
       if (outcome === 'set') {
         // Hidden the instant the dialog opens, not animated back to its slot
         // by dnd-kit's own drop animation underneath it. `returning: false`:
