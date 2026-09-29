@@ -738,9 +738,11 @@ test('the rename pencil renames the set; Escape cancels; the library card shows 
 // ---------------------------------------------------------------------------
 // Folder-style drops inside a collection view (operator, 2026-09-29): like
 // making a folder on a phone, the CENTRE of a card adds to a disk set once
-// the pointer has rested there for ARM_DELAY_MS (src/lib/set-folder.ts), and
-// the EDGES reorder. The operator drags slowly, by hand, so every drag here
-// walks in small steps with a real frame between each and holds for real.
+// the pointer has rested there for ARM_DELAY_MS (src/lib/set-folder.ts);
+// every other drop on a card -- an edge, or a centre let go of before it
+// arms -- reorders, and so does a drop in the gap between cards (to the
+// nearest card). The operator drags by hand, so every drag here walks in
+// small steps with a real frame between each and holds for real.
 
 /** Three single-disk titles in one new collection, in that membership order.
  *  The collection goes with the org in cleanupSeeded. */
@@ -1072,33 +1074,102 @@ test('in a collection: after a rest in an edge shows the gap, a drop in the gap\
   expect((await orgGames(orgId)).length).toBe(3);
 });
 
-test('in a collection: a drop in a centre before it arms does nothing -- no reorder, no dialog', async ({ page }) => {
+/** Records every collection-order write the page makes, to prove one did (or did not) happen. */
+function watchOrderWrites(page: Page): string[] {
+  const writes: string[] = [];
+  page.on('request', (r) => { if (r.method() === 'PATCH' && /\/order$/.test(r.url())) writes.push(r.url()); });
+  return writes;
+}
+
+test('in a collection: a quick drop on a card\'s centre -- let go before it arms -- reorders: no hint, no dialog', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
-  const s = await seedCollectionOfThree(page, orgId, 'Early');
+  const s = await seedCollectionOfThree(page, orgId, 'Quick');
 
   await page.goto(`/library?collection=${s.collectionId}`);
   await expect(page.getByTestId('game-card')).toHaveCount(3);
-  const orderWrites: string[] = [];
-  page.on('request', (r) => { if (r.method() === 'PATCH' && /\/order$/.test(r.url())) orderWrites.push(r.url()); });
+  expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  const writes = watchOrderWrites(page);
 
-  // The same slow walk, but only just into B's centre, and let go at once.
-  const slot = (await card(page, s.title('B')).boundingBox())!;
+  // A walks at a hand's pace, straight across B, to just inside C's centre
+  // (C is two slots away), and lets go at once -- the operator's "drag it
+  // onto the card and let go".
+  const slot = (await card(page, s.title('C')).boundingBox())!;
   const start = await pickUp(page, card(page, s.title('A')));
   let entered = 0;
   await walk(page, start, at(slot, 0.3, 0.5), async (p) => {
     if (!entered && inCentre(p, slot)) entered = Date.now();
   });
+  // Nothing offers a set at the moment of release.
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
   await page.mouse.up();
   const inCentreMs = Date.now() - entered;
-  expect(entered, 'the walk ended inside B\'s centre').toBeGreaterThan(0);
-  expect(inCentreMs, `the pointer spent ${inCentreMs}ms in B's centre; it must be under ARM_DELAY_MS`)
+  expect(entered, 'the walk ended inside C\'s centre').toBeGreaterThan(0);
+  expect(inCentreMs, `the pointer spent ${inCentreMs}ms in C's centre; it must be under ARM_DELAY_MS`)
     .toBeLessThan(ARM_DELAY_MS);
+
+  // A takes C's position.
+  const expected = [s.b.gameId, s.c.gameId, s.a.gameId];
+  await expect.poll(() => membershipOf(s.collectionId)).toEqual(expected);
+  await expect.poll(() => gridIds(page)).toEqual(expected);
+  expect(writes).toHaveLength(1);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  expect((await orgGames(orgId)).length).toBe(3);
+  await expect(page).toHaveURL(new RegExp(`/library\\?collection=${s.collectionId}$`));
+});
+
+test('in a collection: a drop in the gap between two cards reorders to the nearest card -- no dialog', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Gutter');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  const writes = watchOrderWrites(page);
+
+  // The gutter between B and C, 3 px left of C: in neither card, and nearer
+  // C's middle than B's.
+  const b = (await card(page, s.title('B')).boundingBox())!;
+  const c = (await card(page, s.title('C')).boundingBox())!;
+  expect(c.x - (b.x + b.width), 'there is a gutter between B and C').toBeGreaterThan(8);
+  const gap = { x: c.x - 3, y: c.y + c.height / 2 };
+  const within = (p: Point, box: Box) => p.x >= box.x && p.x <= box.x + box.width && p.y >= box.y && p.y <= box.y + box.height;
+  expect(within(gap, b) || within(gap, c), 'the drop point is in the gutter, not on a card').toBe(false);
+
+  const start = await pickUp(page, card(page, s.title('A')));
+  await walk(page, start, gap);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  await page.mouse.up();
+
+  const expected = [s.b.gameId, s.c.gameId, s.a.gameId];
+  await expect.poll(() => membershipOf(s.collectionId)).toEqual(expected);
+  await expect.poll(() => gridIds(page)).toEqual(expected);
+  expect(writes).toHaveLength(1);
+  await page.waitForTimeout(500);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  expect((await orgGames(orgId)).length).toBe(3);
+});
+
+test('in a collection: a drop outside the grid changes nothing', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Outside');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  const writes = watchOrderWrites(page);
+
+  // Below the row of cards, under B: no card, no gutter between cards, no rail row.
+  const b = (await card(page, s.title('B')).boundingBox())!;
+  const below = { x: b.x + b.width / 2, y: b.y + b.height + 60 };
+  expect(below.y, 'the drop point is on screen').toBeLessThan(page.viewportSize()!.height);
+  const start = await pickUp(page, card(page, s.title('A')));
+  await walk(page, start, below);
+  await page.mouse.up();
 
   // Give a reorder or a dialog every chance to happen before saying it did not.
   await page.waitForTimeout(1_000);
   await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
-  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
-  expect(orderWrites).toEqual([]);
+  expect(writes).toEqual([]);
   expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
   expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
   expect((await orgGames(orgId)).length).toBe(3);
