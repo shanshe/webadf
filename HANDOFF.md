@@ -4560,7 +4560,9 @@ value): main.c sleeps 1 s after such a poll, since `since` did not advance and t
 now printed only when a hold begins. The panel's "Saving" query uses `swap_hold_check(up, false)`, which never logs.
 Review (independent, opus): no Critical; I1 fixed as above; M2-M4 fixed. **Accepted:** WGATE is not per-drive, so a
 real DF1 being written also holds the swap (fails safe); the panel says "Saving, then disk N" whenever the light is
-on, even with nothing to upload (wording only).
+on, even with nothing to upload (wording only); and a save that follows 20 s+ of continuous motor-on READING with no
+write can still be force-released before its first write (STEP pulses would be a better activity signal than the
+motor edge -- not done; revisit if the bench ever shows it).
 
 **Bench retest (operator), after 1.6.1 installs:**
 1. On a writable disk of a set, start copying a directory of several files (e.g. `copy Locale:Languages to Locale:x all`)

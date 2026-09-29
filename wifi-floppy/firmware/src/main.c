@@ -2414,8 +2414,14 @@ int main(void) {
     while (true) {
         fw_rom_service();
         dskchg_poll();
-        g_motor_on_ms = dskchg_motor_on_ms();   // before the flag: never a new flag with an old time
-        g_motor_on = dskchg_motor_on();
+        // The flag FIRST: dskchg_on_motor stores the time before the flag, so
+        // a flag read first can never be newer than the time read after it --
+        // never "on" with an old time, which the swap hold would force past.
+        {
+            const bool motor_on = dskchg_motor_on();
+            g_motor_on_ms = dskchg_motor_on_ms();
+            g_motor_on = motor_on;
+        }
 
         // A write-protect flip on the same disk (g_reinsert_req's comment).
         // The decision itself is pure (reinsert.h, host-tested): idle (no
