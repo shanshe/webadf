@@ -167,7 +167,33 @@ interface CollectionsContextValue {
    * disk set" hint on it. Null otherwise.
    */
   armedGameId: string | null;
+  /**
+   * The card that was DRAGGED into a "make a disk set" drop, while its
+   * dialog is open or fading back after a close without success. Cards in
+   * game-grid.tsx hide themselves (opacity/visibility, not display, so the
+   * grid does not reflow) instead of letting dnd-kit's own drop animation fly
+   * them back to their slot underneath the dialog. Null the rest of the time.
+   */
+  pendingSetDrop: PendingSetDrop | null;
 }
+
+/** See `pendingSetDrop` above. */
+export interface PendingSetDrop {
+  /** The id of the card that was dragged (the dialog's `source`). */
+  sourceId: string;
+  /** True once the dialog has closed WITHOUT success and this card is fading
+   *  back into view; false while it is simply hidden (dialog open, or a
+   *  successful add awaiting router.refresh()). */
+  returning: boolean;
+}
+
+/**
+ * How long the fade-back takes once a close-without-success starts it (ms).
+ * The one place this number lives -- game-grid.tsx imports it rather than
+ * keeping its own copy, so the timer here and the CSS transition it starts
+ * cannot drift apart.
+ */
+export const SET_DROP_RETURN_MS = 200;
 
 const CollectionsContext = createContext<CollectionsContextValue | null>(null);
 
@@ -232,7 +258,20 @@ export function CollectionsProvider({
     armTimer.current = null;
     updateFolder(IDLE_FOLDER);
   }
-  useEffect(() => () => { if (armTimer.current !== null) clearTimeout(armTimer.current); }, []);
+
+  /** See PendingSetDrop above. */
+  const [pendingSetDrop, setPendingSetDrop] = useState<PendingSetDrop | null>(null);
+  const returnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function resetPendingSetDrop() {
+    if (returnTimer.current !== null) clearTimeout(returnTimer.current);
+    returnTimer.current = null;
+    setPendingSetDrop(null);
+  }
+
+  useEffect(() => () => {
+    if (armTimer.current !== null) clearTimeout(armTimer.current);
+    if (returnTimer.current !== null) clearTimeout(returnTimer.current);
+  }, []);
 
   // router.refresh() re-runs the server component tree and hands this
   // provider fresh `initial*` props, but useState's initial value is only
@@ -252,6 +291,25 @@ export function CollectionsProvider({
   if (initialGameIds !== prevInitialGameIds) {
     setPrevInitialGameIds(initialGameIds);
     setGameIds(initialGameIds);
+    // A refresh means the server has re-rendered: on a successful add the
+    // source game is gone from the grid for real (merged into the target),
+    // and on a plain reorder/collection edit it was never the hidden card to
+    // begin with. Either way any hide/return bookkeeping left over from a
+    // PREVIOUS, already-closed drop is stale once new data has landed, so it
+    // is cleared here rather than left to the return timer -- which never
+    // runs at all on the success path.
+    //
+    // Gated on the dialog being closed (`setDrop === null`): an Add that
+    // FAILS still calls router.refresh() (confirm(), set-drop-dialog.tsx) to
+    // show a title that may have gone, but leaves the dialog OPEN. `games`
+    // (library/page.tsx) is rebuilt into a new array on every server render
+    // regardless of whether anything in it changed, so this branch runs on
+    // that refresh too -- and clearing pendingSetDrop then would pop the
+    // hidden card back to full visibility right underneath the still-open
+    // dialog. `closeSetDrop` (Cancel, Escape, the backdrop, or the dialog's
+    // own success close) is what resolves a pending hide while the dialog is
+    // up; this is only the cleanup for after it has closed.
+    if (setDrop === null) resetPendingSetDrop();
   }
 
   /**
@@ -398,6 +456,12 @@ export function CollectionsProvider({
   function onDragStart() {
     suppressNextClick.current = true;
     resetFolder();
+    // A fresh drag makes any hide/return left over from a previous drop
+    // stale (the dialog it belonged to is already closed -- nothing else can
+    // start a drag while it is open, but a Cancel's fade-back is still
+    // running its timer when this fires, and that timer must not go on to
+    // hide the card the person just picked back up again).
+    resetPendingSetDrop();
   }
 
   /**
@@ -471,6 +535,11 @@ export function CollectionsProvider({
       const outcome = filteredCollectionId ? dropOutcome(folderAtDrop, { overId: String(over.id), zone }) : 'set';
       if (outcome === 'none') return;
       if (outcome === 'set') {
+        // Hidden the instant the dialog opens, not animated back to its slot
+        // by dnd-kit's own drop animation underneath it. `returning: false`:
+        // this is the drop, not a close, so it is not fading back yet.
+        if (returnTimer.current !== null) { clearTimeout(returnTimer.current); returnTimer.current = null; }
+        setPendingSetDrop({ sourceId: activeData.id, returning: false });
         setSetDrop({
           target: { id: overData.id, title: overData.title ?? '', diskCount: overData.diskCount ?? 0 },
           source: { id: activeData.id, title: activeData.title ?? '', diskCount: activeData.diskCount ?? 0 },
@@ -493,8 +562,26 @@ export function CollectionsProvider({
     }
   }
 
+  /**
+   * The dialog's onClose: called for Cancel, Escape, the backdrop, AND a
+   * successful add (set-drop-dialog.tsx). Only the last one passes `true`.
+   * A success leaves the source card hidden -- router.refresh() is about to
+   * remove it from the grid for real, and unhiding it first would flash it
+   * back for a frame first. Everything else fades it back into view.
+   */
+  function closeSetDrop(success?: boolean) {
+    setSetDrop(null);
+    if (success) return;
+    setPendingSetDrop((p) => (p ? { ...p, returning: true } : p));
+    if (returnTimer.current !== null) clearTimeout(returnTimer.current);
+    returnTimer.current = setTimeout(() => {
+      returnTimer.current = null;
+      setPendingSetDrop(null);
+    }, SET_DROP_RETURN_MS);
+  }
+
   return (
-    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, previewGameId: previewId(folder), armedGameId: armedId(folder) }}>
+    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, previewGameId: previewId(folder), armedGameId: armedId(folder), pendingSetDrop }}>
       {/*
         `id` is not decoration. dnd-kit derives the hidden drag description's
         element id from a MODULE-LEVEL counter (useUniqueId in
@@ -507,7 +594,7 @@ export function CollectionsProvider({
       <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
         {children}
       </DndContext>
-      {setDrop && <SetDropDialog target={setDrop.target} source={setDrop.source} onClose={() => setSetDrop(null)} />}
+      {setDrop && <SetDropDialog target={setDrop.target} source={setDrop.source} onClose={closeSetDrop} />}
     </CollectionsContext.Provider>
   );
 }

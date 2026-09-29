@@ -579,6 +579,130 @@ test('Uncategorized: Cancel (and Escape) leave both titles untouched', async ({ 
   await expect(page).toHaveURL(new RegExp(`/games/${a.gameId}$`));
 });
 
+// ---------------------------------------------------------------------------
+// Hide the dragged card while the dialog is open (operator approved
+// 2026-09-29): dnd-kit's own drop animation would otherwise fly the card back
+// to its slot underneath the dialog as it opens.
+
+/** Polls `cardA`'s visibility until `stop()` is called, reporting whether it
+ *  was ever visible in between -- started before an action that might close
+ *  a dialog, so no window between the action and a later check can hide a
+ *  flash that happened in it. */
+function watchForFlash(page: Page, cardA: Locator) {
+  let sawVisible = false;
+  let running = true;
+  const done = (async () => {
+    while (running) {
+      if (await cardA.isVisible().catch(() => false)) sawVisible = true;
+      await page.waitForTimeout(20);
+    }
+  })();
+  return { stop: async () => { running = false; await done; return sawVisible; } };
+}
+
+test('All titles: the dragged card hides while the dialog is open, fades back on Cancel, and never flashes visible before a successful Add\'s refresh', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const a = await seedDisk(orgId, { title: `HideA ${tag}`, diskNo: 1, sha256: sha(`${tag}-a`) });
+  const b = await seedDisk(orgId, { title: `HideB ${tag}`, diskNo: 1, sha256: sha(`${tag}-b`) });
+
+  await page.goto('/library?collection=all');
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  const cardA = card(page, `HideA ${tag}`);
+  const cardB = card(page, `HideB ${tag}`);
+  const aBoxBefore = (await cardA.boundingBox())!;
+  const boxBefore = (await cardB.boundingBox())!;
+  const dialog = page.getByTestId('set-drop-dialog');
+
+  await dragCardOnto(page, cardA, cardB);
+  await expect(dialog).toBeVisible();
+  // A is gone -- not merely faded -- and its slot is still there: B, the
+  // card the drop landed ON, has not moved a pixel.
+  await expect(cardA).toBeHidden();
+  const boxDuring = (await cardB.boundingBox())!;
+  expect(boxDuring).toEqual(boxBefore);
+
+  // Cancel fades A back into its own slot; the grid never reflowed, so this
+  // is the same slot it started in.
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(cardA).toBeVisible();
+  expect(await cardA.boundingBox()).toEqual(aBoxBefore);
+  // The fade itself is still running (pointer-events stay off it until it
+  // finishes, so a person cannot grab a half-transparent card): outrun it
+  // before picking the card up again.
+  await page.waitForTimeout(300);
+
+  // Drop again, this time Add: A must stay hidden right up to the refresh
+  // that removes it from the grid for good, never flashing visible first.
+  await dragCardOnto(page, cardA, cardB);
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+  const watcher = watchForFlash(page, cardA);
+  await dialog.getByTestId('set-drop-confirm').click();
+  await expect(dialog).toHaveCount(0);
+  expect(await watcher.stop()).toBe(false);
+  await expect(page.getByTestId('game-card')).toHaveCount(1);
+  // Really did make the set -- B was the drop's TARGET, so it survives and
+  // A's disk lands second in it: this was a real drop, not a mechanism that
+  // only looks right from the hidden card's own style.
+  expect((await diskNos([a.diskId, b.diskId]))[a.diskId]).toEqual({ gameId: b.gameId, diskNo: 2 });
+  expect(await gameExists(a.gameId)).toBe(false);
+});
+
+test('a failed Add keeps the dialog open and the dragged card hidden through it; Cancel still fades it back', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const a = await seedDisk(orgId, { title: `FailA ${tag}`, diskNo: 1, sha256: sha(`${tag}-a`) });
+  const b = await seedDisk(orgId, { title: `FailB ${tag}`, diskNo: 1, sha256: sha(`${tag}-b`) });
+
+  await page.route('**/api/games/*/disks', (route) => route.fulfill({
+    status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom' }),
+  }));
+
+  await page.goto('/library?collection=all');
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  const cardA = card(page, `FailA ${tag}`);
+  const cardB = card(page, `FailB ${tag}`);
+  const aBoxBefore = (await cardA.boundingBox())!;
+  const dialog = page.getByTestId('set-drop-dialog');
+
+  await dragCardOnto(page, cardA, cardB);
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+
+  // The POST fails: confirm() (set-drop-dialog.tsx) shows a toast and calls
+  // router.refresh(), but -- unlike Cancel -- never calls onClose. The
+  // dialog stays open, and A must stay hidden right through that refresh.
+  // This is the bug the review found: library/page.tsx hands the provider a
+  // brand-new `gameIds` array on every refresh, even one that changed
+  // nothing, and the reconciliation in collection-provider.tsx used to read
+  // any new array as "the drop is done" and pop A back to full view
+  // underneath the still-open dialog.
+  await dialog.getByTestId('set-drop-confirm').click();
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: 'Could not make the disk set' })).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+  // Give the refresh -- and any leftover reconciliation bug -- every chance
+  // to have shown A before saying it did not.
+  await page.waitForTimeout(3_000);
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+
+  // Cancel still works, and still fades A back to where it started.
+  await page.unroute('**/api/games/*/disks');
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(cardA).toBeVisible();
+  expect(await cardA.boundingBox()).toEqual(aBoxBefore);
+
+  // Nothing was actually moved.
+  const nos = await diskNos([a.diskId, b.diskId]);
+  expect(nos[a.diskId]).toEqual({ gameId: a.gameId, diskNo: 1 });
+  expect(nos[b.diskId]).toEqual({ gameId: b.gameId, diskNo: 1 });
+  expect((await orgGames(orgId)).map((g) => g.id).sort()).toEqual([a.gameId, b.gameId].sort());
+});
+
 test('the rename pencil renames the set; Escape cancels; the library card shows the new name', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
   const tag = runTag();
@@ -793,6 +917,56 @@ test('in a collection: a slow walk into a card\'s centre leaves it where it is; 
   expect(nos[s.a.diskId]).toEqual({ gameId: s.b.gameId, diskNo: 2 });
   expect(await gameExists(s.a.gameId)).toBe(false);
   expect(await membershipOf(s.collectionId)).toEqual([s.b.gameId, s.c.gameId]);
+});
+
+test('in a collection: the dragged card hides while the dialog is open, fades back on Cancel, and never flashes visible before a successful Add\'s refresh', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Hide');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  const cardA = card(page, s.title('A'));
+  const cardB = card(page, s.title('B'));
+  const aBoxBefore = (await cardA.boundingBox())!;
+  const boxBefore = (await cardB.boundingBox())!;
+  const dialog = page.getByTestId('set-drop-dialog');
+
+  const m = await walkIntoCentreAndHold(page, cardA, cardB);
+  expectStillInCentre(m);
+  await expect(cardB.getByTestId('set-drop-target')).toBeVisible();
+  await letGo(page);
+
+  await expect(dialog).toBeVisible();
+  // A is gone -- not merely faded -- and its slot is still there: B, the
+  // card the drop landed ON, has not moved a pixel (no reflow of the grid).
+  await expect(cardA).toBeHidden();
+  const boxDuring = (await cardB.boundingBox())!;
+  expect(offBy(boxDuring, boxBefore)).toBeLessThanOrEqual(1);
+
+  // Cancel fades A back into its own slot -- the membership order is
+  // untouched, so this really is the slot it started in.
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(cardA).toBeVisible();
+  expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  expect(offBy((await cardA.boundingBox())!, aBoxBefore)).toBeLessThanOrEqual(1);
+  // The fade itself is still running (pointer-events stay off it until it
+  // finishes, so a person cannot grab a half-transparent card): outrun it
+  // before picking the card up again.
+  await page.waitForTimeout(300);
+
+  // Drop again, this time Add: A must stay hidden right up to the refresh
+  // that removes it from the grid for good, never flashing visible first.
+  const m2 = await walkIntoCentreAndHold(page, cardA, cardB);
+  expectStillInCentre(m2);
+  await letGo(page);
+  await expect(dialog).toBeVisible();
+  await expect(cardA).toBeHidden();
+  const watcher = watchForFlash(page, cardA);
+  await dialog.getByTestId('set-drop-confirm').click();
+  await expect(dialog).toHaveCount(0);
+  expect(await watcher.stop()).toBe(false);
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
 });
 
 test('in a collection: a card dropped on another card\'s left or right edge reorders, with no hint and no dialog', async ({ page }) => {

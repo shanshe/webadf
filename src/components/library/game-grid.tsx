@@ -14,14 +14,14 @@ import { fromQuery } from '@/lib/trail';
 import { ejectMessage, isMountedReason, mountedReason } from '@/lib/mount-wording';
 import { Cover } from './cover';
 import type { GameListItem } from '@/lib/queries';
-import { useCollectionsContext, type GameDragData } from '@/components/collections/collection-provider';
+import { useCollectionsContext, type GameDragData, type PendingSetDrop, SET_DROP_RETURN_MS } from '@/components/collections/collection-provider';
 
 export function GameGrid({ games, fob = null }: {
   games: GameListItem[];
   /** The fob button's boards and multi-disk lists; null (no reader in the org) draws no button. */
   fob?: FobContext;
 }) {
-  const { gameIds, filteredCollectionId, previewGameId, armedGameId } = useCollectionsContext();
+  const { gameIds, filteredCollectionId, previewGameId, armedGameId, pendingSetDrop } = useCollectionsContext();
 
   if (games.length === 0) {
     return (
@@ -54,11 +54,14 @@ export function GameGrid({ games, fob = null }: {
     // cover art is legible at. Two, then three, then today's five.
     // The gutter shrinks with it: mx-7 spends 56 of 390px on nothing.
     <div className="mx-4 grid grid-cols-2 gap-4 sm:mx-7 sm:grid-cols-3 md:grid-cols-5" data-testid="game-grid">
-      {ordered.map((g) =>
-        filteredCollectionId
-          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob} armed={armedGameId === g.id} />
-          : <DraggableCard key={g.id} game={g} fob={fob} />,
-      )}
+      {ordered.map((g) => {
+        // Only the card actually named by pendingSetDrop hides -- every
+        // other card, including the drop's TARGET, renders exactly as today.
+        const pendingHide = pendingSetDrop?.sourceId === g.id ? pendingSetDrop : null;
+        return filteredCollectionId
+          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob} armed={armedGameId === g.id} pendingHide={pendingHide} />
+          : <DraggableCard key={g.id} game={g} fob={fob} pendingHide={pendingHide} />;
+      })}
     </div>
   );
 
@@ -105,6 +108,38 @@ function dragStyle(translate: string | undefined, isDragging: boolean) {
     transform: isDragging ? `${translate ?? ''} scale(0.55)`.trim() : translate,
     opacity: isDragging ? 0.4 : 1,
   };
+}
+
+/** SET_DROP_RETURN_MS (collection-provider.tsx) is the one place this duration lives. */
+const RETURN_TRANSITION = `opacity ${SET_DROP_RETURN_MS}ms ease`;
+
+/**
+ * Overrides `dragStyle`'s opacity while the card is the one named by
+ * `pendingSetDrop` (collection-provider.tsx): the "Add to a disk set" dialog
+ * is open for a drop THIS card was the source of.
+ *
+ * `visibility`, not `display`, so the card's slot in the grid keeps its
+ * space -- the sibling the drop landed on must not shift. It is set
+ * alongside `opacity` rather than instead of it: Playwright (and a person)
+ * both read `visibility:hidden` as "not visible", but only `opacity` can be
+ * animated smoothly, which is what the fade-back needs.
+ *
+ * Not returning (the drop just happened, or a success is awaiting
+ * router.refresh()): hidden with NO transition -- dnd-kit's own drop
+ * animation is exactly the flight back to this slot that this feature
+ * exists to suppress, and animating opacity down would still show it
+ * happening underneath the fade.
+ *
+ * Returning (Cancel, Escape, the backdrop, or an error that closed the
+ * dialog): `visibility` flips back to `visible` in the same instant --
+ * invisible on its own, since opacity is still 0 -- and THAT change is what
+ * carries the transition, fading the card back in instead of popping it.
+ */
+function pendingHideStyle(pendingHide: PendingSetDrop | null): React.CSSProperties | undefined {
+  if (!pendingHide) return undefined;
+  return pendingHide.returning
+    ? { visibility: 'visible', opacity: 1, transition: RETURN_TRANSITION, pointerEvents: 'none' }
+    : { visibility: 'hidden', opacity: 0, transition: 'none', pointerEvents: 'none' };
 }
 
 /**
@@ -379,7 +414,7 @@ function SetDropHint() {
  * collection, and a drop target for another card (make a disk set) -- not
  * sortable against siblings.
  */
-function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }) {
+function DraggableCard({ game: g, fob, pendingHide }: { game: GameListItem; fob: FobContext; pendingHide: PendingSetDrop | null }) {
   // `role` is pulled OUT of dnd-kit's attributes and thrown away: it is
   // "button", and this card is an <a href> that really does navigate. Spread
   // whole, it would have a screen reader announce every game in the library
@@ -397,7 +432,7 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
   // of a drag (an inline ref callback is a new function each time).
   const setNodeRef = useCallback((el: HTMLElement | null) => { setDragRef(el); setDropRef(el); }, [setDragRef, setDropRef]);
   const attributes = { ...dragAttributes, role: undefined };
-  const style = dragStyle(CSS.Translate.toString(transform), isDragging);
+  const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), ...pendingHideStyle(pendingHide) };
   const hinting = isOver && active !== null && active.id !== g.id
     && (active.data.current as { type?: string } | undefined)?.type === 'game';
 
@@ -406,6 +441,7 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
       ref={setNodeRef}
       href={`/games/${g.id}`}
       data-testid="game-card"
+      aria-hidden={pendingHide ? true : undefined}
       // An <a href> is natively draggable, so pressing one and moving started
       // the BROWSER's own link drag alongside dnd-kit's -- and dropping a
       // link onto the page makes Chrome navigate to it, which took a person
@@ -429,8 +465,8 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
  * collection), plus a remove control. `armed`: the pointer has rested in this
  * card's centre long enough that a drop makes a disk set (src/lib/set-folder.ts).
  */
-function SortableCard({ game: g, collectionId, fob, armed }: {
-  game: GameListItem; collectionId: string; fob: FobContext; armed: boolean;
+function SortableCard({ game: g, collectionId, fob, armed, pendingHide }: {
+  game: GameListItem; collectionId: string; fob: FobContext; armed: boolean; pendingHide: PendingSetDrop | null;
 }) {
   // See DraggableCard on why `role` is discarded rather than spread.
   const { attributes: dragAttributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -443,7 +479,12 @@ function SortableCard({ game: g, collectionId, fob, armed }: {
   // preview shows (its whole slot is edge until the pointer leaves), so the
   // instant snap that once covered that case is not needed, and a jump
   // amid gliding neighbours read as a glitch.
-  const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition };
+  //
+  // pendingHideStyle spreads LAST: while a set-drop dialog is open (or
+  // fading back) for this card, its own opacity/visibility and transition
+  // replace the reorder glide above -- there is no reorder to glide through
+  // on a card-on-card drop, and this card must not visibly move at all.
+  const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition, ...pendingHideStyle(pendingHide) };
 
   return (
     <Link
@@ -454,6 +495,7 @@ function SortableCard({ game: g, collectionId, fob, armed }: {
       // collection_games is many-to-many.
       href={`/games/${g.id}${fromQuery(collectionId)}`}
       data-testid="game-card"
+      aria-hidden={pendingHide ? true : undefined}
       // See DraggableCard on why an anchor must opt out of native dragging.
       draggable={false}
       className="glass-card relative flex flex-col p-2.5"
