@@ -142,7 +142,7 @@ export function SetDropDialog({ target: dropTarget, source: dropSource, onClose 
           </button>
         </div>
         <p className="text-[12px]" style={{ color: 'var(--muted)' }}>
-          {`“${target.title}”’s disks come first, then “${source.title}”’s. “${source.title}” is then removed from the library as a title of its own.`}
+          {`“${target.title}”’s disks come first, then “${source.title}”’s. “${source.title}” is then removed from the library as a title of its own, and its cover, Demozoo link and collection memberships go with it.`}
         </p>
 
         <label htmlFor={nameId} className="text-[12px] font-semibold">Set name</label>

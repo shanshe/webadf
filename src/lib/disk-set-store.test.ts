@@ -216,6 +216,27 @@ describe('addDisksToSet', () => {
       ['human', 'The Secret of Monkey Island', 'secret of monkey island, the', 'G', 'org-1']));
   });
 
+  it('a rename equal to the current title writes neither title nor metadataSource, and still compacts', async () => {
+    // A drop onto a TOSEC-identified title with the prefilled name untouched
+    // must not freeze that title against later corrections.
+    answer(games, [{ id: 'G', title: 'Lemmings' }], [game('S')]);
+    answer(disks,
+      [{ id: 'd2', gameId: 'G', diskNo: 2 }],
+      [{ id: 's1', gameId: 'S', diskNo: 1 }],
+      [{ id: 's1', gameId: 'S', diskNo: 1 }],
+    );
+    answer(collectionGames, []); answer(devices, []);
+    await addDisksToSet('org-1', 'G', ['s1'], ' Lemmings ');
+    const b = only();
+    const t = b.find((s) => /^update "games"/.test(s.sql))!;
+    expect(t.sql).toMatch(/^update "games" set "disk_order_source" = \$1 where/);
+    expect(t.sql).not.toMatch(/"title"|"metadata_source"/);
+    expect(b.filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params)).toEqual([
+      ['G', 1, 'd2', 'org-1', 'G'],
+      ['G', 2, 's1', 'org-1', 'S'],
+    ]);
+  });
+
   it('without a rename leaves the title alone', async () => {
     addScenario();
     await addDisksToSet('org-1', 'G', ['s2']);

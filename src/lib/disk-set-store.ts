@@ -67,10 +67,12 @@ export async function orgDevices(db: Db, orgId: string): Promise<DeviceRef[]> {
     .from(devices).where(eq(devices.orgId, orgId));
 }
 
-async function requireGame(db: Db, orgId: string, gameId: string): Promise<void> {
-  const rows = await db.select({ id: games.id }).from(games)
+/** The title, org-scoped, else NotFound. Answers its current name. */
+async function requireGame(db: Db, orgId: string, gameId: string): Promise<{ title: string }> {
+  const rows = await db.select({ id: games.id, title: games.title }).from(games)
     .where(and(eq(games.id, gameId), eq(games.orgId, orgId))).limit(1);
   if (rows.length === 0) throw new NotFound();
+  return { title: rows[0].title };
 }
 
 async function disksOf(db: Db, orgId: string, gameId: string): Promise<SetDisk[]> {
@@ -178,7 +180,7 @@ export async function addDisksToSet(
   const db = getDb();
   if ((Array.isArray(pick) ? pick : pick.sourceGameIds).length === 0) throw new PlanError('nothing_to_add');
 
-  await requireGame(db, orgId, gameId);
+  const current = await requireGame(db, orgId, gameId);
   const ids = Array.isArray(pick) ? [...new Set(pick)] : await diskIdsOfTitles(db, orgId, gameId, pick.sourceGameIds);
   const targetDisks = await disksOf(db, orgId, gameId);
   // Back in the order the caller sent: planAddDisks appends source titles in
@@ -225,9 +227,14 @@ export async function addDisksToSet(
     };
   });
 
-  const target = db.update(games).set(rename === undefined
+  // A rename equal to the current name is not an edit: stamping 'human'
+  // then would freeze a TOSEC/OpenRetro/Demozoo-identified title against
+  // later corrections merely because the prefilled name was left alone.
+  // It still numbers the set from 1 (compact, above) -- the set is new.
+  const renamed = rename !== undefined && rename.trim() !== current.title ? rename.trim() : undefined;
+  const target = db.update(games).set(renamed === undefined
     ? { diskOrderSource: 'human' }
-    : { diskOrderSource: 'human', title: rename, sortTitle: makeSortTitle(rename), metadataSource: 'human' })
+    : { diskOrderSource: 'human', title: renamed, sortTitle: makeSortTitle(renamed), metadataSource: 'human' })
     .where(and(eq(games.id, gameId), eq(games.orgId, orgId)));
 
   await run(db, [...applyPlan(db, orgId, plan, devs), target, ...deleteEmptied(db, orgId, plan.emptiedGameIds)]);

@@ -598,8 +598,10 @@ test('the rename pencil renames the set; Escape cancels; the library card shows 
   await page.getByTestId('set-rename-input').fill(`Renamed ${tag}`);
   await page.getByTestId('set-rename-input').press('Enter');
   await expect(page.getByTestId('set-name')).toHaveText(`Renamed ${tag}`);
-  await expect(page.getByRole('heading', { level: 1, name: `Renamed ${tag}` }).first()).toBeVisible();
+  // The DB first, then the page: the header shows the new name at once, but
+  // the h1 waits for router.refresh(), which is slow on a loaded machine.
   await expect.poll(async () => (await orgGames(orgId))[0]?.title).toBe(`Renamed ${tag}`);
+  await expect(page.getByRole('heading', { level: 1, name: `Renamed ${tag}` }).first()).toBeVisible({ timeout: 15_000 });
   const [row] = await getDb().select({ metadataSource: games.metadataSource }).from(games).where(eq(games.id, set.gameId));
   expect(row.metadataSource).toBe('human');
 

@@ -5,8 +5,8 @@
  */
 export function addErrorText(code: unknown): string | undefined {
   switch (code) {
-    case 'same_title': return 'That disk is already in this set.';
-    case 'nothing_to_add': return 'Nothing was picked.';
+    case 'same_title': return 'Those disks are already in this set.';
+    case 'nothing_to_add': return 'There were no disks to add.';
     case 'not_found': return 'A title or disk is no longer in your library.';
     case 'stale_order': return 'The set changed meanwhile; try again.';
     case 'invalid_body': return 'The request was not accepted — check the name and the disks picked.';
