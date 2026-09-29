@@ -4606,7 +4606,10 @@ Rulings (all in the plan/spec): minimal `next` shape (budget); a changed `next` 
 (the swap compares sha256); preload line shows "not preloaded yet" rather than a false "loading".
 
 **Bench acceptance owed (operator):** (2026-09-28 19:49: 1.6.0 confirmed on WifiFloppy1; card tap on a two-disk title
-swapped as expected at 19:22, last_tap_outcome `mounting`, preload reported `ready` -- steps 1-2 PASS. Step 5, a tap straight after a swap while preloading, PASS (operator).)
+swapped as expected at 19:22, last_tap_outcome `mounting`, preload reported `ready` -- steps 1-2 PASS. Step 5, a tap straight after a swap while preloading, PASS (operator). **Step 3 PASS 2026-09-29 18:40:** on the
+Workbench 3.1 disk set, card tap disk 4 (WP) -> disk 5 Locale (RW): Info shows read/write; copying a file landed as disk 5
+history seq 1 (amiga, 4 sectors). The first attempt failed only because the NFC reader's wiring had come loose
+(server showed nfc_reader 'absent'); reseated -> 'present'. Step 4 (tap during a save) still owed.)
 1. 1.6.0 installs (Amiga on and idle); the Devices page then offers "Write a Next-disk card".
 2. Write a Next-disk card from the Devices page; tap it with a 2-disk title mounted -> OLED "Next: disk 2 of 2", swap in
    under ~1 s once the web shows "Disk 2 ready (instant swap)" (compare ~5 s without preload).
