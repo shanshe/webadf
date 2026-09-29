@@ -86,7 +86,7 @@ export function zoneOf(p: Point, rect: Rect): Zone {
   return inX && inY ? 'centre' : 'edge';
 }
 
-/** The card under the pointer and which part of it, or null (a gap, the dragged card's own slot, a rail row). */
+/** The card under the pointer and which part of it (a gap in the grid: the nearest card's edge), or null (the dragged card's own slot, a rail row, outside the grid). */
 export interface Hit {
   readonly id: string;
   readonly zone: Zone;

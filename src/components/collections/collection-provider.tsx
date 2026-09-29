@@ -82,10 +82,65 @@ export const collectionCollisionDetection: CollisionDetection = (args) => {
 };
 
 /**
+ * The collision detection inside a collection view: the same as above, and
+ * a drop in the GAP between cards counts as a drop on the NEAREST card
+ * (operator, 2026-09-29).
+ *
+ * `pointerWithin` answers nothing in the 16 px gutters of the grid, so a
+ * person who let go between two cards got no `over` at all and the drop was
+ * silently ignored -- one of the ways "it does not detect the re-ordering".
+ * Here the pointer is given to the card whose slot's middle is closest, as
+ * that card's EDGE: a drop there reorders to its position, and a rest there
+ * shows the same reorder preview as a rest in the card's own edge. A gap is
+ * never a centre, so it never arms.
+ *
+ * "In the grid" is the box around every card's slot. A pointer outside it
+ * -- the rail, the header, the empty page below -- keeps the plain answer,
+ * so a drop there still does nothing, and a drop on a rail row (which
+ * `pointerWithin` finds) is untouched. Only a GAME drag gets the fallback: a
+ * collection dragged in the rail has no business landing on a card.
+ *
+ * Not used in the unfiltered views: there any card-on-card drop offers a
+ * disk set, and a near miss must not open that dialog.
+ */
+export const collectionGridCollisionDetection: CollisionDetection = (args) => {
+  const hits = collectionCollisionDetection(args);
+  const p = args.pointerCoordinates;
+  if (hits.length > 0 || !p) return hits;
+  if ((args.active.data.current as CollectionsDragData | undefined)?.type !== 'game') return hits;
+
+  const cards = args.droppableContainers.flatMap((c) => {
+    const rect = args.droppableRects.get(c.id);
+    const isCard = (c.data.current as CollectionsDragData | undefined)?.type === 'game';
+    return isCard && rect ? [{ container: c, rect }] : [];
+  });
+  if (cards.length === 0) return hits;
+  const left = Math.min(...cards.map(({ rect }) => rect.left));
+  const top = Math.min(...cards.map(({ rect }) => rect.top));
+  const right = Math.max(...cards.map(({ rect }) => rect.right));
+  const bottom = Math.max(...cards.map(({ rect }) => rect.bottom));
+  if (p.x < left || p.x > right || p.y < top || p.y > bottom) return hits;
+
+  let best: { container: (typeof cards)[number]['container']; middle: Point; distance: number } | null = null;
+  for (const { container, rect } of cards) {
+    const middle: Point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const distance = Math.hypot(p.x - middle.x, p.y - middle.y);
+    if (!best || distance < best.distance) best = { container, middle, distance };
+  }
+  if (!best) return hits;
+  const zone: Zone = 'edge';
+  return [{
+    id: best.container.id,
+    data: { droppableContainer: best.container, value: best.distance, zone, pointer: { x: p.x, y: p.y }, middle: best.middle },
+  }];
+};
+
+/**
  * The folder state machine's input: which OTHER card the dragged card is
- * over, in which zone, and where the pointer is. Null hit for a gap, the
- * dragged card's own slot, or a rail row; null altogether when there is no
- * collision to read a pointer from.
+ * over, in which zone, and where the pointer is. A gap inside the grid
+ * arrives as the nearest card's edge (collectionGridCollisionDetection).
+ * Null hit for the dragged card's own slot or a rail row; null altogether
+ * when there is no collision to read a pointer from (outside the grid).
  */
 function folderInput(active: Active, collisions: Collision[] | null): { hit: Hit | null; pointer: Point } | null {
   const first = collisions?.[0];
@@ -586,7 +641,7 @@ export function CollectionsProvider({
         started again at 0. React reported a hydration mismatch on every
         /library load. A fixed id is the same on both sides.
       */}
-      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
+      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={filteredCollectionId ? collectionGridCollisionDetection : collectionCollisionDetection} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
         {children}
       </DndContext>
       {setDrop && <SetDropDialog target={setDrop.target} source={setDrop.source} onClose={closeSetDrop} />}
