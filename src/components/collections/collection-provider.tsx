@@ -29,6 +29,7 @@ import {
   type DragEndEvent,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
+import { SetDropDialog, type DropTitle } from '@/components/library/set-drop-dialog';
 
 /**
  * Resolve the drop from the POINTER, not from the dragged card's rectangle.
@@ -58,6 +59,10 @@ export const collectionCollisionDetection: CollisionDetection = (args) =>
 export interface GameDragData {
   type: 'game';
   id: string;
+  /** The card's title and disk count, for the "Add to a disk set" dialog a
+   *  card-on-card drop opens in the unfiltered views. */
+  title?: string;
+  diskCount?: number;
 }
 
 /**
@@ -136,6 +141,8 @@ export function CollectionsProvider({
   const router = useRouter();
   const [collections, setCollections] = useState(initialCollections);
   const [gameIds, setGameIds] = useState(initialGameIds);
+  /** A card dropped on a card in an unfiltered view, awaiting confirmation. */
+  const [setDrop, setSetDrop] = useState<{ target: DropTitle; source: DropTitle } | null>(null);
 
   // router.refresh() re-runs the server component tree and hands this
   // provider fresh `initial*` props, but useState's initial value is only
@@ -334,13 +341,20 @@ export function CollectionsProvider({
       return;
     }
 
-    // Case 2: a game dropped on another game. Only meaningful while the grid
-    // is filtered to one collection -- that collection's membership order is
-    // the only ordered list a game-on-game drop could mean. Task 7 is
-    // expected to not make grid cards droppable at all when unfiltered, but
-    // this guard is the actual safety net if it ever does.
+    // Case 2: a game dropped on another game. Filtered to one collection it
+    // reorders that collection -- its membership order is the only ordered
+    // list the drop could mean there. Unfiltered ("All titles",
+    // "Uncategorized"), where there is no such list, it means "make these two
+    // one disk set" -- which deletes a title, so it only ever opens the
+    // confirm dialog and never acts on the drop itself.
     if (activeData.type === 'game' && overData.type === 'game') {
-      if (!filteredCollectionId) return;
+      if (!filteredCollectionId) {
+        setSetDrop({
+          target: { id: overData.id, title: overData.title ?? '', diskCount: overData.diskCount ?? 0 },
+          source: { id: activeData.id, title: activeData.title ?? '', diskCount: activeData.diskCount ?? 0 },
+        });
+        return;
+      }
       const oldIndex = gameIds.indexOf(activeData.id);
       const newIndex = gameIds.indexOf(overData.id);
       if (oldIndex === -1 || newIndex === -1) return;
@@ -371,6 +385,7 @@ export function CollectionsProvider({
       <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
         {children}
       </DndContext>
+      {setDrop && <SetDropDialog target={setDrop.target} source={setDrop.source} onClose={() => setSetDrop(null)} />}
     </CollectionsContext.Provider>
   );
 }
