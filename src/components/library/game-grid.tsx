@@ -5,7 +5,7 @@ import { useCallback, useId, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
-import { SortableContext, rectSortingStrategy, useSortable } from '@dnd-kit/sortable';
+import { SortableContext, rectSortingStrategy, useSortable, type SortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { History, Minus } from 'lucide-react';
 import { DeleteDiskDialog } from '@/components/library/delete-disk-dialog';
@@ -21,7 +21,7 @@ export function GameGrid({ games, fob = null }: {
   /** The fob button's boards and multi-disk lists; null (no reader in the org) draws no button. */
   fob?: FobContext;
 }) {
-  const { gameIds, filteredCollectionId } = useCollectionsContext();
+  const { gameIds, filteredCollectionId, armedGameId } = useCollectionsContext();
 
   if (games.length === 0) {
     return (
@@ -56,7 +56,7 @@ export function GameGrid({ games, fob = null }: {
     <div className="mx-4 grid grid-cols-2 gap-4 sm:mx-7 sm:grid-cols-3 md:grid-cols-5" data-testid="game-grid">
       {ordered.map((g) =>
         filteredCollectionId
-          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob} />
+          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob} armed={armedGameId === g.id} />
           : <DraggableCard key={g.id} game={g} fob={fob} />,
       )}
     </div>
@@ -68,13 +68,24 @@ export function GameGrid({ games, fob = null }: {
   // list to reorder in the unfiltered views. There each card is a plain drop
   // target instead (DraggableCard), and a card dropped on it asks to make
   // the two one disk set (collection-provider.tsx's onDragEnd, Case 2).
+  //
+  // While a card is armed (held over another for ARM_DELAY_MS, see
+  // src/lib/set-dwell.ts) the sortable preview is frozen: every card goes
+  // back to its own place. Without that the armed card has already slid
+  // out of the way to show the reorder, so the "Add to disk set" hint would
+  // be drawn somewhere other than under the pointer. dnd-kit measures drop
+  // targets without transforms, so the pointer is still over the armed
+  // card's own slot and the drop resolves to it. Disarming restores sorting.
   if (!filteredCollectionId) return grid;
   return (
-    <SortableContext items={gameIds} strategy={rectSortingStrategy}>
+    <SortableContext items={gameIds} strategy={armedGameId ? frozenStrategy : rectSortingStrategy}>
       {grid}
     </SortableContext>
   );
 }
+
+/** No sibling moves: the sortable preview while a disk-set target is armed. */
+const frozenStrategy: SortingStrategy = () => null;
 
 /**
  * How a card looks while it is the one being dragged.
@@ -343,8 +354,9 @@ function CardBody({ game: g, collectionId, fob }: { game: GameListItem; collecti
 
 /**
  * What a card shows while another card is held over it in the unfiltered
- * views: an outline and the words for what a drop will offer. Nothing at
- * rest -- the state only exists mid-drag.
+ * views, or has rested on it long enough to arm it inside a collection: an
+ * outline and the words for what a drop will offer. Nothing at rest -- the
+ * state only exists mid-drag.
  */
 function SetDropHint() {
   return (
@@ -411,12 +423,18 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
   );
 }
 
-/** Filtered-to-a-collection view: sortable against siblings (reorders the collection), plus a remove control. */
-function SortableCard({ game: g, collectionId, fob }: { game: GameListItem; collectionId: string; fob: FobContext }) {
+/**
+ * Filtered-to-a-collection view: sortable against siblings (reorders the
+ * collection), plus a remove control. `armed`: another card has rested on
+ * this one long enough that a drop makes a disk set (collection-provider.tsx).
+ */
+function SortableCard({ game: g, collectionId, fob, armed }: {
+  game: GameListItem; collectionId: string; fob: FobContext; armed: boolean;
+}) {
   // See DraggableCard on why `role` is discarded rather than spread.
   const { attributes: dragAttributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: g.id,
-    data: { type: 'game', id: g.id } satisfies GameDragData,
+    data: { type: 'game', id: g.id, title: g.title, diskCount: g.diskCount } satisfies GameDragData,
   });
   const attributes = { ...dragAttributes, role: undefined };
   const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition };
@@ -432,12 +450,13 @@ function SortableCard({ game: g, collectionId, fob }: { game: GameListItem; coll
       data-testid="game-card"
       // See DraggableCard on why an anchor must opt out of native dragging.
       draggable={false}
-      className="glass-card flex flex-col p-2.5"
+      className="glass-card relative flex flex-col p-2.5"
       style={style}
       {...attributes}
       {...listeners}
     >
       <CardBody game={g} collectionId={collectionId} fob={fob} />
+      {armed && <SetDropHint />}
     </Link>
   );
 }

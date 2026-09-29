@@ -27,9 +27,11 @@ import {
   useSensors,
   type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
 import { SetDropDialog, type DropTitle } from '@/components/library/set-drop-dialog';
+import { IDLE_DWELL, armedId, dropIntent, dwellOver, dwellTick, ARM_DELAY_MS, type DwellState } from '@/lib/set-dwell';
 
 /**
  * Resolve the drop from the POINTER, not from the dragged card's rectangle.
@@ -60,7 +62,8 @@ export interface GameDragData {
   type: 'game';
   id: string;
   /** The card's title and disk count, for the "Add to a disk set" dialog a
-   *  card-on-card drop opens in the unfiltered views. */
+   *  card-on-card drop opens (at once in the unfiltered views; after a dwell
+   *  inside a collection). */
   title?: string;
   diskCount?: number;
 }
@@ -110,6 +113,13 @@ interface CollectionsContextValue {
   /** Titles in no collection at all, counted the same way and at the same
    *  moment as every collection's own count. */
   uncategorizedCount: number;
+  /**
+   * Inside a collection view: the card the dragged one has rested on for
+   * ARM_DELAY_MS (src/lib/set-dwell.ts), so a drop there makes a disk set
+   * instead of reordering. The grid draws the "Add to disk set" hint on it
+   * and freezes the sortable preview while it is set. Null otherwise.
+   */
+  armedGameId: string | null;
 }
 
 const CollectionsContext = createContext<CollectionsContextValue | null>(null);
@@ -143,6 +153,39 @@ export function CollectionsProvider({
   const [gameIds, setGameIds] = useState(initialGameIds);
   /** A card dropped on a card in an unfiltered view, awaiting confirmation. */
   const [setDrop, setSetDrop] = useState<{ target: DropTitle; source: DropTitle } | null>(null);
+
+  /**
+   * Hover-to-add inside a collection view. The state drives the hint and the
+   * frozen sortable preview; the ref is what the timer and onDragEnd read, so
+   * neither can see a value from a render that has already been superseded.
+   */
+  const [dwell, setDwell] = useState<DwellState>(IDLE_DWELL);
+  const dwellRef = useRef<DwellState>(IDLE_DWELL);
+  const dwellTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function updateDwell(next: DwellState) {
+    dwellRef.current = next;
+    setDwell(next);
+  }
+  function scheduleArm() {
+    if (dwellTimer.current !== null) clearTimeout(dwellTimer.current);
+    dwellTimer.current = null;
+    const s = dwellRef.current;
+    if (s.targetId === null || s.armed) return;
+    // Re-checked on the tick rather than assumed: a timer can fire a hair
+    // early against performance.now(), and then it simply waits the rest.
+    const wait = Math.max(1, s.since + ARM_DELAY_MS - performance.now());
+    dwellTimer.current = setTimeout(() => {
+      dwellTimer.current = null;
+      updateDwell(dwellTick(dwellRef.current, performance.now()));
+      scheduleArm();
+    }, wait);
+  }
+  function resetDwell() {
+    if (dwellTimer.current !== null) clearTimeout(dwellTimer.current);
+    dwellTimer.current = null;
+    updateDwell(IDLE_DWELL);
+  }
+  useEffect(() => () => { if (dwellTimer.current !== null) clearTimeout(dwellTimer.current); }, []);
 
   // router.refresh() re-runs the server component tree and hands this
   // provider fresh `initial*` props, but useState's initial value is only
@@ -307,6 +350,24 @@ export function CollectionsProvider({
 
   function onDragStart() {
     suppressNextClick.current = true;
+    resetDwell();
+  }
+
+  /**
+   * Fires whenever the target under the pointer changes (dnd-kit does not
+   * repeat it while the pointer rests), which is exactly the dwell clock's
+   * input: a new target restarts the wait, and the timer arms it. Only inside
+   * a collection view -- the unfiltered views make a set on any drop.
+   */
+  function onDragOver({ active, over }: DragOverEvent) {
+    if (!filteredCollectionId) return;
+    const activeData = active.data.current as CollectionsDragData | undefined;
+    const overData = over?.data.current as CollectionsDragData | undefined;
+    const target = activeData?.type === 'game' && overData?.type === 'game' && over && over.id !== active.id
+      ? String(over.id)
+      : null;
+    updateDwell(dwellOver(dwellRef.current, target, performance.now()));
+    scheduleArm();
   }
 
   /**
@@ -316,6 +377,7 @@ export function CollectionsProvider({
    */
   function onDragCancel() {
     setTimeout(() => { suppressNextClick.current = false; }, 0);
+    resetDwell();
   }
 
   function onDragEnd(event: DragEndEvent) {
@@ -327,6 +389,9 @@ export function CollectionsProvider({
     setTimeout(() => { suppressNextClick.current = false; }, 0);
 
     const { active, over } = event;
+    // Read before the reset: whether this drop landed on an armed card.
+    const intent = dropIntent(dwellRef.current, over ? String(over.id) : null);
+    resetDwell();
     if (!over) return; // dropped outside any droppable -- nothing to do
 
     const activeData = active.data.current as CollectionsDragData | undefined;
@@ -343,12 +408,14 @@ export function CollectionsProvider({
 
     // Case 2: a game dropped on another game. Filtered to one collection it
     // reorders that collection -- its membership order is the only ordered
-    // list the drop could mean there. Unfiltered ("All titles",
-    // "Uncategorized"), where there is no such list, it means "make these two
-    // one disk set" -- which deletes a title, so it only ever opens the
-    // confirm dialog and never acts on the drop itself.
+    // list the drop could mean there -- unless the dragged card rested on
+    // this one for ARM_DELAY_MS first (src/lib/set-dwell.ts), which armed it.
+    // Unfiltered ("All titles", "Uncategorized"), where there is no such
+    // list, any drop means "make these two one disk set". Either way that
+    // deletes a title, so it only ever opens the confirm dialog and never
+    // acts on the drop itself.
     if (activeData.type === 'game' && overData.type === 'game') {
-      if (!filteredCollectionId) {
+      if (!filteredCollectionId || intent === 'set') {
         setSetDrop({
           target: { id: overData.id, title: overData.title ?? '', diskCount: overData.diskCount ?? 0 },
           source: { id: activeData.id, title: activeData.title ?? '', diskCount: activeData.diskCount ?? 0 },
@@ -372,7 +439,7 @@ export function CollectionsProvider({
   }
 
   return (
-    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount }}>
+    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, armedGameId: armedId(dwell) }}>
       {/*
         `id` is not decoration. dnd-kit derives the hidden drag description's
         element id from a MODULE-LEVEL counter (useUniqueId in
@@ -382,7 +449,7 @@ export function CollectionsProvider({
         started again at 0. React reported a hydration mismatch on every
         /library load. A fixed id is the same on both sides.
       */}
-      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
+      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
         {children}
       </DndContext>
       {setDrop && <SetDropDialog target={setDrop.target} source={setDrop.source} onClose={() => setSetDrop(null)} />}
