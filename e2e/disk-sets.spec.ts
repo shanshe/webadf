@@ -670,12 +670,13 @@ const STEP_MS = 16;
  * Walk the (already pressed) mouse from `from` to `to` in small steps, like a
  * hand, never a jump. `onStep` runs after every step with where it is now.
  */
-async function walk(page: Page, from: Point, to: Point, onStep?: (p: Point) => Promise<void>): Promise<Point> {
-  const n = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / STEP_PX));
+async function walk(page: Page, from: Point, to: Point, onStep?: (p: Point) => Promise<void>,
+  pace: { px: number; ms: number } = { px: STEP_PX, ms: STEP_MS }): Promise<Point> {
+  const n = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / pace.px));
   for (let i = 1; i <= n; i++) {
     const p = { x: from.x + ((to.x - from.x) * i) / n, y: from.y + ((to.y - from.y) * i) / n };
     await page.mouse.move(p.x, p.y);
-    await page.waitForTimeout(STEP_MS);
+    await page.waitForTimeout(pace.ms);
     if (onStep) await onStep(p);
   }
   return to;
@@ -709,11 +710,14 @@ async function letGo(page: Page) {
  * up -- the place it must still be while the pointer is in its centre.
  *
  * `pauseInEdgeAt`: first walk to that point of the target (an edge) and rest
- * there long enough for the reorder preview, then walk on into the centre.
+ * there long enough for the reorder preview, then walk on into the middle.
  * `pausedOff` is how far the target had been moved aside by then.
+ *
+ * `creep`: walk at a hand's pace only to just outside the target's left side,
+ * then cross its whole edge ring into the middle at 1 px every 30 ms.
  */
 async function walkIntoCentreAndHold(page: Page, source: Locator, target: Locator,
-  opts: { pauseInEdgeAt?: [number, number] } = {}) {
+  opts: { pauseInEdgeAt?: [number, number]; creep?: boolean } = {}) {
   const slot = (await target.boundingBox())!;
   let from = await pickUp(page, source);
   let pausedOff: number | null = null;
@@ -722,11 +726,12 @@ async function walkIntoCentreAndHold(page: Page, source: Locator, target: Locato
     await page.waitForTimeout(EDGE_REST_MS + 400);   // the rest, then the preview's 200 ms glide
     pausedOff = offBy((await target.boundingBox())!, slot);
   }
+  if (opts.creep) from = await walk(page, from, { x: slot.x - 6, y: slot.y + slot.height / 2 });
   // Every step, and where the target card was drawn after it.
   const approach: Array<{ p: Point; centre: boolean; off: number }> = [];
   await walk(page, from, at(slot, 0.5, 0.5), async (p) => {
     approach.push({ p, centre: inCentre(p, slot), off: offBy((await target.boundingBox())!, slot) });
-  });
+  }, opts.creep ? { px: 1, ms: 30 } : undefined);
   // The hold: sampled every 50 ms for 600 ms, the pointer perfectly still.
   const hold: number[] = [];
   const t0 = Date.now();
@@ -825,17 +830,14 @@ test('in a collection: a card dropped on another card\'s left or right edge reor
   expect((await orgGames(orgId)).length).toBe(3);
 });
 
-test('in a collection: a rest in an edge first, then the centre -- the card is back under the pointer; Cancel leaves everything untouched', async ({ page }) => {
+test('in a collection: Cancel after a centre drop leaves both titles and the order untouched', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
   const s = await seedCollectionOfThree(page, orgId, 'Undo');
 
   await page.goto(`/library?collection=${s.collectionId}`);
   await expect(page.getByTestId('game-card')).toHaveCount(3);
-  // B rests in A's right edge (A slides aside to show the reorder), then
-  // changes its mind and walks on into A's centre.
-  const m = await walkIntoCentreAndHold(page, card(page, s.title('B')), card(page, s.title('A')), { pauseInEdgeAt: [0.9, 0.5] });
-  logWalk('B into A after an edge rest', m);
-  expect(m.pausedOff, 'the edge rest showed the reorder preview').toBeGreaterThan(50);
+  const m = await walkIntoCentreAndHold(page, card(page, s.title('B')), card(page, s.title('A')));
+  logWalk('B into A', m);
   expectStillInCentre(m);
   await expect(card(page, s.title('A')).getByTestId('set-drop-target')).toBeVisible();
   await letGo(page);
@@ -848,11 +850,52 @@ test('in a collection: a rest in an edge first, then the centre -- the card is b
   expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
   const nos = await diskNos([s.a.diskId, s.b.diskId, s.c.diskId]);
   expect(nos[s.a.diskId]).toEqual({ gameId: s.a.gameId, diskNo: 1 });
-  expect(nos[s.c.diskId]).toEqual({ gameId: s.c.gameId, diskNo: 1 });
+  expect(nos[s.b.diskId]).toEqual({ gameId: s.b.gameId, diskNo: 1 });
   expect((await orgGames(orgId)).length).toBe(3);
   // After a drag, a plain click on a card still opens it.
-  await card(page, s.title('B')).click();
-  await expect(page).toHaveURL(new RegExp(`/games/${s.b.gameId}\\?`));
+  await card(page, s.title('C')).click();
+  await expect(page).toHaveURL(new RegExp(`/games/${s.c.gameId}\\?`));
+});
+
+test('in a collection: a crawl through the edge ring (1 px every 30 ms) into the centre never moves the card', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Crawl');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  const target = card(page, s.title('B'));
+  const m = await walkIntoCentreAndHold(page, card(page, s.title('A')), target, { creep: true });
+  logWalk('A crawls into B', m);
+  expect(m.approach.filter((x) => !x.centre).length, 'the crawl crossed the edge ring').toBeGreaterThan(40);
+  expect(Math.max(...m.approach.map((x) => x.off)), 'B moved during the crawl').toBeLessThanOrEqual(2);
+  expectStillInCentre(m);
+  await expect(target.getByTestId('set-drop-target')).toBeVisible();
+  await letGo(page);
+  await expect(page.getByTestId('set-drop-dialog')).toBeVisible();
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+});
+
+test('in a collection: after a rest in an edge shows the gap, a drop in the gap\'s middle reorders -- no hint, no dialog', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Gap');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  // A rests in B's left edge: B slides aside and its slot is the gap. Then
+  // the pointer walks to the gap's middle -- B's centre zone -- and holds.
+  const m = await walkIntoCentreAndHold(page, card(page, s.title('A')), card(page, s.title('B')), { pauseInEdgeAt: [0.1, 0.5] });
+  logWalk('A into the gap B left', m);
+  expect(m.pausedOff, 'the edge rest showed the reorder preview').toBeGreaterThan(50);
+  // B stays aside the whole time: the gap does not close under the pointer.
+  expect(Math.min(...m.approach.map((x) => x.off), ...m.hold), 'B came back into its slot').toBeGreaterThan(50);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  await letGo(page);
+  await expect.poll(() => membershipOf(s.collectionId)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  await expect.poll(() => gridIds(page)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+  expect((await orgGames(orgId)).length).toBe(3);
 });
 
 test('in a collection: a drop in a centre before it arms does nothing -- no reorder, no dialog', async ({ page }) => {
