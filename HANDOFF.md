@@ -4555,6 +4555,10 @@ built without a rename.
 extend a disk set (dialog: set name prefilled with the target's title, order with Swap, Add/Cancel; inside a collection
 card-on-card still reorders). `POST /api/games/[id]/disks` also takes `{sourceGameIds}` (org-scoped). Rename pencil on the
 Disk set header (existing title edit; marks the name human). An unchanged name no longer marks a title human-edited.
+**Follow-up 2 merged 2026-09-29 (feat/set-dwell):** inside a collection view, hold a dragged card over another card for
+500 ms (ARM_DELAY_MS, src/lib/set-dwell.ts) -> it arms ("Add to disk set") and a drop opens the same dialog; a quick drag
+still reorders. Known UX quirk to show the operator: before arming, the target slides aside (reorder preview), then snaps
+back under the pointer once armed.
 Known flaky/broken e2e, NOT this branch: `mobile.spec.ts` "the drop strip fits ... drags an entry onto a folder" fails on
 master too (2026-09-29); several library-count tests time out under load / slow Neon and pass on re-run.
 
