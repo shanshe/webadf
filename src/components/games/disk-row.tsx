@@ -52,6 +52,9 @@ export function DiskRow({ disk, choices, from, fobDevices = [], setControls, lon
       // this is the single row it has always been.
       className="glass-card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:gap-4"
       data-testid={`disk-${disk.id}`}
+      // What e2e selects disk rows by: other disk controls' test ids also
+      // start with "disk-" (disk-menu-*, disk-set-section, ...).
+      data-disk-row=""
     >
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-2">

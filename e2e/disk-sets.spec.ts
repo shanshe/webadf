@@ -77,7 +77,7 @@ async function gameExists(id: string): Promise<boolean> {
 
 /** The set's disk rows, top to bottom, as ids. */
 async function rowOrder(page: Page): Promise<string[]> {
-  return page.getByTestId('disk-set-section').locator(':scope > div.glass-card[data-testid^="disk-"]')
+  return page.getByTestId('disk-set-section').locator(':scope > [data-disk-row]')
     .evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')!.slice('disk-'.length)));
 }
 

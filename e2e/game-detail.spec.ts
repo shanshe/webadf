@@ -71,7 +71,7 @@ test('every disk in the set is listed in disk_no order, with the boot badge on t
 
   await page.goto(`/games/${gameId}`);
 
-  const rows = page.locator('[data-testid^="disk-"]');
+  const rows = page.locator('[data-disk-row]');
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toHaveAttribute('data-testid', `disk-${diskOneId}`);
   await expect(rows.nth(1)).toHaveAttribute('data-testid', `disk-${diskTwoId}`);
@@ -284,7 +284,7 @@ test("a disk row whose org_id diverges from its game's org_id is never shown (de
     // The positive half: the page renders and shows the legitimately-scoped
     // disk, proving the absence below is the org filter at work and not the
     // page having failed to load at all.
-    await expect(page.locator('[data-testid^="disk-"]')).toHaveCount(1);
+    await expect(page.locator('[data-disk-row]')).toHaveCount(1);
     await expect(page.getByTestId(`disk-${rogueDiskId}`)).toHaveCount(0);
   } finally {
     // Inserted directly, outside device-helpers' registry -- clean up here.
