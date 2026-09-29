@@ -1,8 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
-  ARM_DELAY_MS, CENTRE_HEIGHT_FRACTION, CENTRE_WIDTH_FRACTION, IDLE_FOLDER,
-  armedId, dropOutcome, folderOver, folderTick, zoneOf,
+  ARM_DELAY_MS, CENTRE_HEIGHT_FRACTION, CENTRE_WIDTH_FRACTION, EDGE_REST_MS, EDGE_REST_RADIUS_PX, IDLE_FOLDER,
+  armedId, dropOutcome, folderMove, folderTick, nextDue, previewId, zoneOf, type FolderState,
 } from './set-folder';
+
+const P = { x: 0, y: 0 };
+/** The pointer is in `id`'s centre (null: in no card at all). */
+const folderOver = (s: FolderState, id: string | null, now: number) =>
+  folderMove(s, id === null ? null : { id, zone: 'centre' }, P, now);
+/** The pointer is at `p` in `id`'s edge. */
+const edge = (s: FolderState, id: string, p: { x: number; y: number }, now: number) =>
+  folderMove(s, { id, zone: 'edge' }, p, now);
 
 // A card-sized slot: 200 wide, 100 tall, so the centre is x 150..250, y 70..130.
 const r = { left: 100, top: 50, width: 200, height: 100 };
@@ -92,6 +100,60 @@ describe('the arm state machine', () => {
   it('no centre, no change: idle stays the same object and a tick does nothing', () => {
     expect(folderOver(IDLE_FOLDER, null, 5)).toBe(IDLE_FOLDER);
     expect(folderTick(IDLE_FOLDER, 99_999)).toBe(IDLE_FOLDER);
+  });
+});
+
+describe('the edge preview waits for the pointer to rest', () => {
+  it('waits 200 ms within 8 px', () => {
+    expect(EDGE_REST_MS).toBe(200);
+    expect(EDGE_REST_RADIUS_PX).toBe(8);
+  });
+
+  it('entering an edge shows no preview yet; resting there shows it', () => {
+    const s = edge(IDLE_FOLDER, 'b', { x: 10, y: 10 }, 1000);
+    expect(previewId(s)).toBeNull();
+    expect(previewId(folderTick(s, 1000 + EDGE_REST_MS - 1))).toBeNull();
+    expect(previewId(folderTick(s, 1000 + EDGE_REST_MS))).toBe('b');
+  });
+
+  it('drift inside the radius is still a rest', () => {
+    let s = edge(IDLE_FOLDER, 'b', { x: 10, y: 10 }, 1000);
+    s = edge(s, 'b', { x: 15, y: 15 }, 1100);   // ~7 px
+    expect(previewId(folderTick(s, 1000 + EDGE_REST_MS))).toBe('b');
+  });
+
+  it('a pointer walking through the edge never rests, so nothing moves', () => {
+    let s = edge(IDLE_FOLDER, 'b', { x: 0, y: 10 }, 1000);
+    // 4 px every 16 ms, like a hand: past the radius every few steps.
+    for (let i = 1; i <= 40; i++) s = edge(s, 'b', { x: 4 * i, y: 10 }, 1000 + 16 * i);
+    expect(previewId(s)).toBeNull();
+    // ...and then into the centre: still nothing previewing, and the centre starts its clock.
+    s = folderOver(s, 'b', 1700);
+    expect(previewId(s)).toBeNull();
+    expect(s.targetId).toBe('b');
+  });
+
+  it('once showing, moving about in the same edge keeps it', () => {
+    let s = folderTick(edge(IDLE_FOLDER, 'b', { x: 10, y: 10 }, 0), EDGE_REST_MS);
+    s = edge(s, 'b', { x: 60, y: 10 }, EDGE_REST_MS + 16);
+    expect(previewId(s)).toBe('b');
+  });
+
+  it('leaving the edge -- to the centre, a gap or another card -- drops the preview', () => {
+    const showing = folderTick(edge(IDLE_FOLDER, 'b', { x: 10, y: 10 }, 0), EDGE_REST_MS);
+    expect(previewId(folderOver(showing, 'b', 300))).toBeNull();
+    expect(previewId(folderMove(showing, null, P, 300))).toBeNull();
+    const other = edge(showing, 'c', { x: 10, y: 10 }, 300);
+    expect(previewId(other)).toBeNull();
+    expect(previewId(folderTick(other, 300 + EDGE_REST_MS))).toBe('c');
+  });
+
+  it('nextDue names the arm or the rest deadline, and nothing when idle or done', () => {
+    expect(nextDue(IDLE_FOLDER)).toBeNull();
+    expect(nextDue(folderOver(IDLE_FOLDER, 'b', 1000))).toBe(1000 + ARM_DELAY_MS);
+    expect(nextDue(folderTick(folderOver(IDLE_FOLDER, 'b', 1000), 1000 + ARM_DELAY_MS))).toBeNull();
+    expect(nextDue(edge(IDLE_FOLDER, 'b', P, 1000))).toBe(1000 + EDGE_REST_MS);
+    expect(nextDue(folderTick(edge(IDLE_FOLDER, 'b', P, 1000), 1000 + EDGE_REST_MS))).toBeNull();
   });
 });
 

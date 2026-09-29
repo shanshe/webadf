@@ -34,7 +34,8 @@ import {
 import { arrayMove } from '@dnd-kit/sortable';
 import { SetDropDialog, type DropTitle } from '@/components/library/set-drop-dialog';
 import {
-  IDLE_FOLDER, armedId, dropOutcome, folderOver, folderTick, zoneOf, ARM_DELAY_MS, type FolderState, type Zone,
+  IDLE_FOLDER, armedId, dropOutcome, folderMove, folderTick, nextDue, previewId, zoneOf,
+  type FolderState, type Hit, type Point, type Zone,
 } from '@/lib/set-folder';
 
 /**
@@ -59,7 +60,8 @@ import {
  * one is ever added), and silently dropping nothing would be worse.
  *
  * The droppable the pointer is in also gets the ZONE of that droppable the
- * pointer is in (src/lib/set-folder.ts), on its collision's `data.zone`.
+ * pointer is in (src/lib/set-folder.ts), on its collision's `data.zone`, and
+ * the pointer itself on `data.pointer`.
  * Computed here and nowhere else because this is the one place where the
  * pointer and the droppable rects are guaranteed to be the same frame, and
  * those rects are dnd-kit's transform-agnostic measurements: a card the
@@ -74,20 +76,24 @@ export const collectionCollisionDetection: CollisionDetection = (args) => {
   const rect = first ? args.droppableRects.get(first.id) : undefined;
   if (!first || !rect) return hits;
   const zone: Zone = zoneOf(args.pointerCoordinates, rect);
-  return [{ ...first, data: { ...first.data, zone } }, ...rest];
+  const pointer: Point = { x: args.pointerCoordinates.x, y: args.pointerCoordinates.y };
+  return [{ ...first, data: { ...first.data, zone, pointer } }, ...rest];
 };
 
 /**
- * The card whose CENTRE the pointer is in, when `active` is a card being
- * dragged over ANOTHER card: the input to the folder state machine. Null for
- * an edge, a gap, the dragged card's own slot, or a rail row.
+ * The folder state machine's input: which OTHER card the dragged card is
+ * over, in which zone, and where the pointer is. Null hit for a gap, the
+ * dragged card's own slot, or a rail row; null altogether when there is no
+ * collision to read a pointer from.
  */
-function centreTarget(active: Active, collisions: Collision[] | null): string | null {
+function folderInput(active: Active, collisions: Collision[] | null): { hit: Hit | null; pointer: Point } | null {
   const first = collisions?.[0];
-  if (!first || first.id === active.id || first.data?.zone !== 'centre') return null;
+  const pointer = first?.data?.pointer as Point | undefined;
+  if (!first || !pointer) return null;
   const activeData = active.data.current as CollectionsDragData | undefined;
   const overData = first.data?.droppableContainer?.data?.current as CollectionsDragData | undefined;
-  return activeData?.type === 'game' && overData?.type === 'game' ? String(first.id) : null;
+  const isCard = first.id !== active.id && activeData?.type === 'game' && overData?.type === 'game';
+  return { hit: isCard ? { id: String(first.id), zone: first.data?.zone as Zone } : null, pointer };
 }
 
 /** What a draggable card in the library grid declares about itself. */
@@ -148,10 +154,15 @@ interface CollectionsContextValue {
   uncategorizedCount: number;
   /**
    * Inside a collection view: the card whose CENTRE the pointer is in
-   * (src/lib/set-folder.ts). While it is set the grid shows no reorder
-   * preview at all, so that card stays put under the pointer. Null otherwise.
+   * (src/lib/set-folder.ts). It stands in its own slot, under the pointer.
+   * Null otherwise.
    */
   centreGameId: string | null;
+  /**
+   * Inside a collection view: the card whose EDGE the pointer has rested in,
+   * so the grid shows the reorder preview. While it is null no card moves.
+   */
+  previewGameId: string | null;
   /**
    * The same card once the pointer has rested in its centre for
    * ARM_DELAY_MS: a drop there makes a disk set. The grid draws the "Add to
@@ -207,11 +218,11 @@ export function CollectionsProvider({
   function scheduleArm() {
     if (armTimer.current !== null) clearTimeout(armTimer.current);
     armTimer.current = null;
-    const s = folderRef.current;
-    if (s.targetId === null || s.armed) return;
+    const due = nextDue(folderRef.current);
+    if (due === null) return;
     // Re-checked on the tick rather than assumed: a timer can fire a hair
     // early against performance.now(), and then it simply waits the rest.
-    const wait = Math.max(1, s.since + ARM_DELAY_MS - performance.now());
+    const wait = Math.max(1, due - performance.now());
     armTimer.current = setTimeout(() => {
       armTimer.current = null;
       updateFolder(folderTick(folderRef.current, performance.now()));
@@ -394,13 +405,17 @@ export function CollectionsProvider({
   /**
    * Fires on every pointer move of a drag (not while it rests -- the timer
    * covers that). Entering a card's centre starts its arm clock, leaving it
-   * disarms at once; moving about inside the same centre changes nothing and
-   * re-renders nothing. Only inside a collection view -- the unfiltered views
-   * make a set on any drop and have no reorder preview to hold still.
+   * disarms at once; in an edge, a pointer that stops drifting starts the
+   * reorder preview. A move that changes neither re-renders nothing. Only
+   * inside a collection view -- the unfiltered views make a set on any drop
+   * and have no reorder preview to hold still.
    */
   function onDragMove({ active, collisions }: DragMoveEvent) {
     if (!filteredCollectionId) return;
-    const next = folderOver(folderRef.current, centreTarget(active, collisions), performance.now());
+    const input = folderInput(active, collisions);
+    const next = input
+      ? folderMove(folderRef.current, input.hit, input.pointer, performance.now())
+      : folderMove(folderRef.current, null, { x: 0, y: 0 }, performance.now());
     if (next === folderRef.current) return;
     updateFolder(next);
     scheduleArm();
@@ -481,7 +496,7 @@ export function CollectionsProvider({
   }
 
   return (
-    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, centreGameId: folder.targetId, armedGameId: armedId(folder) }}>
+    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, centreGameId: folder.targetId, previewGameId: previewId(folder), armedGameId: armedId(folder) }}>
       {/*
         `id` is not decoration. dnd-kit derives the hidden drag description's
         element id from a MODULE-LEVEL counter (useUniqueId in

@@ -21,7 +21,7 @@ export function GameGrid({ games, fob = null }: {
   /** The fob button's boards and multi-disk lists; null (no reader in the org) draws no button. */
   fob?: FobContext;
 }) {
-  const { gameIds, filteredCollectionId, centreGameId, armedGameId } = useCollectionsContext();
+  const { gameIds, filteredCollectionId, centreGameId, previewGameId, armedGameId } = useCollectionsContext();
 
   if (games.length === 0) {
     return (
@@ -56,7 +56,8 @@ export function GameGrid({ games, fob = null }: {
     <div className="mx-4 grid grid-cols-2 gap-4 sm:mx-7 sm:grid-cols-3 md:grid-cols-5" data-testid="game-grid">
       {ordered.map((g) =>
         filteredCollectionId
-          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob} armed={armedGameId === g.id} />
+          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob}
+                          centre={centreGameId === g.id} armed={armedGameId === g.id} />
           : <DraggableCard key={g.id} game={g} fob={fob} />,
       )}
     </div>
@@ -69,21 +70,22 @@ export function GameGrid({ games, fob = null }: {
   // target instead (DraggableCard), and a card dropped on it asks to make
   // the two one disk set (collection-provider.tsx's onDragEnd, Case 2).
   //
-  // While the pointer is in a card's CENTRE (src/lib/set-folder.ts) there is
-  // no reorder preview at all: every card stands in its own slot, so the
-  // one under the pointer stays under it while it arms, and the "Add to disk
-  // set" hint is drawn where the pointer is. Only a card's EDGE shows where
-  // a drop would put the dragged card. dnd-kit measures drop targets without
+  // The reorder preview shows only once the pointer has RESTED in a card's
+  // EDGE (src/lib/set-folder.ts); otherwise every card stands in its own
+  // slot. So the card whose centre the pointer is in stays under it while it
+  // arms, and the "Add to disk set" hint is drawn where the pointer is -- and
+  // a pointer merely passing through an edge on its way to the centre does
+  // not send the card sliding off. dnd-kit measures drop targets without
   // transforms, so the zones never move with the preview either way.
   if (!filteredCollectionId) return grid;
   return (
-    <SortableContext items={gameIds} strategy={centreGameId ? stillStrategy : rectSortingStrategy}>
+    <SortableContext items={gameIds} strategy={previewGameId ? rectSortingStrategy : stillStrategy}>
       {grid}
     </SortableContext>
   );
 }
 
-/** No sibling moves: the sortable preview while the pointer is in a card's centre. */
+/** No sibling moves: the sortable preview unless the pointer rests in a card's edge. */
 const stillStrategy: SortingStrategy = () => null;
 
 /**
@@ -425,11 +427,12 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
 
 /**
  * Filtered-to-a-collection view: sortable against siblings (reorders the
- * collection), plus a remove control. `armed`: the pointer has rested in this
- * card's centre long enough that a drop makes a disk set (src/lib/set-folder.ts).
+ * collection), plus a remove control. `centre`: the pointer is in this card's
+ * centre. `armed`: it has rested there long enough that a drop makes a disk
+ * set (src/lib/set-folder.ts).
  */
-function SortableCard({ game: g, collectionId, fob, armed }: {
-  game: GameListItem; collectionId: string; fob: FobContext; armed: boolean;
+function SortableCard({ game: g, collectionId, fob, centre, armed }: {
+  game: GameListItem; collectionId: string; fob: FobContext; centre: boolean; armed: boolean;
 }) {
   // See DraggableCard on why `role` is discarded rather than spread.
   const { attributes: dragAttributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -437,7 +440,10 @@ function SortableCard({ game: g, collectionId, fob, armed }: {
     data: { type: 'game', id: g.id, title: g.title, diskCount: g.diskCount } satisfies GameDragData,
   });
   const attributes = { ...dragAttributes, role: undefined };
-  const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition };
+  // No transition while the pointer is in this card's centre: if a rested
+  // edge had nudged it aside, it snaps straight back under the pointer
+  // instead of gliding there while the pointer is already on its centre.
+  const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition: centre ? undefined : transition };
 
   return (
     <Link
