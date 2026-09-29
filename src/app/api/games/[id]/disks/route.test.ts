@@ -36,6 +36,13 @@ describe('POST /api/games/[id]/disks', () => {
     expect(addDisksToSet).toHaveBeenCalledWith('org-1', 'G', ['s1'], undefined);
   });
 
+  it('accepts {sourceGameIds, rename} and passes it to the store as a title pick', async () => {
+    addDisksToSet.mockResolvedValue({ undo: [] });
+    const res = await POST(req({ sourceGameIds: ['B'], rename: 'Set' }), ctx);
+    expect(res.status).toBe(200);
+    expect(addDisksToSet).toHaveBeenCalledWith('org-1', 'G', { sourceGameIds: ['B'] }, 'Set');
+  });
+
   it('NotFound is 404', async () => {
     addDisksToSet.mockRejectedValue(new NotFound());
     const res = await POST(req({ diskIds: ['s1'] }), ctx);
@@ -57,6 +64,11 @@ describe('POST /api/games/[id]/disks', () => {
     ['empty rename', { diskIds: ['s1'], rename: '' }],
     ['long rename', { diskIds: ['s1'], rename: 'x'.repeat(81) }],
     ['wrong type', { diskIds: 's1' }],
+    ['both shapes at once', { diskIds: ['s1'], sourceGameIds: ['B'] }],
+    ['neither shape', { rename: 'x' }],
+    ['empty sourceGameIds', { sourceGameIds: [] }],
+    ['too many sourceGameIds', { sourceGameIds: Array.from({ length: 17 }, (_, i) => `g${i}`) }],
+    ['sourceGameIds wrong type', { sourceGameIds: 'B' }],
   ])('a malformed body (%s) is 400 and never reaches the store', async (_n, body) => {
     const res = await POST(req(body), ctx);
     expect(res.status).toBe(400);

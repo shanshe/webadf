@@ -3,12 +3,20 @@ import { requireOrg } from '@/lib/session';
 import { addDisksToSet, NotFound } from '@/lib/disk-set-store';
 import { PlanError } from '@/lib/disk-set';
 
-const body = z.object({
-  diskIds: z.array(z.string().min(1).max(64)).min(1).max(64),
-  rename: z.string().trim().min(1).max(80).optional(),
-});
+const rename = z.string().trim().min(1).max(80).optional();
+/**
+ * Either disk ids (each brings its whole title) or whole titles (a library
+ * card dropped on a card) -- never both: .strict() refuses the other key.
+ */
+const body = z.union([
+  z.object({ diskIds: z.array(z.string().min(1).max(64)).min(1).max(64), rename }).strict(),
+  z.object({ sourceGameIds: z.array(z.string().min(1).max(64)).min(1).max(16), rename }).strict(),
+]);
 
-/** Add disks to title [id] (disk-sets spec §4). Each picked disk brings its whole source title. */
+/**
+ * Add disks to title [id] (disk-sets spec §4). Each picked disk brings its whole
+ * source title; {sourceGameIds} names the source titles directly.
+ */
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { orgId } = await requireOrg();
   const { id } = await ctx.params;
@@ -23,7 +31,8 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   }
 
   try {
-    const { undo } = await addDisksToSet(orgId, id, parsed.data.diskIds, parsed.data.rename);
+    const pick = 'diskIds' in parsed.data ? parsed.data.diskIds : { sourceGameIds: parsed.data.sourceGameIds };
+    const { undo } = await addDisksToSet(orgId, id, pick, parsed.data.rename);
     return Response.json({ undo });
   } catch (err) {
     // Unknown and foreign ids are deliberately indistinguishable.

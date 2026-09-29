@@ -140,14 +140,46 @@ export async function run(db: Db, stmts: Stmt[]): Promise<void> {
   await db.batch(stmts as [Stmt, ...Stmt[]]);
 }
 
+/**
+ * What to add: disk ids (each brings its whole title), or whole titles
+ * (a library card dropped on a card).
+ */
+export type AddPick = string[] | { sourceGameIds: string[] };
+
+/**
+ * Every disk of each source title, org-scoped, titles in the order given and
+ * each title's disks in disk order. The result feeds the disk-id path below
+ * unchanged, so there is one planner and one batch, and that path re-reads
+ * every disk of each source itself before anything is deleted.
+ */
+async function diskIdsOfTitles(db: Db, orgId: string, gameId: string, sourceGameIds: string[]): Promise<string[]> {
+  const ids = [...new Set(sourceGameIds)];
+  if (ids.length === 0) throw new PlanError('nothing_to_add');
+  if (ids.includes(gameId)) throw new PlanError('same_title');
+  const found = await db.select({ id: games.id }).from(games)
+    .where(and(inArray(games.id, ids), eq(games.orgId, orgId)));
+  // A title of another org is indistinguishable from an unknown one.
+  if (found.length !== ids.length) throw new NotFound();
+  const all = await db.select(setDisk).from(disks)
+    .where(and(inArray(disks.gameId, ids), eq(disks.orgId, orgId)));
+  const out: string[] = [];
+  for (const g of ids) {
+    const mine = all.filter((d) => d.gameId === g)
+      .sort((a, b) => a.diskNo - b.diskNo || (a.id < b.id ? -1 : 1));
+    if (mine.length === 0) throw new PlanError('nothing_to_add');
+    out.push(...mine.map((d) => d.id));
+  }
+  return out;
+}
+
 export async function addDisksToSet(
-  orgId: string, gameId: string, diskIds: string[], rename?: string,
+  orgId: string, gameId: string, pick: AddPick, rename?: string,
 ): Promise<{ undo: UndoSnapshot[] }> {
   const db = getDb();
-  const ids = [...new Set(diskIds)];
-  if (ids.length === 0) throw new PlanError('nothing_to_add');
+  if ((Array.isArray(pick) ? pick : pick.sourceGameIds).length === 0) throw new PlanError('nothing_to_add');
 
   await requireGame(db, orgId, gameId);
+  const ids = Array.isArray(pick) ? [...new Set(pick)] : await diskIdsOfTitles(db, orgId, gameId, pick.sourceGameIds);
   const targetDisks = await disksOf(db, orgId, gameId);
   // Back in the order the caller sent: planAddDisks appends source titles in
   // the order it meets them, and an IN (...) read comes back in whatever
