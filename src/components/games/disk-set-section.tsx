@@ -147,8 +147,12 @@ export function DiskSetSection({ gameId, title, entries, from, fobDevices = [] }
       return;
     }
     const { gameId: newGameId } = (await res.json()) as { gameId: string };
-    toast.success('Moved out to its own title');
-    router.push(`/games/${newGameId}`);
+    // Stay on the set (operator, 2026-09-29): the disk leaves the list and the
+    // rest renumber on refresh; the new title is one click away in the toast.
+    toast.success('Moved out to its own title', {
+      action: { label: 'Open', onClick: () => router.push(`/games/${newGameId}`) },
+    });
+    router.refresh();
   }
 
   const byId = new Map(entries.map((e) => [e.disk.id, e]));

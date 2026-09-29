@@ -250,6 +250,139 @@ test('dragging a card onto a rail collection files it there', async ({ page }) =
   await expect(page.getByTestId('collection-uncategorized')).toContainText('0');
 });
 
+// ---------------------------------------------------------------------------
+// A card dropped on a rail collection hides at once and stays hidden while
+// the add runs, instead of flying back to its slot (operator, 2026-09-29).
+
+const cardTitled = (page: Page, title: string) => page.getByTestId('game-card').filter({ hasText: title });
+
+/** Holds every POST to a collection's games route until `release()`. */
+async function holdCollectionAdds(page: Page) {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let held = 0;
+  await page.route('**/api/collections/*/games', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    held += 1;
+    await gate;
+    await route.continue();
+  });
+  return { held: () => held, release: () => release() };
+}
+
+type Sample = { visible: boolean; box: { x: number; y: number; width: number; height: number } | null };
+
+/** Samples a card's visibility and box every ~20 ms until `stop()`. */
+function sampleCard(page: Page, c: Locator) {
+  const samples: Sample[] = [];
+  let running = true;
+  const done = (async () => {
+    while (running) {
+      const visible = await c.isVisible().catch(() => false);
+      const box = visible ? await c.boundingBox().catch(() => null) : null;
+      samples.push({ visible, box });
+      await page.waitForTimeout(20);
+    }
+  })();
+  return { samples, stop: async () => { running = false; await done; return samples; } };
+}
+
+test('Uncategorized: a card dropped on a rail collection hides at once, keeps its slot while the add runs, and is gone after the refresh', async ({ page }) => {
+  const run = runTag();
+  const u = await signUpFresh(page);
+  const a = await seedDisk(u.orgId, { title: `HideFile ${run}`, diskNo: 1, sha256: randomUUID().replace(/-/g, '').padEnd(64, '4') });
+  await seedDisk(u.orgId, { title: `Stays ${run}`, diskNo: 1, sha256: randomUUID().replace(/-/g, '').padEnd(64, '5') });
+  const id = await apiCreateCollection(page, `Hide target ${run}`);
+  const hold = await holdCollectionAdds(page);
+
+  await page.goto('/library');
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  const cardA = cardTitled(page, `HideFile ${run}`);
+  const other = cardTitled(page, `Stays ${run}`);
+  const aBox = (await cardA.boundingBox())!;
+  const otherBox = (await other.boundingBox())!;
+
+  await dragOnto(page, cardA, railRow(page, id));
+  await expect.poll(hold.held).toBe(1);
+  // Hidden -- not merely faded -- while the request runs, and its slot is kept:
+  // the element still occupies the same box and the other card has not moved.
+  await expect(cardA).toBeHidden();
+  expect(await cardA.evaluate((el) => getComputedStyle(el).visibility)).toBe('hidden');
+  expect(await cardA.boundingBox()).toEqual(aBox);
+  expect(await other.boundingBox()).toEqual(otherBox);
+  await page.waitForTimeout(500);
+  await expect(cardA).toBeHidden();
+
+  // Released: it never shows again -- the refreshed inbox no longer has it.
+  const s = sampleCard(page, cardA);
+  hold.release();
+  await expect(cardA).toHaveCount(0, { timeout: 10_000 });
+  expect((await s.stop()).some((x) => x.visible)).toBe(false);
+  await expect(page.getByTestId('game-card')).toHaveCount(1);
+  await expect.poll(async () => await membership(id), { timeout: 10_000 }).toEqual([a.gameId]);
+});
+
+test('All titles: a card dropped on a rail collection is hidden during the add and fades back into its own slot after the refresh, never flying back', async ({ page }) => {
+  const run = runTag();
+  const u = await signUpFresh(page);
+  const a = await seedDisk(u.orgId, { title: `HideAll ${run}`, diskNo: 1, sha256: randomUUID().replace(/-/g, '').padEnd(64, '6') });
+  await seedDisk(u.orgId, { title: `Other ${run}`, diskNo: 1, sha256: randomUUID().replace(/-/g, '').padEnd(64, '7') });
+  const id = await apiCreateCollection(page, `All target ${run}`);
+  const hold = await holdCollectionAdds(page);
+
+  await page.goto('/library?collection=all');
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  const cardA = cardTitled(page, `HideAll ${run}`);
+  const aBox = (await cardA.boundingBox())!;
+
+  await dragOnto(page, cardA, railRow(page, id));
+  // Sampled from the release on: every sample while the request is held must
+  // be hidden, and every visible sample afterwards must sit in its own slot.
+  const s = sampleCard(page, cardA);
+  await expect.poll(hold.held).toBe(1);
+  await expect(cardA).toBeHidden();
+  expect(await cardA.boundingBox()).toEqual(aBox);
+  await page.waitForTimeout(500);
+  const duringCount = s.samples.length;
+  expect(s.samples.slice(0, duringCount).some((x) => x.visible)).toBe(false);
+
+  hold.release();
+  await expect.poll(async () => await membership(id), { timeout: 10_000 }).toEqual([a.gameId]);
+  await expect(cardA).toBeVisible({ timeout: 10_000 });
+  // Fully faded in, not left half transparent.
+  await expect.poll(() => cardA.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
+  const samples = await s.stop();
+  expect(samples.filter((x) => x.visible).every((x) => JSON.stringify(x.box) === JSON.stringify(aBox))).toBe(true);
+  expect(await cardA.boundingBox()).toEqual(aBox);
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+});
+
+test('a failed add to a rail collection fades the hidden card back', async ({ page }) => {
+  const run = runTag();
+  const u = await signUpFresh(page);
+  await seedDisk(u.orgId, { title: `HideFail ${run}`, diskNo: 1, sha256: randomUUID().replace(/-/g, '').padEnd(64, '8') });
+  const id = await apiCreateCollection(page, `Fail target ${run}`);
+  await page.route('**/api/collections/*/games', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    // Slow enough to see the card hidden before the failure lands.
+    await new Promise((r) => setTimeout(r, 1_000));
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'boom' }) });
+  });
+
+  await page.goto('/library');
+  const cardA = cardTitled(page, `HideFail ${run}`);
+  await expect(cardA).toBeVisible();
+  const aBox = (await cardA.boundingBox())!;
+
+  await dragOnto(page, cardA, railRow(page, id));
+  await expect(cardA).toBeHidden();
+  await expect(page.locator('[data-sonner-toast]').filter({ hasText: 'Could not add the title to the collection' })).toBeVisible();
+  await expect(cardA).toBeVisible();
+  await expect.poll(() => cardA.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
+  expect(await cardA.boundingBox()).toEqual(aBox);
+  expect(await membership(id)).toEqual([]);
+});
+
 test('the rail highlights the collection a dragged title will actually land in', async ({ page }) => {
   const run = runTag();
   const u = await signUpFresh(page);

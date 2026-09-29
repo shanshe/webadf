@@ -36,9 +36,9 @@ Builds on: `docs/superpowers/specs/2026-09-28-multi-disk-next-design.md` (Next d
   - The disk's row gets `game_id = T` and the next free number.
   - A multi-disk source title contributes all its disks, in their order.
   - A source title left with no disks is deleted, with its collection memberships. The disks, blobs and history are untouched.
-- **Moving a disk out** makes it a new one-disk title, named after its volume name (falling back to the source filename), with type copied from the set.
-  The volume name is read from that one disk's image at move-out time.
-- **Volume names are not stored.** There is no column for them, and they are read from the image with adffs `readVolume`, as the Demozoo sweep does. They are read only where the number of disks is small: the suggestion (the disks of one drop, capped at 32; a larger drop gets no suggestion) and move-out (one disk). The Add disks… dialog therefore searches title, source filename and TOSEC name, not volume name.
+- **Moving a disk out** makes it a new one-disk title, named after its source filename without the extension (e.g. `amiga-wb31_extras`), falling back to its TOSEC name without the extension, then "Disk", with type copied from the set.
+  *Changed by the operator 2026-09-29:* this was the volume name, read from the image at move-out time; move-out no longer reads the image. The title page also stays on the set after a move-out, with an Open action in the toast.
+- **Volume names are not stored.** There is no column for them, and they are read from the image with adffs `readVolume`, as the Demozoo sweep does. They are read only where the number of disks is small: the suggestion (the disks of one drop, capped at 32; a larger drop gets no suggestion); move-out no longer reads them (2026-09-29). The Add disks… dialog therefore searches title, source filename and TOSEC name, not volume name.
 - **Reordering** renumbers the set's disks 1..N in one step. Duplicate numbers cannot survive it.
 - **Human arrangement.** Any add, reorder or move-out sets `games.disk_order_source = 'human'` on the set. Creating a set from a suggestion also sets `metadata_source = 'human'`, since the person typed or accepted its name.
 - **Scans leave a human-arranged set alone:**

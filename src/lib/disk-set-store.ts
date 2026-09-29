@@ -38,8 +38,6 @@ import {
 } from '@/lib/disk-set';
 import { stableId } from '@/lib/ingest';
 import { makeSortTitle } from '@/lib/tosec';
-import { readVolume } from '@/lib/adffs';
-import { diskStore } from '@/lib/storage';
 
 /**
  * What Undo needs to recreate an emptied title. No sortTitle: the server
@@ -250,25 +248,26 @@ export async function reorderSet(orgId: string, gameId: string, orderedIds: stri
   await run(db, [...applyPlan(db, orgId, plan, devs), markHuman(db, orgId, gameId)]);
 }
 
-const stripExt = (name: string) => name.replace(/\.[^./\\]+$/, '').trim();
+// Only a disk image's own extension: "Game v1.2" (no extension) keeps its ".2".
+const stripExt = (name: string) => name.replace(/\.(adf|adz|dms|hfe|ipf)$/i, '').trim();
 
-/** The volume name, else the uploaded filename, else "Disk". Never throws. */
-async function nameFor(db: Db, orgId: string, disk: { sha256: string; imageFormat: string }): Promise<string> {
-  if (disk.imageFormat === 'adf') {
-    try {
-      const v = readVolume(await diskStore.read(disk.sha256));
-      if (v.ok && v.volume.name.trim()) return v.volume.name.trim();
-    } catch { /* unreadable image: fall back */ }
-  }
+/**
+ * The uploaded file's name without its extension, else the TOSEC name without
+ * its extension, else "Disk" (e.g. amiga-wb31_extras). Never reads the image:
+ * until 2026-09-29 this was the Amiga volume name; the operator changed it to
+ * the file name.
+ */
+async function nameFor(db: Db, orgId: string, disk: { sha256: string; tosecName: string | null }): Promise<string> {
   const ent = await db.select({ sourceFilename: entitlements.sourceFilename }).from(entitlements)
     .where(and(eq(entitlements.orgId, orgId), eq(entitlements.sha256, disk.sha256))).limit(1);
   const fromFile = ent[0] ? stripExt(ent[0].sourceFilename) : '';
-  return fromFile || 'Disk';
+  const fromTosec = disk.tosecName ? stripExt(disk.tosecName) : '';
+  return fromFile || fromTosec || 'Disk';
 }
 
 export async function moveDiskOut(orgId: string, diskId: string): Promise<{ gameId: string }> {
   const db = getDb();
-  const rows = await db.select({ ...setDisk, sha256: disks.sha256, imageFormat: disks.imageFormat }).from(disks)
+  const rows = await db.select({ ...setDisk, sha256: disks.sha256, tosecName: disks.tosecName }).from(disks)
     .where(and(eq(disks.id, diskId), eq(disks.orgId, orgId))).limit(1);
   const disk = rows[0];
   if (!disk) throw new NotFound();
@@ -276,8 +275,7 @@ export async function moveDiskOut(orgId: string, diskId: string): Promise<{ game
     .where(and(eq(disks.gameId, disk.gameId), eq(disks.orgId, orgId), ne(disks.id, diskId)));
   // A lone disk is not in a set (controller ruling d): moving it out would
   // only swap its title for a bare one, losing the cover, Demozoo link,
-  // collections, year and publisher. Refused before the image is read or
-  // anything is written.
+  // collections, year and publisher. Refused before anything is written.
   if (remaining.length === 0) throw new PlanError('not_in_a_set');
   await requireGame(db, orgId, disk.gameId);
 
