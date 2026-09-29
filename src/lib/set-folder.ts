@@ -8,13 +8,30 @@
 // sortable preview's transforms, so a card that has been nudged aside still
 // answers for the place it came from.
 //
-//   - Pointer in a card's edge: a drop reorders. The reorder preview shows
-//     once the pointer RESTS there (EDGE_REST_MS within EDGE_REST_RADIUS_PX),
-//     and then stays while the pointer is anywhere in that card's edge.
-//   - Pointer in a card's centre: nothing moves. After ARM_DELAY_MS the card
-//     arms ("Add to disk set") and a drop there opens the set dialog. A drop
-//     in a centre before it arms does nothing at all.
-//   - Leaving the centre disarms at once.
+// What a DROP means (operator bug report 2026-09-29: "it does not detect the
+// re-ordering" -- a quick drop onto a card's centre used to do nothing):
+//   - Let go anywhere on a card -- edge, or a centre that has not armed yet --
+//     and the dragged card takes that card's position: a reorder. Dragging a
+//     card onto another and letting go is how a person reorders.
+//   - Only a centre the pointer has RESTED in for ARM_DELAY_MS arms ("Add to
+//     disk set"), and a drop there opens the set dialog. Resting is the
+//     edge's radius rule: the arm clock restarts whenever the pointer drifts
+//     more than EDGE_REST_RADIUS_PX from where its rest began. Time in the
+//     centre is not enough -- at a hand's pace (~250 px/s) a drag aimed at a
+//     card's middle spends well over ARM_DELAY_MS in its centre, and counting
+//     that armed the very reorder the operator was trying to make. A pointer
+//     passing through a centre on its way elsewhere never arms it.
+//   - A drop in the gap between cards counts as a drop on the nearest card,
+//     and one in the empty cells after the last card as a drop on the last
+//     card (the end). The provider's collision detection resolves both; see
+//     collection-provider.tsx. Outside the grid, nothing happens.
+//
+// What MOVES while dragging:
+//   - Pointer in a card's edge: the reorder preview shows once the pointer
+//     RESTS there (EDGE_REST_MS within EDGE_REST_RADIUS_PX), and then stays
+//     while the pointer is anywhere in that card's edge.
+//   - Pointer in a card's centre: nothing moves, so the card stays under the
+//     pointer while it arms. Leaving the centre disarms at once.
 //
 // Why the edge waits for a rest: the centre is ringed by edge, so every
 // approach to a centre crosses an edge first. Measured in e2e with the
@@ -42,7 +59,7 @@
 // provider (collection-provider.tsx) feeds it the zone its collision
 // detection computed and one timer tick per target.
 
-/** How long the pointer must rest in a card's centre before a drop there means "make a set". */
+/** How long the pointer must rest (within EDGE_REST_RADIUS_PX) in a card's centre before a drop there means "make a set". */
 export const ARM_DELAY_MS = 300;
 
 /** The centre is the middle half of a card's width... */
@@ -76,7 +93,7 @@ export function zoneOf(p: Point, rect: Rect): Zone {
   return inX && inY ? 'centre' : 'edge';
 }
 
-/** The card under the pointer and which part of it, or null (a gap, the dragged card's own slot, a rail row). */
+/** The card under the pointer and which part of it (a gap in the grid: the nearest card's edge), or null (the dragged card's own slot, a rail row, outside the grid). */
 export interface Hit {
   readonly id: string;
   readonly zone: Zone;
@@ -87,8 +104,10 @@ export interface Hit {
 export interface FolderState {
   /** The card whose CENTRE the pointer is in, or null. */
   readonly targetId: string | null;
-  /** When the pointer entered `targetId`'s centre (ms, any monotonic clock). */
+  /** When the pointer's current rest in `targetId`'s centre began (ms, any monotonic clock). */
   readonly since: number;
+  /** Where that rest began; a drift past EDGE_REST_RADIUS_PX restarts it. */
+  readonly centreRestAt: Point | null;
   /** Whether the pointer has rested in that centre for ARM_DELAY_MS. */
   readonly armed: boolean;
   /** The card whose EDGE the pointer is in, or null. */
@@ -101,15 +120,17 @@ export interface FolderState {
 }
 
 export const IDLE_FOLDER: FolderState = {
-  targetId: null, since: 0, armed: false, edgeId: null, restAt: null, restSince: 0, previewing: false,
+  targetId: null, since: 0, centreRestAt: null, armed: false, edgeId: null, restAt: null, restSince: 0, previewing: false,
 };
 
 /**
  * The pointer moved to `p`, over `hit`. Returns the SAME object when nothing
  * a caller renders or times has changed, so it can skip a re-render.
  *
- * Centre: staying in the same centre keeps its clock; any change --
- * including leaving and coming back -- starts a fresh, unarmed wait.
+ * Centre: resting in the same centre (within EDGE_REST_RADIUS_PX of where the
+ * rest began) keeps its clock; drifting further restarts it, and any change
+ * of card -- including leaving and coming back -- starts a fresh, unarmed
+ * wait. Once armed, moving about inside the same centre keeps the arm.
  * Edge: the rest clock restarts whenever the pointer drifts more than
  * EDGE_REST_RADIUS_PX from where the rest began; once the preview shows it
  * stays until the pointer leaves that card's edge.
@@ -122,9 +143,11 @@ export function folderMove(s: FolderState, hit: Hit | null, p: Point, now: numbe
   let next = s;
 
   if (centreId === null) {
-    if (s.targetId !== null) next = { ...next, targetId: null, since: 0, armed: false };
+    if (s.targetId !== null) next = { ...next, targetId: null, since: 0, centreRestAt: null, armed: false };
   } else if (centreId !== s.targetId) {
-    next = { ...next, targetId: centreId, since: now, armed: false };
+    next = { ...next, targetId: centreId, since: now, centreRestAt: p, armed: false };
+  } else if (!s.armed && s.centreRestAt && !restsSince(s.centreRestAt, p, undefined)) {
+    next = { ...next, since: now, centreRestAt: p };
   }
 
   if (edgeId === null) {
@@ -171,20 +194,17 @@ export function previewId(s: FolderState): string | null {
   return s.previewing ? s.edgeId : null;
 }
 
-export type DropOutcome = 'set' | 'reorder' | 'none';
+export type DropOutcome = 'set' | 'reorder';
 
 /**
- * What a card-on-card drop inside a collection means. `drop` is the card the
- * pointer was released over and the zone it was in there.
- *   - the armed card            -> 'set' (open the dialog). The state is
- *     trusted over the zone: a last frame that drifted into the edge on
- *     release does not undo an arm the person saw.
- *   - the card showing a preview -> 'reorder', wherever in its slot
- *   - edge                       -> 'reorder'
- *   - centre, not armed          -> 'none' (neither reorder nor dialog)
+ * What a card-on-card drop inside a collection means. `overId` is the card
+ * the drop landed on (for a drop in a gap, the nearest card).
+ *   - the armed card -> 'set' (open the dialog). The state is trusted over
+ *     the zone: a last frame that drifted into the edge on release does not
+ *     undo an arm the person saw.
+ *   - any other card -> 'reorder': its edge, its centre before it arms, or
+ *     the card whose preview is showing.
  */
-export function dropOutcome(s: FolderState, drop: { overId: string; zone: Zone }): DropOutcome {
-  if (armedId(s) === drop.overId) return 'set';
-  if (previewId(s) === drop.overId || drop.zone === 'edge') return 'reorder';
-  return 'none';
+export function dropOutcome(s: FolderState, overId: string): DropOutcome {
+  return armedId(s) === overId ? 'set' : 'reorder';
 }

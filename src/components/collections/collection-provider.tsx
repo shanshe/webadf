@@ -26,10 +26,12 @@ import {
   useSensor,
   useSensors,
   type Active,
+  type ClientRect,
   type Collision,
   type CollisionDetection,
   type DragEndEvent,
   type DragMoveEvent,
+  type DroppableContainer,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
 import { SetDropDialog, type DropTitle } from '@/components/library/set-drop-dialog';
@@ -82,10 +84,80 @@ export const collectionCollisionDetection: CollisionDetection = (args) => {
 };
 
 /**
+ * The collision detection inside a collection view: the same as above, and
+ * a drop in the GAP between cards counts as a drop on the NEAREST card
+ * (operator, 2026-09-29).
+ *
+ * `pointerWithin` answers nothing in the 16 px gutters of the grid, so a
+ * person who let go between two cards got no `over` at all and the drop was
+ * silently ignored -- one of the ways "it does not detect the re-ordering".
+ * Here the pointer is given to the card whose slot's middle is closest, as
+ * that card's EDGE: a drop there reorders to its position, and a rest there
+ * shows the same reorder preview as a rest in the card's own edge. A gap is
+ * never a centre, so it never arms.
+ *
+ * "In the grid" is the box around every card's slot. A pointer outside it
+ * -- the rail, the header, the empty page below -- keeps the plain answer,
+ * so a drop there still does nothing, and a drop on a rail row (which
+ * `pointerWithin` finds) is untouched. Only a GAME drag gets the fallback: a
+ * collection dragged in the rail has no business landing on a card.
+ *
+ * One exception to "nearest": the empty cells after the LAST card, in a
+ * partial last row. Nearest would give them to the card above (at 1280 with
+ * six cards, index 3 rather than the end), and to a different card at phone
+ * width than at desktop. A person dropping there means "at the end", so a
+ * pointer in the last card's row band, to its right, goes to the last card
+ * (operator ruling 2026-09-29: append). With a single row there are no such
+ * cells inside the box -- the box ends at the last card -- so a drop to the
+ * right of a lone row stays outside the grid and does nothing.
+ *
+ * Not used in the unfiltered views: there any card-on-card drop offers a
+ * disk set, and a near miss must not open that dialog.
+ */
+export const collectionGridCollisionDetection: CollisionDetection = (args) => {
+  const hits = collectionCollisionDetection(args);
+  const p = args.pointerCoordinates;
+  if (hits.length > 0 || !p) return hits;
+  if ((args.active.data.current as CollectionsDragData | undefined)?.type !== 'game') return hits;
+
+  type Card = { container: DroppableContainer; rect: ClientRect; distance: number };
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  let nearest: Card | null = null;
+  let last: Card | null = null;   // in reading order: the lowest row, then the rightmost in it
+  for (const container of args.droppableContainers) {
+    const rect = args.droppableRects.get(container.id);
+    if (!rect || (container.data.current as CollectionsDragData | undefined)?.type !== 'game') continue;
+    left = Math.min(left, rect.left); top = Math.min(top, rect.top);
+    right = Math.max(right, rect.right); bottom = Math.max(bottom, rect.bottom);
+    const card: Card = { container, rect, distance: Math.hypot(p.x - (rect.left + rect.width / 2), p.y - (rect.top + rect.height / 2)) };
+    if (!nearest || card.distance < nearest.distance) nearest = card;
+    if (!last || rect.top > last.rect.top + 1 || (Math.abs(rect.top - last.rect.top) <= 1 && rect.left > last.rect.left)) last = card;
+  }
+  if (!nearest || !last) return hits;
+  if (p.x < left || p.x > right || p.y < top || p.y > bottom) return hits;
+
+  const afterLast = p.y >= last.rect.top && p.y <= last.rect.bottom && p.x > last.rect.right;
+  const to = afterLast ? last : nearest;
+  const zone: Zone = 'edge';
+  return [{
+    id: to.container.id,
+    // `value` is what dnd-kit sorts collisions by (smaller first); there is
+    // only ever this one, so it is informational: the pointer's distance
+    // from the chosen card's middle.
+    data: {
+      droppableContainer: to.container, value: to.distance, zone,
+      pointer: { x: p.x, y: p.y },
+      middle: { x: to.rect.left + to.rect.width / 2, y: to.rect.top + to.rect.height / 2 },
+    },
+  }];
+};
+
+/**
  * The folder state machine's input: which OTHER card the dragged card is
- * over, in which zone, and where the pointer is. Null hit for a gap, the
- * dragged card's own slot, or a rail row; null altogether when there is no
- * collision to read a pointer from.
+ * over, in which zone, and where the pointer is. A gap inside the grid
+ * arrives as the nearest card's edge (collectionGridCollisionDetection).
+ * Null hit for the dragged card's own slot or a rail row; null altogether
+ * when there is no collision to read a pointer from (outside the grid).
  */
 function folderInput(active: Active, collisions: Collision[] | null): { hit: Hit | null; pointer: Point } | null {
   const first = collisions?.[0];
@@ -501,7 +573,7 @@ export function CollectionsProvider({
     // the flag set and eat the NEXT real click on the page.
     setTimeout(() => { suppressNextClick.current = false; }, 0);
 
-    const { active, over, collisions } = event;
+    const { active, over } = event;
     // Read before the reset: the arm state at the moment of release.
     const folderAtDrop = folderRef.current;
     resetFolder();
@@ -521,19 +593,14 @@ export function CollectionsProvider({
 
     // Case 2: a game dropped on another game. Unfiltered ("All titles",
     // "Uncategorized"), where there is no ordered list, any drop means "make
-    // these two one disk set". Filtered to one collection it depends where
-    // on the card the pointer was let go (src/lib/set-folder.ts): an edge
-    // reorders the collection; the centre, once armed, makes a set; the
-    // centre before it arms does nothing at all. A set deletes a title, so
-    // it only ever opens the confirm dialog and never acts on the drop itself.
+    // these two one disk set". Filtered to one collection
+    // (src/lib/set-folder.ts): a drop on a card whose centre the pointer has
+    // held still in until it armed makes a set; any other drop on a card --
+    // its edge, or its centre before it arms -- reorders. A set deletes a
+    // title, so it only ever opens the confirm dialog and never acts on the
+    // drop itself.
     if (activeData.type === 'game' && overData.type === 'game') {
-      // The zone comes from the same collision `over` was taken from. `over`
-      // trails the collisions by one render, so on the rare release where
-      // they disagree the drop counts as an edge: today's reorder.
-      const first = collisions?.[0];
-      const zone: Zone = first && first.id === over.id && first.data?.zone === 'centre' ? 'centre' : 'edge';
-      const outcome = filteredCollectionId ? dropOutcome(folderAtDrop, { overId: String(over.id), zone }) : 'set';
-      if (outcome === 'none') return;
+      const outcome = filteredCollectionId ? dropOutcome(folderAtDrop, String(over.id)) : 'set';
       if (outcome === 'set') {
         // Hidden the instant the dialog opens, not animated back to its slot
         // by dnd-kit's own drop animation underneath it. `returning: false`:
@@ -591,7 +658,7 @@ export function CollectionsProvider({
         started again at 0. React reported a hydration mismatch on every
         /library load. A fixed id is the same on both sides.
       */}
-      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
+      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={filteredCollectionId ? collectionGridCollisionDetection : collectionCollisionDetection} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
         {children}
       </DndContext>
       {setDrop && <SetDropDialog target={setDrop.target} source={setDrop.source} onClose={closeSetDrop} />}
