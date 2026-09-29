@@ -4555,7 +4555,13 @@ built without a rename.
 extend a disk set (dialog: set name prefilled with the target's title, order with Swap, Add/Cancel; inside a collection
 card-on-card still reorders). `POST /api/games/[id]/disks` also takes `{sourceGameIds}` (org-scoped). Rename pencil on the
 Disk set header (existing title edit; marks the name human). An unchanged name no longer marks a title human-edited.
-**Follow-up 2 merged 2026-09-29 (feat/set-dwell):** inside a collection view, hold a dragged card over another card for
+**Follow-up 3 merged 2026-09-29 (feat/set-folder), REPLACES follow-up 2 (operator: "it feels odd, and it doesn't snap
+to the set"):** inside a collection view, phone-folder style. Pointer in a card's CENTRE (middle 50% width x 60% height):
+the card stays still, arms after 300 ms ("Add to disk set"), drop opens the set dialog; drop before it arms does nothing.
+EDGES reorder; the reorder preview only appears after the pointer RESTS in an edge and is not creeping toward the centre;
+once previewing, the card's whole slot means reorder until the pointer leaves it. src/lib/set-folder.ts (pure, tested).
+Measured in e2e: target 0 px movement on hand-pace and 1 px/30 ms approaches, mouse and touch at 390 px.
+(Superseded) **Follow-up 2 merged 2026-09-29 (feat/set-dwell):** inside a collection view, hold a dragged card over another card for
 500 ms (ARM_DELAY_MS, src/lib/set-dwell.ts) -> it arms ("Add to disk set") and a drop opens the same dialog; a quick drag
 still reorders. Known UX quirk to show the operator: before arming, the target slides aside (reorder preview), then snaps
 back under the pointer once armed.
