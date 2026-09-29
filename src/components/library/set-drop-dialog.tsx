@@ -39,12 +39,15 @@ function disks(n: number): string {
 /**
  * Render only while open. `target` is the card that was dropped ON, `source`
  * the card that was dragged. `onClose` is called for Cancel, Escape, a
- * backdrop press and after a successful add.
+ * backdrop press and after a successful add -- the last one, and only that
+ * one, passes `true`, so the caller (collection-provider.tsx) can tell a
+ * close that leaves the source card hidden (awaiting router.refresh()) apart
+ * from one that fades it back into view.
  */
 export function SetDropDialog({ target: dropTarget, source: dropSource, onClose }: {
   target: DropTitle;
   source: DropTitle;
-  onClose: () => void;
+  onClose: (success?: boolean) => void;
 }) {
   const router = useRouter();
   const titleId = useId();
@@ -98,7 +101,7 @@ export function SetDropDialog({ target: dropTarget, source: dropSource, onClose 
       return;
     }
     const { undo } = (await res.json()) as { undo: UndoSnapshot[] };
-    onClose();
+    onClose(true);
     // Undo from the library stays in the library: the restored card reappears.
     movedToast(setName, undo, router, 'stay');
     router.refresh();
@@ -155,7 +158,7 @@ export function SetDropDialog({ target: dropTarget, source: dropSource, onClose 
         />
 
         <div className="flex items-center justify-end gap-2 pt-1">
-          <button type="button" data-testid="set-drop-cancel" onClick={onClose} disabled={busy}
+          <button type="button" data-testid="set-drop-cancel" onClick={() => onClose()} disabled={busy}
                   className={PILL} style={{ borderColor: 'var(--hairline-strong)', color: 'var(--ink)' }}>
             Cancel
           </button>
