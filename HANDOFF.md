@@ -4551,6 +4551,13 @@ DB round trips (fix: skip inserting games whose disk ids all exist), and the att
 move-out freezes metadata ('human') and loses inline rename; move out has no undo; Demozoo/OpenRetro can still retitle a set
 built without a rename.
 
+**Follow-up merged 2026-09-29 (feat/set-dnd):** in All titles / Uncategorized, drag a title card onto another card to make or
+extend a disk set (dialog: set name prefilled with the target's title, order with Swap, Add/Cancel; inside a collection
+card-on-card still reorders). `POST /api/games/[id]/disks` also takes `{sourceGameIds}` (org-scoped). Rename pencil on the
+Disk set header (existing title edit; marks the name human). An unchanged name no longer marks a title human-edited.
+Known flaky/broken e2e, NOT this branch: `mobile.spec.ts` "the drop strip fits ... drags an entry onto a folder" fails on
+master too (2026-09-29); several library-count tests time out under load / slow Neon and pass on re-run.
+
 **Bench (operator):** build a set of 2+ disks (e.g. upload the AmigaOS 3.1.4 disks, accept the suggestion), mount disk 1,
 Next through it with the card, and write to disk 2 (protected disk 1 -> writable disk 2: Info must not show write-protected;
 the save lands as a history version on disk 2).
