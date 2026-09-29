@@ -4555,6 +4555,10 @@ built without a rename.
 extend a disk set (dialog: set name prefilled with the target's title, order with Swap, Add/Cancel; inside a collection
 card-on-card still reorders). `POST /api/games/[id]/disks` also takes `{sourceGameIds}` (org-scoped). Rename pencil on the
 Disk set header (existing title edit; marks the name human). An unchanged name no longer marks a title human-edited.
+**Follow-up 5 merged 2026-09-29 (feat/set-reorder), operator bug "drag to reorder does not detect the re-ordering":**
+inside a collection, a drop on a card REORDERS unless the card is armed; a card arms only after the pointer RESTS still in
+its centre for 300 ms (drift > 8 px restarts the clock, so passing over a card never arms it); a drop in a gap reorders
+to the nearest card; a drop in the empty cells after the last card (multi-row) appends to the end; outside the grid = no-op.
 **Follow-up 4 merged 2026-09-29 (feat/set-hide, operator request):** when a card-on-card drop opens the disk-set dialog,
 the dragged card is hidden (slot kept, no fly-back); after Add it stays hidden until the refresh removes it; Cancel/Escape
 fades it back (SET_DROP_RETURN_MS 200). A failed Add keeps it hidden while the dialog stays open (review-caught bug, e2e
