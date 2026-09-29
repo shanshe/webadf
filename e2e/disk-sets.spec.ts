@@ -4,6 +4,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { games, disks } from '@/db/schema/catalog';
 import { devices } from '@/db/schema/devices';
+import { collectionGames } from '@/db/schema/collections';
 import { syntheticVolume } from '@/lib/adffs/synthetic';
 import { signUpFresh, runTag } from './helpers';
 import { pairDevice, seedDisk, addDisk, authHeader, cleanupSeeded } from './device-helpers';
@@ -607,4 +608,138 @@ test('the rename pencil renames the set; Escape cancels; the library card shows 
 
   await page.goto('/library?collection=all');
   await expect(card(page, `Renamed ${tag}`)).toBeVisible();
+});
+
+// ---------------------------------------------------------------------------
+// Hover-to-add inside a collection view (operator's option A, 2026-09-29):
+// there a card-on-card drop reorders, unless the dragged card rested on the
+// other for ARM_DELAY_MS (src/lib/set-dwell.ts) first.
+
+/** Three single-disk titles in one new collection, in that membership order.
+ *  The collection goes with the org in cleanupSeeded. */
+async function seedCollectionOfThree(page: Page, orgId: string, prefix: string) {
+  const tag = runTag();
+  const t = (x: string) => `${prefix}${x} ${tag}`;
+  const a = await seedDisk(orgId, { title: t('A'), diskNo: 1, sha256: sha(`${tag}-a`) });
+  const b = await seedDisk(orgId, { title: t('B'), diskNo: 1, sha256: sha(`${tag}-b`) });
+  const c = await seedDisk(orgId, { title: t('C'), diskNo: 1, sha256: sha(`${tag}-c`) });
+  const res = await page.request.post('/api/collections', { data: { name: `Dwell ${tag}` } });
+  expect(res.status()).toBe(200);
+  const collectionId = (await res.json()).id as string;
+  for (const g of [a, b, c]) {
+    expect((await page.request.post(`/api/collections/${collectionId}/games`, { data: { gameId: g.gameId } })).status()).toBe(200);
+  }
+  return { collectionId, a, b, c, title: t };
+}
+
+/** The collection's membership, in stored order. */
+async function membershipOf(collectionId: string): Promise<string[]> {
+  const rows = await getDb().select({ gameId: collectionGames.gameId, sortKey: collectionGames.sortKey })
+    .from(collectionGames).where(eq(collectionGames.collectionId, collectionId))
+    .orderBy(collectionGames.sortKey, collectionGames.gameId);
+  return rows.map((r) => r.gameId);
+}
+
+/** The grid's game ids in rendered order (each card is the <a> to its game). */
+async function gridIds(page: Page): Promise<string[]> {
+  return page.getByTestId('game-card').evaluateAll((els) =>
+    els.map((el) => new URL(el.getAttribute('href') ?? '', 'http://x').pathname.split('/').pop() ?? ''));
+}
+
+/**
+ * Drag `source` onto `target` and HOLD there past ARM_DELAY_MS before
+ * letting go. Unlike the unfiltered views, the hint must NOT be there at
+ * once -- only after the dwell -- and it is drawn on the target at its own
+ * place (the sortable preview froze and put it back under the pointer).
+ */
+async function dwellCardOnto(page: Page, source: Locator, target: Locator) {
+  const from = (await source.boundingBox())!;
+  const to = (await target.boundingBox())!;
+  const sx = from.x + from.width / 2;
+  const sy = from.y + from.height / 2;
+  const tx = to.x + to.width / 2;
+  const ty = to.y + to.height / 2;
+  await page.mouse.move(sx, sy);
+  await page.mouse.down();
+  await page.mouse.move(sx + 14, sy + 14, { steps: 6 });
+  await page.mouse.move(tx, ty, { steps: 15 });
+  await page.mouse.move(tx, ty, { steps: 2 });
+  await page.waitForTimeout(800);
+  await expect(target.getByTestId('set-drop-target')).toBeVisible();
+  await expect(target.getByTestId('set-drop-target')).toHaveText('Add to disk set');
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(1);
+  // Frozen: the armed card is back in its own slot, under the pointer.
+  const armed = (await target.boundingBox())!;
+  expect(Math.abs(armed.x - to.x)).toBeLessThan(2);
+  expect(Math.abs(armed.y - to.y)).toBeLessThan(2);
+  await page.mouse.up();
+  // See dragCardOnto: dnd-kit swallows clicks for 50ms after a drop.
+  await page.waitForTimeout(100);
+}
+
+test('in a collection: holding a card on another arms it; the drop asks, and Add makes the set', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Hold');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  await dwellCardOnto(page, card(page, s.title('A')), card(page, s.title('B')));
+
+  const dialog = page.getByTestId('set-drop-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('set-drop-order-1')).toContainText(s.title('B'));
+  await expect(dialog.getByTestId('set-drop-order-2')).toContainText(s.title('A'));
+  await expect(page).toHaveURL(new RegExp(`/library\\?collection=${s.collectionId}$`));
+  // Nothing moved on the drop itself.
+  expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+
+  await dialog.getByTestId('set-drop-confirm').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('game-card')).toHaveCount(2);
+  await expect(card(page, s.title('B'))).toBeVisible();
+
+  const nos = await diskNos([s.b.diskId, s.a.diskId]);
+  expect(nos[s.b.diskId]).toEqual({ gameId: s.b.gameId, diskNo: 1 });
+  expect(nos[s.a.diskId]).toEqual({ gameId: s.b.gameId, diskNo: 2 });
+  expect(await gameExists(s.a.gameId)).toBe(false);
+  expect(await membershipOf(s.collectionId)).toEqual([s.b.gameId, s.c.gameId]);
+});
+
+test('in a collection: a quick drag onto a card still reorders, with no dialog', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Quick');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  await dragOnto(page, card(page, s.title('A')), card(page, s.title('B')));
+
+  await expect.poll(() => membershipOf(s.collectionId)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  expect(await gridIds(page)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+  expect((await orgGames(orgId)).length).toBe(3);
+});
+
+test('in a collection: Cancel after a hold-and-drop leaves both titles and the order untouched', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Undo');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  await dwellCardOnto(page, card(page, s.title('C')), card(page, s.title('A')));
+  await expect(page.getByTestId('set-drop-dialog')).toBeVisible();
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  const nos = await diskNos([s.a.diskId, s.b.diskId, s.c.diskId]);
+  expect(nos[s.a.diskId]).toEqual({ gameId: s.a.gameId, diskNo: 1 });
+  expect(nos[s.c.diskId]).toEqual({ gameId: s.c.gameId, diskNo: 1 });
+  expect((await orgGames(orgId)).length).toBe(3);
+  // After a drag, a plain click on a card still opens it.
+  await card(page, s.title('B')).click();
+  await expect(page).toHaveURL(new RegExp(`/games/${s.b.gameId}\\?`));
 });
