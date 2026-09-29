@@ -25,13 +25,18 @@ import {
   TouchSensor,
   useSensor,
   useSensors,
+  type Active,
+  type Collision,
   type CollisionDetection,
   type DragEndEvent,
-  type DragOverEvent,
+  type DragMoveEvent,
 } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
 import { SetDropDialog, type DropTitle } from '@/components/library/set-drop-dialog';
-import { IDLE_DWELL, armedId, dropIntent, dwellOver, dwellTick, ARM_DELAY_MS, type DwellState } from '@/lib/set-dwell';
+import {
+  IDLE_FOLDER, armedId, dropOutcome, folderMove, folderTick, nextDue, previewId, zoneOf,
+  type FolderState, type Hit, type Point, type Zone,
+} from '@/lib/set-folder';
 
 /**
  * Resolve the drop from the POINTER, not from the dragged card's rectangle.
@@ -53,17 +58,55 @@ import { IDLE_DWELL, armedId, dropIntent, dwellOver, dwellTick, ARM_DELAY_MS, ty
  * The `rectIntersection` fallback is not decoration -- `pointerWithin` needs
  * pointer coordinates and returns nothing without them (a keyboard sensor, if
  * one is ever added), and silently dropping nothing would be worse.
+ *
+ * The droppable the pointer is in also gets the ZONE of that droppable the
+ * pointer is in (src/lib/set-folder.ts), on its collision's `data.zone`, and
+ * the pointer itself on `data.pointer`, and the slot's middle on `data.middle`.
+ * Computed here and nowhere else because this is the one place where the
+ * pointer and the droppable rects are guaranteed to be the same frame, and
+ * those rects are dnd-kit's transform-agnostic measurements: a card the
+ * reorder preview has nudged aside still answers for its own slot, so the
+ * centre cannot slide out from under the pointer. Only a card-on-card drag
+ * inside a collection reads it; every other drag ignores it.
  */
-export const collectionCollisionDetection: CollisionDetection = (args) =>
-  (args.pointerCoordinates ? pointerWithin(args) : rectIntersection(args));
+export const collectionCollisionDetection: CollisionDetection = (args) => {
+  if (!args.pointerCoordinates) return rectIntersection(args);
+  const hits = pointerWithin(args);
+  const [first, ...rest] = hits;
+  const rect = first ? args.droppableRects.get(first.id) : undefined;
+  if (!first || !rect) return hits;
+  const zone: Zone = zoneOf(args.pointerCoordinates, rect);
+  const pointer: Point = { x: args.pointerCoordinates.x, y: args.pointerCoordinates.y };
+  const middle: Point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  return [{ ...first, data: { ...first.data, zone, pointer, middle } }, ...rest];
+};
+
+/**
+ * The folder state machine's input: which OTHER card the dragged card is
+ * over, in which zone, and where the pointer is. Null hit for a gap, the
+ * dragged card's own slot, or a rail row; null altogether when there is no
+ * collision to read a pointer from.
+ */
+function folderInput(active: Active, collisions: Collision[] | null): { hit: Hit | null; pointer: Point } | null {
+  const first = collisions?.[0];
+  const pointer = first?.data?.pointer as Point | undefined;
+  if (!first || !pointer) return null;
+  const activeData = active.data.current as CollectionsDragData | undefined;
+  const overData = first.data?.droppableContainer?.data?.current as CollectionsDragData | undefined;
+  const isCard = first.id !== active.id && activeData?.type === 'game' && overData?.type === 'game';
+  const hit: Hit | null = isCard
+    ? { id: String(first.id), zone: first.data?.zone as Zone, middle: first.data?.middle as Point | undefined }
+    : null;
+  return { hit, pointer };
+}
 
 /** What a draggable card in the library grid declares about itself. */
 export interface GameDragData {
   type: 'game';
   id: string;
   /** The card's title and disk count, for the "Add to a disk set" dialog a
-   *  card-on-card drop opens (at once in the unfiltered views; after a dwell
-   *  inside a collection). */
+   *  card-on-card drop opens (at once in the unfiltered views; from an armed
+   *  card's centre inside a collection). */
   title?: string;
   diskCount?: number;
 }
@@ -114,10 +157,14 @@ interface CollectionsContextValue {
    *  moment as every collection's own count. */
   uncategorizedCount: number;
   /**
-   * Inside a collection view: the card the dragged one has rested on for
-   * ARM_DELAY_MS (src/lib/set-dwell.ts), so a drop there makes a disk set
-   * instead of reordering. The grid draws the "Add to disk set" hint on it
-   * and freezes the sortable preview while it is set. Null otherwise.
+   * Inside a collection view: the card whose EDGE the pointer has rested in,
+   * so the grid shows the reorder preview. While it is null no card moves.
+   */
+  previewGameId: string | null;
+  /**
+   * The same card once the pointer has rested in its centre for
+   * ARM_DELAY_MS: a drop there makes a disk set. The grid draws the "Add to
+   * disk set" hint on it. Null otherwise.
    */
   armedGameId: string | null;
 }
@@ -155,37 +202,37 @@ export function CollectionsProvider({
   const [setDrop, setSetDrop] = useState<{ target: DropTitle; source: DropTitle } | null>(null);
 
   /**
-   * Hover-to-add inside a collection view. The state drives the hint and the
-   * frozen sortable preview; the ref is what the timer and onDragEnd read, so
-   * neither can see a value from a render that has already been superseded.
+   * Folder-style card-on-card inside a collection view. The state drives the
+   * hint and the still preview; the ref is what the timer and onDragEnd read,
+   * so neither can see a value from a render that has already been superseded.
    */
-  const [dwell, setDwell] = useState<DwellState>(IDLE_DWELL);
-  const dwellRef = useRef<DwellState>(IDLE_DWELL);
-  const dwellTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  function updateDwell(next: DwellState) {
-    dwellRef.current = next;
-    setDwell(next);
+  const [folder, setFolder] = useState<FolderState>(IDLE_FOLDER);
+  const folderRef = useRef<FolderState>(IDLE_FOLDER);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function updateFolder(next: FolderState) {
+    folderRef.current = next;
+    setFolder(next);
   }
   function scheduleArm() {
-    if (dwellTimer.current !== null) clearTimeout(dwellTimer.current);
-    dwellTimer.current = null;
-    const s = dwellRef.current;
-    if (s.targetId === null || s.armed) return;
+    if (armTimer.current !== null) clearTimeout(armTimer.current);
+    armTimer.current = null;
+    const due = nextDue(folderRef.current);
+    if (due === null) return;
     // Re-checked on the tick rather than assumed: a timer can fire a hair
     // early against performance.now(), and then it simply waits the rest.
-    const wait = Math.max(1, s.since + ARM_DELAY_MS - performance.now());
-    dwellTimer.current = setTimeout(() => {
-      dwellTimer.current = null;
-      updateDwell(dwellTick(dwellRef.current, performance.now()));
+    const wait = Math.max(1, due - performance.now());
+    armTimer.current = setTimeout(() => {
+      armTimer.current = null;
+      updateFolder(folderTick(folderRef.current, performance.now()));
       scheduleArm();
     }, wait);
   }
-  function resetDwell() {
-    if (dwellTimer.current !== null) clearTimeout(dwellTimer.current);
-    dwellTimer.current = null;
-    updateDwell(IDLE_DWELL);
+  function resetFolder() {
+    if (armTimer.current !== null) clearTimeout(armTimer.current);
+    armTimer.current = null;
+    updateFolder(IDLE_FOLDER);
   }
-  useEffect(() => () => { if (dwellTimer.current !== null) clearTimeout(dwellTimer.current); }, []);
+  useEffect(() => () => { if (armTimer.current !== null) clearTimeout(armTimer.current); }, []);
 
   // router.refresh() re-runs the server component tree and hands this
   // provider fresh `initial*` props, but useState's initial value is only
@@ -350,23 +397,25 @@ export function CollectionsProvider({
 
   function onDragStart() {
     suppressNextClick.current = true;
-    resetDwell();
+    resetFolder();
   }
 
   /**
-   * Fires whenever the target under the pointer changes (dnd-kit does not
-   * repeat it while the pointer rests), which is exactly the dwell clock's
-   * input: a new target restarts the wait, and the timer arms it. Only inside
-   * a collection view -- the unfiltered views make a set on any drop.
+   * Fires on every pointer move of a drag (not while it rests -- the timer
+   * covers that). Entering a card's centre starts its arm clock, leaving it
+   * disarms at once; in an edge, a pointer that stops drifting starts the
+   * reorder preview. A move that changes neither re-renders nothing. Only
+   * inside a collection view -- the unfiltered views make a set on any drop
+   * and have no reorder preview to hold still.
    */
-  function onDragOver({ active, over }: DragOverEvent) {
+  function onDragMove({ active, collisions }: DragMoveEvent) {
     if (!filteredCollectionId) return;
-    const activeData = active.data.current as CollectionsDragData | undefined;
-    const overData = over?.data.current as CollectionsDragData | undefined;
-    const target = activeData?.type === 'game' && overData?.type === 'game' && over && over.id !== active.id
-      ? String(over.id)
-      : null;
-    updateDwell(dwellOver(dwellRef.current, target, performance.now()));
+    const input = folderInput(active, collisions);
+    const next = input
+      ? folderMove(folderRef.current, input.hit, input.pointer, performance.now())
+      : folderMove(folderRef.current, null, { x: 0, y: 0 }, performance.now());
+    if (next === folderRef.current) return;
+    updateFolder(next);
     scheduleArm();
   }
 
@@ -377,7 +426,7 @@ export function CollectionsProvider({
    */
   function onDragCancel() {
     setTimeout(() => { suppressNextClick.current = false; }, 0);
-    resetDwell();
+    resetFolder();
   }
 
   function onDragEnd(event: DragEndEvent) {
@@ -388,10 +437,10 @@ export function CollectionsProvider({
     // the flag set and eat the NEXT real click on the page.
     setTimeout(() => { suppressNextClick.current = false; }, 0);
 
-    const { active, over } = event;
-    // Read before the reset: whether this drop landed on an armed card.
-    const intent = dropIntent(dwellRef.current, over ? String(over.id) : null);
-    resetDwell();
+    const { active, over, collisions } = event;
+    // Read before the reset: the arm state at the moment of release.
+    const folderAtDrop = folderRef.current;
+    resetFolder();
     if (!over) return; // dropped outside any droppable -- nothing to do
 
     const activeData = active.data.current as CollectionsDragData | undefined;
@@ -406,16 +455,22 @@ export function CollectionsProvider({
       return;
     }
 
-    // Case 2: a game dropped on another game. Filtered to one collection it
-    // reorders that collection -- its membership order is the only ordered
-    // list the drop could mean there -- unless the dragged card rested on
-    // this one for ARM_DELAY_MS first (src/lib/set-dwell.ts), which armed it.
-    // Unfiltered ("All titles", "Uncategorized"), where there is no such
-    // list, any drop means "make these two one disk set". Either way that
-    // deletes a title, so it only ever opens the confirm dialog and never
-    // acts on the drop itself.
+    // Case 2: a game dropped on another game. Unfiltered ("All titles",
+    // "Uncategorized"), where there is no ordered list, any drop means "make
+    // these two one disk set". Filtered to one collection it depends where
+    // on the card the pointer was let go (src/lib/set-folder.ts): an edge
+    // reorders the collection; the centre, once armed, makes a set; the
+    // centre before it arms does nothing at all. A set deletes a title, so
+    // it only ever opens the confirm dialog and never acts on the drop itself.
     if (activeData.type === 'game' && overData.type === 'game') {
-      if (!filteredCollectionId || intent === 'set') {
+      // The zone comes from the same collision `over` was taken from. `over`
+      // trails the collisions by one render, so on the rare release where
+      // they disagree the drop counts as an edge: today's reorder.
+      const first = collisions?.[0];
+      const zone: Zone = first && first.id === over.id && first.data?.zone === 'centre' ? 'centre' : 'edge';
+      const outcome = filteredCollectionId ? dropOutcome(folderAtDrop, { overId: String(over.id), zone }) : 'set';
+      if (outcome === 'none') return;
+      if (outcome === 'set') {
         setSetDrop({
           target: { id: overData.id, title: overData.title ?? '', diskCount: overData.diskCount ?? 0 },
           source: { id: activeData.id, title: activeData.title ?? '', diskCount: activeData.diskCount ?? 0 },
@@ -424,7 +479,7 @@ export function CollectionsProvider({
       }
       const oldIndex = gameIds.indexOf(activeData.id);
       const newIndex = gameIds.indexOf(overData.id);
-      if (oldIndex === -1 || newIndex === -1) return;
+      if (!filteredCollectionId || oldIndex === -1 || newIndex === -1) return;
       void reorderGamesInCollection(filteredCollectionId, arrayMove(gameIds, oldIndex, newIndex));
       return;
     }
@@ -439,7 +494,7 @@ export function CollectionsProvider({
   }
 
   return (
-    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, armedGameId: armedId(dwell) }}>
+    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, previewGameId: previewId(folder), armedGameId: armedId(folder) }}>
       {/*
         `id` is not decoration. dnd-kit derives the hidden drag description's
         element id from a MODULE-LEVEL counter (useUniqueId in
@@ -449,7 +504,7 @@ export function CollectionsProvider({
         started again at 0. React reported a hydration mismatch on every
         /library load. A fixed id is the same on both sides.
       */}
-      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
+      <DndContext id="collections-dnd" sensors={sensors} collisionDetection={collectionCollisionDetection} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
         {children}
       </DndContext>
       {setDrop && <SetDropDialog target={setDrop.target} source={setDrop.source} onClose={() => setSetDrop(null)} />}

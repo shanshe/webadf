@@ -6,7 +6,7 @@ import { games, disks } from '@/db/schema/catalog';
 import { devices } from '@/db/schema/devices';
 import { collectionGames } from '@/db/schema/collections';
 import { syntheticVolume } from '@/lib/adffs/synthetic';
-import { ARM_DELAY_MS } from '@/lib/set-dwell';
+import { ARM_DELAY_MS, EDGE_REST_MS, zoneOf } from '@/lib/set-folder';
 import { signUpFresh, runTag } from './helpers';
 import { pairDevice, seedDisk, addDisk, authHeader, cleanupSeeded } from './device-helpers';
 
@@ -612,9 +612,11 @@ test('the rename pencil renames the set; Escape cancels; the library card shows 
 });
 
 // ---------------------------------------------------------------------------
-// Hover-to-add inside a collection view (operator's option A, 2026-09-29):
-// there a card-on-card drop reorders, unless the dragged card rested on the
-// other for ARM_DELAY_MS (src/lib/set-dwell.ts) first.
+// Folder-style drops inside a collection view (operator, 2026-09-29): like
+// making a folder on a phone, the CENTRE of a card adds to a disk set once
+// the pointer has rested there for ARM_DELAY_MS (src/lib/set-folder.ts), and
+// the EDGES reorder. The operator drags slowly, by hand, so every drag here
+// walks in small steps with a real frame between each and holds for real.
 
 /** Three single-disk titles in one new collection, in that membership order.
  *  The collection goes with the org in cleanupSeeded. */
@@ -624,7 +626,7 @@ async function seedCollectionOfThree(page: Page, orgId: string, prefix: string) 
   const a = await seedDisk(orgId, { title: t('A'), diskNo: 1, sha256: sha(`${tag}-a`) });
   const b = await seedDisk(orgId, { title: t('B'), diskNo: 1, sha256: sha(`${tag}-b`) });
   const c = await seedDisk(orgId, { title: t('C'), diskNo: 1, sha256: sha(`${tag}-c`) });
-  const res = await page.request.post('/api/collections', { data: { name: `Dwell ${tag}` } });
+  const res = await page.request.post('/api/collections', { data: { name: `Folder ${tag}` } });
   expect(res.status()).toBe(200);
   const collectionId = (await res.json()).id as string;
   for (const g of [a, b, c]) {
@@ -647,71 +649,131 @@ async function gridIds(page: Page): Promise<string[]> {
     els.map((el) => new URL(el.getAttribute('href') ?? '', 'http://x').pathname.split('/').pop() ?? ''));
 }
 
+type Point = { x: number; y: number };
+type Box = { x: number; y: number; width: number; height: number };
+
+/** A point `fx`/`fy` of the way across `box` (0.5, 0.5 is its middle). */
+const at = (box: Box, fx: number, fy: number): Point => ({ x: box.x + box.width * fx, y: box.y + box.height * fy });
+
+/** Whether `p` is in the CENTRE of the slot `box`, by the app's own rule. */
+const inCentre = (p: Point, box: Box) =>
+  zoneOf(p, { left: box.x, top: box.y, width: box.width, height: box.height }) === 'centre';
+
+/** How far `box` is from `ref`, the larger of the two axes. */
+const offBy = (box: Box, ref: Box) => Math.max(Math.abs(box.x - ref.x), Math.abs(box.y - ref.y));
+
+/** A hand's pace: 4px a step, one frame between steps (~250px/s). */
+const STEP_PX = 4;
+const STEP_MS = 16;
+
 /**
- * Drag `source` onto `target` and HOLD there past ARM_DELAY_MS before
- * letting go. The hint is drawn on the target at its own place (the sortable
- * preview froze and put it back under the pointer).
+ * Walk the (already pressed) mouse from `from` to `to` in small steps, like a
+ * hand, never a jump. `onStep` runs after every step with where it is now.
  */
-async function dwellCardOnto(page: Page, source: Locator, target: Locator) {
-  const from = (await source.boundingBox())!;
-  const to = (await target.boundingBox())!;
-  const sx = from.x + from.width / 2;
-  const sy = from.y + from.height / 2;
-  const tx = to.x + to.width / 2;
-  const ty = to.y + to.height / 2;
-  await page.mouse.move(sx, sy);
+async function walk(page: Page, from: Point, to: Point, onStep?: (p: Point) => Promise<void>,
+  pace: { px: number; ms: number } = { px: STEP_PX, ms: STEP_MS }): Promise<Point> {
+  const n = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / pace.px));
+  for (let i = 1; i <= n; i++) {
+    const p = { x: from.x + ((to.x - from.x) * i) / n, y: from.y + ((to.y - from.y) * i) / n };
+    await page.mouse.move(p.x, p.y);
+    await page.waitForTimeout(pace.ms);
+    if (onStep) await onStep(p);
+  }
+  return to;
+}
+
+/**
+ * Press the middle of `source` and pick it up: a short walk past the
+ * MouseSensor's 8px threshold, staying inside the card's own slot (its own
+ * drop area, which is no target, so nothing arms or moves yet).
+ */
+async function pickUp(page: Page, source: Locator): Promise<Point> {
+  const p = at((await source.boundingBox())!, 0.5, 0.5);
+  await page.mouse.move(p.x, p.y);
   await page.mouse.down();
-  await page.mouse.move(sx + 14, sy + 14, { steps: 6 });
-  await page.mouse.move(tx, ty, { steps: 15 });
-  await page.mouse.move(tx, ty, { steps: 2 });
-  await page.waitForTimeout(800);
-  await expect(target.getByTestId('set-drop-target')).toBeVisible();
-  await expect(target.getByTestId('set-drop-target')).toHaveText('Add to disk set');
-  await expect(page.getByTestId('set-drop-target')).toHaveCount(1);
-  // Frozen: the armed card is back in its own slot, under the pointer.
-  // Polled: it slides back over dnd-kit's 200ms transition.
-  await expect.poll(async () => Math.abs((await target.boundingBox())!.x - to.x)).toBeLessThan(2);
-  await expect.poll(async () => Math.abs((await target.boundingBox())!.y - to.y)).toBeLessThan(2);
+  return walk(page, p, { x: p.x + 12, y: p.y + 12 });
+}
+
+/**
+ * Let go, then wait out dnd-kit's 50 ms click swallow (see dragCardOnto) so a
+ * click on the dialog that follows is a person's, not one it eats.
+ */
+async function letGo(page: Page) {
   await page.mouse.up();
-  // See dragCardOnto: dnd-kit swallows clicks for 50ms after a drop.
   await page.waitForTimeout(100);
 }
 
 /**
- * Drag `source` onto `target` WITHOUT resting there. The approach travels
- * inside the source's own slot (over its own drop area, which is no target,
- * so no dwell clock runs), then hops to the target's centre and lets go at
- * once. The time actually spent over the target is measured: on a machine
- * too slow to stay under ARM_DELAY_MS the test fails saying so, rather than
- * as a puzzling "did not reorder".
+ * Walk `source` slowly into the middle of `target`'s centre and hold there
+ * for 600 ms, measuring the target all the way. Returns the measurements;
+ * the caller asserts. `slot` is the target's box before anything was picked
+ * up -- the place it must still be while the pointer is in its centre.
+ *
+ * `pauseInEdgeAt`: first walk to that point of the target (an edge) and rest
+ * there long enough for the reorder preview, then walk on into the middle.
+ * `pausedOff` is how far the target had been moved aside by then.
+ *
+ * `creep`: walk at a hand's pace only to just outside the target's left side,
+ * then cross its whole edge ring into the middle at 1 px every 30 ms.
  */
-async function quickDragOnto(page: Page, source: Locator, target: Locator) {
-  const from = (await source.boundingBox())!;
-  const to = (await target.boundingBox())!;
-  const sx = from.x + from.width / 2;
-  const sy = from.y + from.height / 2;
-  // Still inside the source's own slot, near the edge facing the target.
-  const ex = to.x > from.x ? from.x + from.width - 6 : from.x + 6;
-  await page.mouse.move(sx, sy);
-  await page.mouse.down();
-  await page.mouse.move(sx + 14, sy + 14, { steps: 6 });
-  await page.mouse.move(ex, sy + 14, { steps: 8 });
+async function walkIntoCentreAndHold(page: Page, source: Locator, target: Locator,
+  opts: { pauseInEdgeAt?: [number, number]; creep?: boolean } = {}) {
+  const slot = (await target.boundingBox())!;
+  let from = await pickUp(page, source);
+  let pausedOff: number | null = null;
+  if (opts.pauseInEdgeAt) {
+    from = await walk(page, from, at(slot, ...opts.pauseInEdgeAt));
+    await page.waitForTimeout(EDGE_REST_MS + 400);   // the rest, then the preview's 200 ms glide
+    pausedOff = offBy((await target.boundingBox())!, slot);
+  }
+  if (opts.creep) from = await walk(page, from, { x: slot.x - 6, y: slot.y + slot.height / 2 });
+  // Every step, and where the target card was drawn after it.
+  const approach: Array<{ p: Point; centre: boolean; off: number }> = [];
+  await walk(page, from, at(slot, 0.5, 0.5), async (p) => {
+    approach.push({ p, centre: inCentre(p, slot), off: offBy((await target.boundingBox())!, slot) });
+  }, opts.creep ? { px: 1, ms: 30 } : undefined);
+  // The hold: sampled every 50 ms for 600 ms, the pointer perfectly still.
+  const hold: number[] = [];
   const t0 = Date.now();
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 2 });
-  await page.mouse.up();
-  const overTarget = Date.now() - t0;
-  expect(overTarget, `the quick drag spent ${overTarget}ms over the target; it must be under ARM_DELAY_MS`)
-    .toBeLessThan(ARM_DELAY_MS);
+  while (Date.now() - t0 < 600) {
+    hold.push(offBy((await target.boundingBox())!, slot));
+    await page.waitForTimeout(50);
+  }
+  return { slot, approach, hold, pausedOff };
 }
 
-test('in a collection: holding a card on another arms it; the drop asks, and Add makes the set', async ({ page }) => {
+/** One line of the measurements, for the run log: e/C = edge/centre step, then px off the slot. */
+function logWalk(label: string, m: Awaited<ReturnType<typeof walkIntoCentreAndHold>>) {
+  console.log(`[folder ${label}] ${m.pausedOff === null ? '' : `after the edge rest: ${Math.round(m.pausedOff)}px aside; `}` +
+    `walk: ${m.approach.map((x) => `${x.centre ? 'C' : 'e'}${Math.round(x.off)}`).join(' ')}; ` +
+    `hold: ${m.hold.map((o) => o.toFixed(1)).join(' ')}`);
+}
+
+/** The proof: from the first step inside the centre to the end of the hold, the target is in its own slot, within 2px, at every measurement. */
+function expectStillInCentre(m: Awaited<ReturnType<typeof walkIntoCentreAndHold>>) {
+  const inside = m.approach.filter((x) => x.centre);
+  expect(inside.length, 'the walk reached the centre').toBeGreaterThan(5);
+  expect(Math.max(...inside.map((x) => x.off)), 'the target moved while the pointer was in its centre (walk)').toBeLessThanOrEqual(2);
+  expect(Math.max(...m.hold), 'the target moved while the pointer was in its centre (hold)').toBeLessThanOrEqual(2);
+}
+
+test('in a collection: a slow walk into a card\'s centre leaves it where it is; after the hold it offers the set, and Add makes it', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
-  const s = await seedCollectionOfThree(page, orgId, 'Hold');
+  const s = await seedCollectionOfThree(page, orgId, 'Folder');
 
   await page.goto(`/library?collection=${s.collectionId}`);
   await expect(page.getByTestId('game-card')).toHaveCount(3);
   expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
-  await dwellCardOnto(page, card(page, s.title('A')), card(page, s.title('B')));
+  const target = card(page, s.title('B'));
+  const m = await walkIntoCentreAndHold(page, card(page, s.title('A')), target);
+  logWalk('A into B', m);
+  expectStillInCentre(m);
+  // Walked straight through B's edge without resting: B never moved at all.
+  expect(Math.max(...m.approach.map((x) => x.off)), 'B moved while the pointer crossed its edge').toBeLessThanOrEqual(2);
+  await expect(target.getByTestId('set-drop-target')).toBeVisible();
+  await expect(target.getByTestId('set-drop-target')).toHaveText('Add to disk set');
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(1);
+  await letGo(page);
 
   const dialog = page.getByTestId('set-drop-dialog');
   await expect(dialog).toBeVisible();
@@ -733,28 +795,52 @@ test('in a collection: holding a card on another arms it; the drop asks, and Add
   expect(await membershipOf(s.collectionId)).toEqual([s.b.gameId, s.c.gameId]);
 });
 
-test('in a collection: a quick drag onto a card still reorders, with no dialog', async ({ page }) => {
+test('in a collection: a card dropped on another card\'s left or right edge reorders, with no hint and no dialog', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
-  const s = await seedCollectionOfThree(page, orgId, 'Quick');
+  const s = await seedCollectionOfThree(page, orgId, 'Edge');
 
   await page.goto(`/library?collection=${s.collectionId}`);
   await expect(page.getByTestId('game-card')).toHaveCount(3);
-  await quickDragOnto(page, card(page, s.title('A')), card(page, s.title('B')));
 
+  // A onto B's LEFT edge, held longer than ARM_DELAY_MS: an edge never arms.
+  let slot = (await card(page, s.title('B')).boundingBox())!;
+  let p = await pickUp(page, card(page, s.title('A')));
+  await walk(page, p, at(slot, 0.1, 0.5));
+  await page.waitForTimeout(ARM_DELAY_MS + 300);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  // Rested in the edge, so the reorder preview shows: B has moved aside.
+  expect(offBy((await card(page, s.title('B')).boundingBox())!, slot)).toBeGreaterThan(50);
+  await letGo(page);
   await expect.poll(() => membershipOf(s.collectionId)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
   await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  await expect.poll(() => gridIds(page)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+
+  // A (now second) back onto B's RIGHT edge (B is now first).
+  await page.waitForTimeout(400);   // the drop's settle animation
+  slot = (await card(page, s.title('B')).boundingBox())!;
+  p = await pickUp(page, card(page, s.title('A')));
+  await walk(page, p, at(slot, 0.9, 0.5));
+  await page.waitForTimeout(ARM_DELAY_MS + 300);
   await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
-  expect(await gridIds(page)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+  expect(offBy((await card(page, s.title('B')).boundingBox())!, slot)).toBeGreaterThan(50);
+  await letGo(page);
+  await expect.poll(() => membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  await expect.poll(() => gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
   expect((await orgGames(orgId)).length).toBe(3);
 });
 
-test('in a collection: Cancel after a hold-and-drop leaves both titles and the order untouched', async ({ page }) => {
+test('in a collection: Cancel after a centre drop leaves both titles and the order untouched', async ({ page }) => {
   const { orgId } = await signUpFresh(page);
   const s = await seedCollectionOfThree(page, orgId, 'Undo');
 
   await page.goto(`/library?collection=${s.collectionId}`);
   await expect(page.getByTestId('game-card')).toHaveCount(3);
-  await dwellCardOnto(page, card(page, s.title('C')), card(page, s.title('A')));
+  const m = await walkIntoCentreAndHold(page, card(page, s.title('B')), card(page, s.title('A')));
+  logWalk('B into A', m);
+  expectStillInCentre(m);
+  await expect(card(page, s.title('A')).getByTestId('set-drop-target')).toBeVisible();
+  await letGo(page);
   await expect(page.getByTestId('set-drop-dialog')).toBeVisible();
   await page.getByTestId('set-drop-cancel').click();
   await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
@@ -764,9 +850,83 @@ test('in a collection: Cancel after a hold-and-drop leaves both titles and the o
   expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
   const nos = await diskNos([s.a.diskId, s.b.diskId, s.c.diskId]);
   expect(nos[s.a.diskId]).toEqual({ gameId: s.a.gameId, diskNo: 1 });
-  expect(nos[s.c.diskId]).toEqual({ gameId: s.c.gameId, diskNo: 1 });
+  expect(nos[s.b.diskId]).toEqual({ gameId: s.b.gameId, diskNo: 1 });
   expect((await orgGames(orgId)).length).toBe(3);
   // After a drag, a plain click on a card still opens it.
-  await card(page, s.title('B')).click();
-  await expect(page).toHaveURL(new RegExp(`/games/${s.b.gameId}\\?`));
+  await card(page, s.title('C')).click();
+  await expect(page).toHaveURL(new RegExp(`/games/${s.c.gameId}\\?`));
+});
+
+test('in a collection: a crawl through the edge ring (1 px every 30 ms) into the centre never moves the card', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Crawl');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  const target = card(page, s.title('B'));
+  const m = await walkIntoCentreAndHold(page, card(page, s.title('A')), target, { creep: true });
+  logWalk('A crawls into B', m);
+  expect(m.approach.filter((x) => !x.centre).length, 'the crawl crossed the edge ring').toBeGreaterThan(40);
+  expect(Math.max(...m.approach.map((x) => x.off)), 'B moved during the crawl').toBeLessThanOrEqual(2);
+  expectStillInCentre(m);
+  await expect(target.getByTestId('set-drop-target')).toBeVisible();
+  await letGo(page);
+  await expect(page.getByTestId('set-drop-dialog')).toBeVisible();
+  await page.getByTestId('set-drop-cancel').click();
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+});
+
+test('in a collection: after a rest in an edge shows the gap, a drop in the gap\'s middle reorders -- no hint, no dialog', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Gap');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  // A rests in B's left edge: B slides aside and its slot is the gap. Then
+  // the pointer walks to the gap's middle -- B's centre zone -- and holds.
+  const m = await walkIntoCentreAndHold(page, card(page, s.title('A')), card(page, s.title('B')), { pauseInEdgeAt: [0.1, 0.5] });
+  logWalk('A into the gap B left', m);
+  expect(m.pausedOff, 'the edge rest showed the reorder preview').toBeGreaterThan(50);
+  // B stays aside the whole time: the gap does not close under the pointer.
+  expect(Math.min(...m.approach.map((x) => x.off), ...m.hold), 'B came back into its slot').toBeGreaterThan(50);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  await letGo(page);
+  await expect.poll(() => membershipOf(s.collectionId)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  await expect.poll(() => gridIds(page)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
+  expect((await orgGames(orgId)).length).toBe(3);
+});
+
+test('in a collection: a drop in a centre before it arms does nothing -- no reorder, no dialog', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const s = await seedCollectionOfThree(page, orgId, 'Early');
+
+  await page.goto(`/library?collection=${s.collectionId}`);
+  await expect(page.getByTestId('game-card')).toHaveCount(3);
+  const orderWrites: string[] = [];
+  page.on('request', (r) => { if (r.method() === 'PATCH' && /\/order$/.test(r.url())) orderWrites.push(r.url()); });
+
+  // The same slow walk, but only just into B's centre, and let go at once.
+  const slot = (await card(page, s.title('B')).boundingBox())!;
+  const start = await pickUp(page, card(page, s.title('A')));
+  let entered = 0;
+  await walk(page, start, at(slot, 0.3, 0.5), async (p) => {
+    if (!entered && inCentre(p, slot)) entered = Date.now();
+  });
+  await page.mouse.up();
+  const inCentreMs = Date.now() - entered;
+  expect(entered, 'the walk ended inside B\'s centre').toBeGreaterThan(0);
+  expect(inCentreMs, `the pointer spent ${inCentreMs}ms in B's centre; it must be under ARM_DELAY_MS`)
+    .toBeLessThan(ARM_DELAY_MS);
+
+  // Give a reorder or a dialog every chance to happen before saying it did not.
+  await page.waitForTimeout(1_000);
+  await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('set-drop-target')).toHaveCount(0);
+  expect(orderWrites).toEqual([]);
+  expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  expect(await membershipOf(s.collectionId)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
+  expect((await orgGames(orgId)).length).toBe(3);
+  await expect(page).toHaveURL(new RegExp(`/library\\?collection=${s.collectionId}$`));
 });

@@ -21,7 +21,7 @@ export function GameGrid({ games, fob = null }: {
   /** The fob button's boards and multi-disk lists; null (no reader in the org) draws no button. */
   fob?: FobContext;
 }) {
-  const { gameIds, filteredCollectionId, armedGameId } = useCollectionsContext();
+  const { gameIds, filteredCollectionId, previewGameId, armedGameId } = useCollectionsContext();
 
   if (games.length === 0) {
     return (
@@ -69,23 +69,23 @@ export function GameGrid({ games, fob = null }: {
   // target instead (DraggableCard), and a card dropped on it asks to make
   // the two one disk set (collection-provider.tsx's onDragEnd, Case 2).
   //
-  // While a card is armed (held over another for ARM_DELAY_MS, see
-  // src/lib/set-dwell.ts) the sortable preview is frozen: every card goes
-  // back to its own place. Without that the armed card has already slid
-  // out of the way to show the reorder, so the "Add to disk set" hint would
-  // be drawn somewhere other than under the pointer. dnd-kit measures drop
-  // targets without transforms, so the pointer is still over the armed
-  // card's own slot and the drop resolves to it. Disarming restores sorting.
+  // The reorder preview shows only once the pointer has RESTED in a card's
+  // EDGE (src/lib/set-folder.ts); otherwise every card stands in its own
+  // slot. So the card whose centre the pointer is in stays under it while it
+  // arms, and the "Add to disk set" hint is drawn where the pointer is -- and
+  // a pointer merely passing through an edge on its way to the centre does
+  // not send the card sliding off. dnd-kit measures drop targets without
+  // transforms, so the zones never move with the preview either way.
   if (!filteredCollectionId) return grid;
   return (
-    <SortableContext items={gameIds} strategy={armedGameId ? frozenStrategy : rectSortingStrategy}>
+    <SortableContext items={gameIds} strategy={previewGameId ? rectSortingStrategy : stillStrategy}>
       {grid}
     </SortableContext>
   );
 }
 
-/** No sibling moves: the sortable preview while a disk-set target is armed. */
-const frozenStrategy: SortingStrategy = () => null;
+/** No sibling moves: the sortable preview unless the pointer rests in a card's edge. */
+const stillStrategy: SortingStrategy = () => null;
 
 /**
  * How a card looks while it is the one being dragged.
@@ -354,7 +354,8 @@ function CardBody({ game: g, collectionId, fob }: { game: GameListItem; collecti
 
 /**
  * What a card shows while another card is held over it in the unfiltered
- * views, or has rested on it long enough to arm it inside a collection: an
+ * views, or while the pointer has rested in its centre long enough to arm it
+ * inside a collection: an
  * outline and the words for what a drop will offer. Nothing at rest -- the
  * state only exists mid-drag.
  */
@@ -425,8 +426,8 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
 
 /**
  * Filtered-to-a-collection view: sortable against siblings (reorders the
- * collection), plus a remove control. `armed`: another card has rested on
- * this one long enough that a drop makes a disk set (collection-provider.tsx).
+ * collection), plus a remove control. `armed`: the pointer has rested in this
+ * card's centre long enough that a drop makes a disk set (src/lib/set-folder.ts).
  */
 function SortableCard({ game: g, collectionId, fob, armed }: {
   game: GameListItem; collectionId: string; fob: FobContext; armed: boolean;
@@ -437,6 +438,11 @@ function SortableCard({ game: g, collectionId, fob, armed }: {
     data: { type: 'game', id: g.id, title: g.title, diskCount: g.diskCount } satisfies GameDragData,
   });
   const attributes = { ...dragAttributes, role: undefined };
+  // The same 200 ms glide for every card, the target included. A card slid
+  // aside by a preview can no longer be entered through its centre while the
+  // preview shows (its whole slot is edge until the pointer leaves), so the
+  // instant snap that once covered that case is not needed, and a jump
+  // amid gliding neighbours read as a glitch.
   const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition };
 
   return (
