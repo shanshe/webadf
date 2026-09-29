@@ -12,7 +12,7 @@
  * last release's disks short. No trigram index -- ILIKE over ~56k rows is
  * fast enough for a search fired on submit, not per keystroke.
  */
-import { and, asc, ilike, or, sql } from 'drizzle-orm';
+import { and, asc, ilike, or, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { tosecEntries } from '@/db/schema/tosec';
 import { escapeLike, normalizeQuery } from '@/lib/search-query';
@@ -22,7 +22,7 @@ export const TOSEC_SEARCH_LIMIT = 10;
 export interface TosecRelease {
   /** Stable, URL/test-id safe: derived from `name`, unique within one result. */
   key: string;
-  /** The TOSEC game name without its "(Disk N of M)" clause or [flags]. */
+  /** The TOSEC game name cut before its "(Disk N of M)" clause, [flags] removed. */
   name: string;
   title: string;
   year: number | null;
@@ -30,14 +30,48 @@ export interface TosecRelease {
   diskCount: number;
 }
 
+/**
+ * The grouping key's two patterns, written ONCE and used by both the SQL and
+ * the JS mirror below (tosecBaseName), so a test of the mirror tests what
+ * Postgres runs. Both are plain ARE/JS-compatible regex sources.
+ *
+ * DISK_TAIL cuts the name at its disk clause -- "(Disk 2 of 6)", "(Disk 1)",
+ * or a letter disk "(Disk A)" / "(Disk A of B)" -- and EVERYTHING after it:
+ * a disk's own sub-label ("(Install)", "(Workbench)", "(Save Disk)") and its
+ * [flags] belong to that disk, not to the release, and left in they would
+ * keep the disks of one release apart. A name with no disk clause is
+ * untouched by it. FLAG then drops every [flag] left (e.g. an "[a]" on a
+ * one-disk release).
+ */
+export const DISK_TAIL_PATTERN = String.raw`\s*\(Disk (\d+|[A-Z])( of (\d+|[A-Z]))?\).*$`;
+export const FLAG_PATTERN = String.raw`\s*\[[^\]]*\]`;
+
+const DISK_TAIL_RE = new RegExp(DISK_TAIL_PATTERN, 'i');
+const FLAG_RE = new RegExp(FLAG_PATTERN, 'g');
+
+/** The release a TOSEC game name belongs to: the JS twin of baseNameSql. */
+export function tosecBaseName(gameName: string): string {
+  return gameName.replace(DISK_TAIL_RE, '').replace(FLAG_RE, '');
+}
+
 // Constant SQL literals, deliberately NOT parameters: the same expression
 // appears in SELECT, GROUP BY and ORDER BY, and Postgres only accepts the
 // select-list expression as grouped when it is textually the same one --
 // three separate $n parameters would make them three different expressions.
-// Neither contains any input.
-const DISK_CLAUSE = sql.raw(String.raw`'\s*\(Disk \d+( of \d+)?\)'`);
-const FLAG = sql.raw(String.raw`'\s*\[[^\]]*\]'`);
-const baseName = sql<string>`regexp_replace(regexp_replace(${tosecEntries.gameName}, ${DISK_CLAUSE}, '', 'gi'), ${FLAG}, '', 'g')`;
+// Neither contains any input (nor a quote, which a literal could not hold).
+const literal = (pattern: string) => {
+  if (pattern.includes("'")) throw new Error('pattern must not contain a quote');
+  return sql.raw(`'${pattern}'`);
+};
+const DISK_TAIL = literal(DISK_TAIL_PATTERN);
+const FLAG = literal(FLAG_PATTERN);
+
+/** tosecBaseName in SQL, over any text expression (a column in the search). */
+export function baseNameSql(expr: SQLWrapper): SQL<string> {
+  return sql<string>`regexp_replace(regexp_replace(${expr}, ${DISK_TAIL}, '', 'i'), ${FLAG}, '', 'g')`;
+}
+
+const baseName = baseNameSql(tosecEntries.gameName);
 
 /** Lowercase, alphanumerics and single dashes: safe in a data-testid or a URL. */
 export function tosecKey(name: string): string {
