@@ -7,7 +7,7 @@ import { devices } from '@/db/schema/devices';
 import { syntheticVolume } from '@/lib/adffs/synthetic';
 import { readVolume } from '@/lib/adffs';
 import { signUpFresh, runTag, createAdf } from './helpers';
-import { cleanupSeeded, seedDisk, pairDevice, authHeader } from './device-helpers';
+import { cleanupSeeded, seedDisk, addDisk, pairDevice, authHeader } from './device-helpers';
 import { synthDrop } from './drag-drop-helpers';
 import { seedProduction, seedSuggestion, cleanupDemozoo } from './demozoo-helpers';
 
@@ -620,4 +620,84 @@ test('a press-and-hold inside a card\'s dialog does not drag the card behind it'
   await holdInside(page.getByTestId('delete-dialog'));
   await page.getByTestId('delete-cancel').tap();
   await expect(page.getByTestId('delete-dialog')).toHaveCount(0);
+});
+
+test('a disk set at 390px: the ⋯ menus, their items and the ▲▼ buttons are 44px and on screen, and nothing scrolls sideways', async ({ page }) => {
+  const { orgId } = await signUpFresh(page);
+  const tag = runTag();
+  const { gameId, diskId: d1 } = await seedDisk(orgId, { title: `Mobile Set ${tag}`, diskNo: 1, sha256: sha(`${tag}-set-1`) });
+  const { diskId: d2 } = await addDisk(orgId, gameId, { diskNo: 2, sha256: sha(`${tag}-set-2`) });
+  const { diskId: d3 } = await addDisk(orgId, gameId, { diskNo: 3, sha256: sha(`${tag}-set-3`) });
+  const ids = [d1, d2, d3];
+  const vw = page.viewportSize()!.width;
+
+  const fits = async (loc: ReturnType<Page['getByTestId']>) => {
+    const b = (await loc.boundingBox())!;
+    expect(b.width).toBeGreaterThanOrEqual(44);
+    expect(b.height).toBeGreaterThanOrEqual(44);
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(vw);
+  };
+  const noSideways = async () => {
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  };
+
+  await page.goto(`/games/${gameId}`);
+  await expect(page.getByTestId('disk-set-section')).toBeVisible();
+  for (const id of ids) await fits(page.getByTestId(`disk-menu-${id}`));
+  await fits(page.getByTestId('disk-set-add'));
+  await fits(page.getByTestId('disk-set-reorder'));
+  await noSideways();
+
+  // The open menu: its items are 44px rows and stay inside the viewport.
+  await page.getByTestId(`disk-menu-${d2}`).tap();
+  // The menu opens with a zoom-in (scale 0.95 → 1): measured mid-animation a
+  // 44px row reads ~42.7px. Wait for it to settle, then measure.
+  await expect(page.getByTestId(`disk-up-${d2}`)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running').length))
+    .toBe(0);
+  for (const item of [`disk-up-${d2}`, `disk-down-${d2}`, `disk-move-out-${d2}`]) {
+    const b = (await page.getByTestId(item).boundingBox())!;
+    expect(b.height).toBeGreaterThanOrEqual(44);
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(vw);
+  }
+  await page.getByTestId(`disk-up-${d2}`).tap();
+  await expect(page.getByTestId(`disk-${d2}`)).toContainText('Disk 1');
+  await noSideways();
+
+  // The Add disks… dialog is a full-width sheet with 44px controls.
+  await page.getByTestId('disk-set-add').tap();
+  const dialog = page.getByTestId('add-disks-dialog');
+  await expect(dialog).toBeVisible();
+  const db = (await dialog.boundingBox())!;
+  expect(db.x).toBeGreaterThanOrEqual(0);
+  expect(db.x + db.width).toBeLessThanOrEqual(vw);
+  // The search field's tap target is its <label> (the bare input inside is
+  // one text line tall; a tap anywhere on the label focuses it).
+  const searchLabel = page.getByTestId('add-disks-search').locator('xpath=ancestor::label[1]');
+  for (const loc of [searchLabel, page.getByTestId('add-disks-cancel'), page.getByTestId('add-disks-confirm')]) {
+    expect((await loc.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  }
+  await noSideways();
+  await page.getByTestId('add-disks-cancel').tap();
+  await expect(dialog).toHaveCount(0);
+
+  await page.getByTestId('disk-set-reorder').tap();
+  for (const id of ids) {
+    await fits(page.getByTestId(`disk-grip-${id}`));
+    await fits(page.getByTestId(`disk-reorder-up-${id}`));
+    await fits(page.getByTestId(`disk-reorder-down-${id}`));
+  }
+  await fits(page.getByTestId('disk-set-done'));
+  await noSideways();
+
+  // ▼ by a finger works: d2 (now first) goes back to second.
+  await page.getByTestId(`disk-reorder-down-${d2}`).tap();
+  await expect(page.getByTestId(`disk-reorder-no-${d2}`)).toHaveText('2');
+  await page.getByTestId('disk-set-done').tap();
+  await expect(page.getByTestId(`disk-${d2}`)).toContainText('Disk 2');
 });

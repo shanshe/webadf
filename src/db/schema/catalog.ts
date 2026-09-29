@@ -81,6 +81,10 @@ export const games = pgTable('games', {
   proseSource: text('prose_source'),
   coverAssetId: text('cover_asset_id'),
   metadataSource: text('metadata_source'),
+  // A person arranged this title's disks into a disk set (disk-sets spec §2).
+  // 'human' = TOSEC apply leaves its disks' numbers and title alone, and the
+  // duplicate merge never touches it. NULL = machine/default.
+  diskOrderSource: text('disk_order_source'),
   /**
    * Made HERE, rather than uploaded. Two things need to know:
    *

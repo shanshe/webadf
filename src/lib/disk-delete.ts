@@ -6,12 +6,14 @@
 // removes is THIS org's claim on those bytes -- the entitlement -- which is
 // what makes the blob reclaimable later. src/lib/blob-gc.ts decides when.
 
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, ne, or, sql } from 'drizzle-orm';
 import { getDb } from '@/db';
 import { games, disks, entitlements } from '@/db/schema/catalog';
 import { devices } from '@/db/schema/devices';
 import { diskVersions } from '@/db/schema/disk-history';
 import { clearDesired } from '@/lib/mount';
+import { planReorder } from '@/lib/disk-set';
+import { applyPlan, orgDevices, run } from '@/lib/disk-set-store';
 
 export interface DeleteResult {
   /** Disk ids actually removed. */
@@ -103,7 +105,16 @@ async function releaseEntitlements(orgId: string, shas: string[]): Promise<strin
   return release;
 }
 
-/** Remove one disk. Takes the title with it when it was the last one. */
+/**
+ * Remove one disk. Takes the title with it when it was the last one.
+ *
+ * A person-arranged set (disk_order_source = 'human') closes the gap the disk
+ * leaves, in the same batch as the delete: its other disks are renumbered
+ * 1..N in their current order, so a set never reads "Disk 3 of 2". Boards
+ * holding one of those disks get the new game/number exactly as
+ * disk-set-store moves them -- only *_game_id/*_disk_no, guarded on the disk
+ * the board still names, never *_disk_id or desired_version.
+ */
 export async function deleteDisk(orgId: string, diskId: string): Promise<DeleteResult | null> {
   const db = getDb();
   const rows = await db
@@ -114,17 +125,37 @@ export async function deleteDisk(orgId: string, diskId: string): Promise<DeleteR
   const disk = rows[0];
   if (!disk) return null;
 
+  const siblings = await db.select({ id: disks.id, gameId: disks.gameId, diskNo: disks.diskNo }).from(disks)
+    .where(and(eq(disks.gameId, disk.gameId), eq(disks.orgId, orgId), ne(disks.id, disk.id)));
+  const owner = await db.select({ diskOrderSource: games.diskOrderSource }).from(games)
+    .where(and(eq(games.id, disk.gameId), eq(games.orgId, orgId))).limit(1);
+
   const ejected = await ejectHolders(orgId, [disk.id], [disk.sha256]);
-  await db.delete(disks).where(and(eq(disks.id, disk.id), eq(disks.orgId, orgId)));
+  const deleteIt = db.delete(disks).where(and(eq(disks.id, disk.id), eq(disks.orgId, orgId)));
+
+  const ordered = [...siblings].sort((a, b) => a.diskNo - b.diskNo || (a.id < b.id ? -1 : 1));
+  const gap = ordered.some((d, i) => d.diskNo !== i + 1);
+  if (owner[0]?.diskOrderSource === 'human' && gap) {
+    // Read after the eject, so a board that held the deleted disk is no
+    // longer counted as holding anything.
+    const devs = await orgDevices(db, orgId);
+    const plan = planReorder({ gameId: disk.gameId, disks: ordered }, ordered.map((d) => d.id), devs);
+    await run(db, [deleteIt, ...applyPlan(db, orgId, plan, devs)]);
+  } else {
+    await deleteIt;
+  }
 
   // A title with no disks left is not a title. Checked AFTER the delete so
-  // the count is what remains, not what was.
+  // the count is what remains, not what was. The delete itself also refuses
+  // a title that still has ANY disk (not org-scoped: disks.org_id can drift),
+  // since disks.game_id cascades and would take such a disk with it.
   const remaining = await db.select({ id: disks.id }).from(disks)
     .where(and(eq(disks.gameId, disk.gameId), eq(disks.orgId, orgId)));
   let gameDeleted = false;
   if (remaining.length === 0) {
-    await db.delete(games).where(and(eq(games.id, disk.gameId), eq(games.orgId, orgId)));
-    gameDeleted = true;
+    const gone = await db.delete(games).where(and(eq(games.id, disk.gameId), eq(games.orgId, orgId),
+      sql`not exists (select 1 from ${disks} "d" where "d"."game_id" = ${games.id})`)).returning({ id: games.id });
+    gameDeleted = gone.length > 0;
   }
 
   const releasedSha256 = await releaseEntitlements(orgId, [disk.sha256]);

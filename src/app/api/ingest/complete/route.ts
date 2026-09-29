@@ -2,7 +2,7 @@ import { after } from 'next/server';
 import { sweep } from '@/lib/tosec-sweep';
 import { gzipSync } from 'node:zlib';
 import { z } from 'zod';
-import { and, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { BlobServiceRateLimited } from '@vercel/blob';
 import { getDb } from '@/db';
 import { blobs, entitlements, games, disks } from '@/db/schema/catalog';
@@ -344,15 +344,58 @@ export async function POST(request: Request) {
   const gameRows = new Map<string, typeof games.$inferInsert>();
   const diskRows = new Map<string, typeof disks.$inferInsert>();
 
+  const gameIdOf = (g: (typeof grouped)[number]) =>
+    stableId('game', orgId, g.sortTitle, g.year === null ? '' : String(g.year));
+
+  // Disk sets (final review I1): a person-arranged set keeps its target's
+  // ORIGINAL deterministic id, so a later upload that parses to the same
+  // title/year would land in it at its parsed number -- a patched
+  // Install3_1_4.adf becoming a second "disk 1". Ingest never touches a
+  // human-arranged set: such an upload's disks go to a fresh one-disk title
+  // beside it instead. The one exception is a disk whose deterministic id
+  // already exists (a re-send of a disk already ingested, wherever it now
+  // lives): that stays the no-op it always was, so a CLI retry does not
+  // make a duplicate title.
+  const candidateGameIds = [...new Set(grouped.map(gameIdOf))];
+  const humanSets = new Set<string>();
+  for (const part of chunk(candidateGameIds, INSERT_CHUNK)) {
+    const rows = await db.select({ id: games.id }).from(games).where(and(
+      inArray(games.id, part), eq(games.orgId, orgId), eq(games.diskOrderSource, 'human')));
+    for (const r of rows) humanSets.add(r.id);
+  }
+  const alreadyThere = new Set<string>();
+  const intoHumanSets = grouped.filter((g) => humanSets.has(gameIdOf(g)))
+    .flatMap((g) => g.disks.map((d) => stableId('disk', gameIdOf(g), d.sha256)));
+  for (const part of chunk(intoHumanSets, INSERT_CHUNK)) {
+    const rows = await db.select({ id: disks.id }).from(disks).where(inArray(disks.id, part));
+    for (const r of rows) alreadyThere.add(r.id);
+  }
+
+  // An already-there disk re-sent as an HFE still gets the flip the upsert
+  // below would have given it -- as a plain UPDATE, which can never insert.
+  const hfeFlips: { id: string; sha256: string }[] = [];
+
   for (const g of grouped) {
-    const gameId = stableId('game', orgId, g.sortTitle, g.year === null ? '' : String(g.year));
-    if (!gameRows.has(gameId)) {
-      gameRows.set(gameId, {
-        id: gameId, orgId, title: g.title, sortTitle: g.sortTitle,
-        year: g.year, publisher: g.publisher, metadataSource: 'filename',
-      });
-    }
+    const parsedGameId = gameIdOf(g);
+    const besideSet = humanSets.has(parsedGameId);
     for (const d of g.disks) {
+      let gameId = parsedGameId;
+      let diskNo = d.diskNo;
+      if (besideSet) {
+        const existing = stableId('disk', parsedGameId, d.sha256);
+        if (alreadyThere.has(existing)) {
+          if (hfeInfo.has(d.sha256)) hfeFlips.push({ id: existing, sha256: d.sha256 });
+          continue;
+        }
+        gameId = stableId('game', orgId, g.sortTitle, g.year === null ? '' : String(g.year), 'beside-set', d.sha256);
+        diskNo = 1;
+      }
+      if (!gameRows.has(gameId)) {
+        gameRows.set(gameId, {
+          id: gameId, orgId, title: g.title, sortTitle: g.sortTitle,
+          year: g.year, publisher: g.publisher, metadataSource: 'filename',
+        });
+      }
       const diskId = stableId('disk', gameId, d.sha256);
       if (!diskRows.has(diskId)) {
         // Decided by the bytes (did this sha256 pass HFE inspection in this
@@ -362,7 +405,7 @@ export async function POST(request: Request) {
         // filename check would silently drop the HFE stamping in that case.
         const hfe = hfeInfo.get(d.sha256);
         diskRows.set(diskId, {
-          id: diskId, gameId, orgId, diskNo: d.diskNo, sha256: d.sha256,
+          id: diskId, gameId, orgId, diskNo, sha256: d.sha256,
           tosecName: d.filename, isBoot: d.isBoot, sizeBytes: d.sizeBytes,
           ...(hfe ? {
             imageFormat: 'hfe' as const, writeProtected: true,
@@ -403,6 +446,26 @@ export async function POST(request: Request) {
         maxTrackBits: sql`excluded.max_track_bits`,
       },
     });
+  }
+
+  for (const f of hfeFlips) {
+    const hfe = hfeInfo.get(f.sha256)!;
+    await db.update(disks).set({
+      imageFormat: 'hfe', writeProtected: true,
+      extractable: hfe.extractable, extractReason: hfe.extractReason, maxTrackBits: hfe.maxTrackBits,
+    }).where(and(eq(disks.id, f.id), eq(disks.sha256, f.sha256)));
+  }
+
+  // Disk sets spec P4: a disk already moved into a set keeps its id
+  // (stableId of its ORIGINAL game), so re-uploading it re-inserts that
+  // original game with no disks. Remove any game this call inserted that
+  // ended up with none.
+  const insertedGameIds = [...gameRows.keys()];
+  if (insertedGameIds.length > 0) {
+    await db.delete(games).where(and(
+      inArray(games.id, insertedGameIds), eq(games.orgId, orgId),
+      sql`not exists (select 1 from disks d where d.game_id = ${games.id})`,
+    ));
   }
 
   // applyMatch rewrites the games/disks rows that exist when it runs, so a blob

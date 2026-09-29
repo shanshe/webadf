@@ -11,8 +11,9 @@ import { fromQuery } from '@/lib/trail';
 import { FobButton, type FobDevice } from '@/components/nfc/fob-button';
 import { HdTag } from '@/components/disks/hd-tag';
 import { isHdAdf } from '@/lib/disk-format';
+import { DiskSetMenu, LoneDiskMenu, type DiskSetControls } from './disk-set-menu';
 
-export function DiskRow({ disk, choices, from, fobDevices = [] }: {
+export function DiskRow({ disk, choices, from, fobDevices = [], setControls, loneGameId }: {
   disk: GameDetailDisk;
   /** Per-device verdict for THIS disk -- see lib/mount-choice.ts. */
   choices: MountChoice[];
@@ -24,6 +25,17 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
   from?: string;
   /** Boards with a reader present; the fob button is drawn only when there is one. */
   fobDevices?: FobDevice[];
+  /**
+   * Present only when the row is one of a disk set (two or more disks):
+   * draws the ⋯ menu with Move up / Move down / Move out of set.
+   */
+  setControls?: DiskSetControls;
+  /**
+   * Present only when the row is a one-disk title's only disk: the id of that
+   * title. Draws a ⋯ menu with "Add to a disk set…". Plain data, not a
+   * callback, because the server page renders this row directly.
+   */
+  loneGameId?: string;
 }) {
   // Derived from the SAME choices the mount picker uses. It used to come from
   // a separate sha256-keyed map in the page, which could name a different
@@ -40,6 +52,9 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
       // this is the single row it has always been.
       className="glass-card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:gap-4"
       data-testid={`disk-${disk.id}`}
+      // What e2e selects disk rows by: other disk controls' test ids also
+      // start with "disk-" (disk-menu-*, disk-set-section, ...).
+      data-disk-row=""
     >
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-2">
@@ -166,6 +181,17 @@ export function DiskRow({ disk, choices, from, fobDevices = [] }: {
           // into a 404.
           redirectWhenGone={libraryHref(from)}
         />
+        {/* Set controls, after Delete: they rearrange the title rather than
+            act on the disk, and only exist on a title with two or more. */}
+        {setControls && (
+          <DiskSetMenu diskId={disk.id}
+                       name={disk.tosecName ?? disk.sourceFilename ?? `Disk ${disk.diskNo}`}
+                       controls={setControls} />
+        )}
+        {!setControls && loneGameId && (
+          <LoneDiskMenu diskId={disk.id} gameId={loneGameId}
+                        name={disk.tosecName ?? disk.sourceFilename ?? `Disk ${disk.diskNo}`} />
+        )}
       </div>
     </div>
   );

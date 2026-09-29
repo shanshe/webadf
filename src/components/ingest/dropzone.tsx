@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toAdf, DISK_IMAGE_PATTERN } from '@/lib/archive/disk-image';
 import { hashBlob } from '@/lib/browser-hash';
@@ -11,6 +11,11 @@ import {
 import { inspectHfe, describeInspection } from '@/lib/hfe/inspect';
 import { adfDensity, isHfeFilename } from '@/lib/disk-format';
 import { HdTag } from '@/components/disks/hd-tag';
+import type { Suggestion } from '@/lib/disk-set-suggest';
+import { SetSuggestion } from './set-suggestion';
+
+/** disk-sets spec §3 / the suggest route's own zod cap. */
+const MAX_SUGGEST_HASHES = 32;
 
 type RowState = 'hashing' | 'deduped' | 'uploading' | 'done' | 'failed';
 
@@ -61,9 +66,18 @@ export function Dropzone() {
   const router = useRouter();
   const [rows, setRows] = useState<Row[]>([]);
   const [busy, setBusy] = useState(false);
+  const [suggestion, setSuggestion] = useState<Suggestion>(null);
 
-  const patch = (sha: string, next: Partial<Row>) =>
+  // The state each sha256 last settled into, kept alongside `rows` rather
+  // than read back from it: handleFiles's loop can out-run React's commits
+  // (see the hashing loop's own comment below), so `rows` state may not yet
+  // reflect the last patch() this same call made. This ref always does.
+  const finalState = useRef(new Map<string, RowState>());
+
+  const patch = (sha: string, next: Partial<Row>) => {
+    if (next.state) finalState.current.set(sha, next.state);
     setRows((rs) => rs.map((r) => (r.sha256 === sha ? { ...r, ...next } : r)));
+  };
 
   // Any non-OK response is thrown, never returned as if it were data. The
   // previous shape (`return fetch(...).then((r) => r.json())`) let a 400 --
@@ -254,7 +268,23 @@ export function Dropzone() {
   }
 
   async function handleFiles(fileList: FileList) {
+    // Recorded before anything else, so it covers every row this drop ends
+    // up producing -- the suggest route refuses a `since` more than 24h old
+    // (Task 6 controller ruling 2), which this drop's own start never is.
+    const since = new Date().toISOString();
+    // This drop's own webkitRelativePath per sha256 ('' on a plain drop, so
+    // never recorded then -- disk-set-suggest.ts's folderOf() treats an
+    // absent path the same as a plain drop).
+    const dropPaths = new Map<string, string>();
+    // Every sha256 this drop actually hashed (never the synthetic `bad:...`
+    // ids used for a row that failed before hashing), collected here rather
+    // than read back from `rows` state afterwards -- see finalState's own
+    // comment above for why.
+    const dropShas: string[] = [];
     setBusy(true);
+    // A new drop clears any earlier panel at once, whether or not this one
+    // ends up suggesting anything of its own.
+    setSuggestion(null);
     try {
       const dropped = [...fileList].filter((f) => DISK_IMAGE_PATTERN.test(f.name));
 
@@ -297,6 +327,8 @@ export function Dropzone() {
         }
         const sha256 = await hashBlob(file);
         hashed.push({ file, sha256 });
+        dropShas.push(sha256);
+        if (original.webkitRelativePath) dropPaths.set(sha256, original.webkitRelativePath);
         // If this exact content is already a row (the user dropped it
         // earlier in this same session, before a reload), reset that row in
         // place rather than appending a second one: two rows sharing a
@@ -336,6 +368,47 @@ export function Dropzone() {
       // library view always reflects whatever did land.
       setBusy(false);
       router.refresh();
+
+      // Fired only after busy/refresh: the suggestion is about what this
+      // drop just did, not something that should hold the UI up while it's
+      // still uploading. finalState (not `rows` state -- see its own
+      // comment) says which of this drop's own sha256s actually landed.
+      const settled = [...new Set(
+        dropShas.filter((sha) => {
+          const s = finalState.current.get(sha);
+          return s === 'done' || s === 'deduped';
+        }),
+      )];
+      if (settled.length >= 2) {
+        // Never more than 32 hashes (Task 6 controller ruling): the route's
+        // own zod cap 400s past that, and a larger drop gets no suggestion
+        // anyway (disk-sets spec §2).
+        const sha256s = settled.slice(0, MAX_SUGGEST_HASHES);
+        const paths: Record<string, string> = {};
+        for (const sha of sha256s) {
+          const p = dropPaths.get(sha);
+          if (p) paths[sha] = p;
+        }
+        try {
+          const res = await fetch('/api/disk-sets/suggest', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              sha256s, since,
+              ...(Object.keys(paths).length > 0 ? { paths } : {}),
+            }),
+          });
+          // Any non-200, or a null suggestion, is treated identically: no
+          // panel. Never surfaced as an error -- the suggestion is a nicety,
+          // not part of the upload's own success/failure.
+          if (res.ok) {
+            const body = (await res.json()) as { suggestion: Suggestion };
+            setSuggestion(body.suggestion);
+          }
+        } catch {
+          // Network failure: same as "no suggestion".
+        }
+      }
     }
   }
 
@@ -503,6 +576,10 @@ export function Dropzone() {
             </div>
           </div>
         </>
+      )}
+
+      {suggestion && (
+        <SetSuggestion suggestion={suggestion} onDone={() => setSuggestion(null)} />
       )}
     </div>
   );
