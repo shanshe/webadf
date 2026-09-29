@@ -4555,6 +4555,10 @@ built without a rename.
 extend a disk set (dialog: set name prefilled with the target's title, order with Swap, Add/Cancel; inside a collection
 card-on-card still reorders). `POST /api/games/[id]/disks` also takes `{sourceGameIds}` (org-scoped). Rename pencil on the
 Disk set header (existing title edit; marks the name human). An unchanged name no longer marks a title human-edited.
+**Follow-up 4 merged 2026-09-29 (feat/set-hide, operator request):** when a card-on-card drop opens the disk-set dialog,
+the dragged card is hidden (slot kept, no fly-back); after Add it stays hidden until the refresh removes it; Cancel/Escape
+fades it back (SET_DROP_RETURN_MS 200). A failed Add keeps it hidden while the dialog stays open (review-caught bug, e2e
+forces a 500).
 **Follow-up 3 merged 2026-09-29 (feat/set-folder), REPLACES follow-up 2 (operator: "it feels odd, and it doesn't snap
 to the set"):** inside a collection view, phone-folder style. Pointer in a card's CENTRE (middle 50% width x 60% height):
 the card stays still, arms after 300 ms ("Add to disk set"), drop opens the set dialog; drop before it arms does nothing.
