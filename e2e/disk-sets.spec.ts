@@ -610,6 +610,7 @@ test('All titles: the dragged card hides while the dialog is open, fades back on
   await expect(page.getByTestId('game-card')).toHaveCount(2);
   const cardA = card(page, `HideA ${tag}`);
   const cardB = card(page, `HideB ${tag}`);
+  const aBoxBefore = (await cardA.boundingBox())!;
   const boxBefore = (await cardB.boundingBox())!;
   const dialog = page.getByTestId('set-drop-dialog');
 
@@ -626,7 +627,11 @@ test('All titles: the dragged card hides while the dialog is open, fades back on
   await page.getByTestId('set-drop-cancel').click();
   await expect(dialog).toHaveCount(0);
   await expect(cardA).toBeVisible();
-  expect(await cardA.boundingBox()).toEqual(boxBefore);
+  expect(await cardA.boundingBox()).toEqual(aBoxBefore);
+  // The fade itself is still running (pointer-events stay off it until it
+  // finishes, so a person cannot grab a half-transparent card): outrun it
+  // before picking the card up again.
+  await page.waitForTimeout(300);
 
   // Drop again, this time Add: A must stay hidden right up to the refresh
   // that removes it from the grid for good, never flashing visible first.
@@ -638,10 +643,11 @@ test('All titles: the dragged card hides while the dialog is open, fades back on
   await expect(dialog).toHaveCount(0);
   expect(await watcher.stop()).toBe(false);
   await expect(page.getByTestId('game-card')).toHaveCount(1);
-  // Really did make the set, target's disk first: this was a real drop, not
-  // a mechanism that only looks right from the hidden card's own style.
-  expect((await diskNos([a.diskId, b.diskId]))[b.diskId]).toEqual({ gameId: a.gameId, diskNo: 2 });
-  expect(await gameExists(b.gameId)).toBe(false);
+  // Really did make the set -- B was the drop's TARGET, so it survives and
+  // A's disk lands second in it: this was a real drop, not a mechanism that
+  // only looks right from the hidden card's own style.
+  expect((await diskNos([a.diskId, b.diskId]))[a.diskId]).toEqual({ gameId: b.gameId, diskNo: 2 });
+  expect(await gameExists(a.gameId)).toBe(false);
 });
 
 test('the rename pencil renames the set; Escape cancels; the library card shows the new name', async ({ page }) => {
@@ -891,6 +897,10 @@ test('in a collection: the dragged card hides while the dialog is open, fades ba
   await expect(cardA).toBeVisible();
   expect(await gridIds(page)).toEqual([s.a.gameId, s.b.gameId, s.c.gameId]);
   expect(offBy((await cardA.boundingBox())!, aBoxBefore)).toBeLessThanOrEqual(1);
+  // The fade itself is still running (pointer-events stay off it until it
+  // finishes, so a person cannot grab a half-transparent card): outrun it
+  // before picking the card up again.
+  await page.waitForTimeout(300);
 
   // Drop again, this time Add: A must stay hidden right up to the refresh
   // that removes it from the grid for good, never flashing visible first.
