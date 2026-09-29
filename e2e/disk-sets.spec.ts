@@ -6,6 +6,7 @@ import { games, disks } from '@/db/schema/catalog';
 import { devices } from '@/db/schema/devices';
 import { collectionGames } from '@/db/schema/collections';
 import { syntheticVolume } from '@/lib/adffs/synthetic';
+import { ARM_DELAY_MS } from '@/lib/set-dwell';
 import { signUpFresh, runTag } from './helpers';
 import { pairDevice, seedDisk, addDisk, authHeader, cleanupSeeded } from './device-helpers';
 
@@ -648,9 +649,8 @@ async function gridIds(page: Page): Promise<string[]> {
 
 /**
  * Drag `source` onto `target` and HOLD there past ARM_DELAY_MS before
- * letting go. Unlike the unfiltered views, the hint must NOT be there at
- * once -- only after the dwell -- and it is drawn on the target at its own
- * place (the sortable preview froze and put it back under the pointer).
+ * letting go. The hint is drawn on the target at its own place (the sortable
+ * preview froze and put it back under the pointer).
  */
 async function dwellCardOnto(page: Page, source: Locator, target: Locator) {
   const from = (await source.boundingBox())!;
@@ -669,12 +669,39 @@ async function dwellCardOnto(page: Page, source: Locator, target: Locator) {
   await expect(target.getByTestId('set-drop-target')).toHaveText('Add to disk set');
   await expect(page.getByTestId('set-drop-target')).toHaveCount(1);
   // Frozen: the armed card is back in its own slot, under the pointer.
-  const armed = (await target.boundingBox())!;
-  expect(Math.abs(armed.x - to.x)).toBeLessThan(2);
-  expect(Math.abs(armed.y - to.y)).toBeLessThan(2);
+  // Polled: it slides back over dnd-kit's 200ms transition.
+  await expect.poll(async () => Math.abs((await target.boundingBox())!.x - to.x)).toBeLessThan(2);
+  await expect.poll(async () => Math.abs((await target.boundingBox())!.y - to.y)).toBeLessThan(2);
   await page.mouse.up();
   // See dragCardOnto: dnd-kit swallows clicks for 50ms after a drop.
   await page.waitForTimeout(100);
+}
+
+/**
+ * Drag `source` onto `target` WITHOUT resting there. The approach travels
+ * inside the source's own slot (over its own drop area, which is no target,
+ * so no dwell clock runs), then hops to the target's centre and lets go at
+ * once. The time actually spent over the target is measured: on a machine
+ * too slow to stay under ARM_DELAY_MS the test fails saying so, rather than
+ * as a puzzling "did not reorder".
+ */
+async function quickDragOnto(page: Page, source: Locator, target: Locator) {
+  const from = (await source.boundingBox())!;
+  const to = (await target.boundingBox())!;
+  const sx = from.x + from.width / 2;
+  const sy = from.y + from.height / 2;
+  // Still inside the source's own slot, near the edge facing the target.
+  const ex = to.x > from.x ? from.x + from.width - 6 : from.x + 6;
+  await page.mouse.move(sx, sy);
+  await page.mouse.down();
+  await page.mouse.move(sx + 14, sy + 14, { steps: 6 });
+  await page.mouse.move(ex, sy + 14, { steps: 8 });
+  const t0 = Date.now();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 2 });
+  await page.mouse.up();
+  const overTarget = Date.now() - t0;
+  expect(overTarget, `the quick drag spent ${overTarget}ms over the target; it must be under ARM_DELAY_MS`)
+    .toBeLessThan(ARM_DELAY_MS);
 }
 
 test('in a collection: holding a card on another arms it; the drop asks, and Add makes the set', async ({ page }) => {
@@ -712,7 +739,7 @@ test('in a collection: a quick drag onto a card still reorders, with no dialog',
 
   await page.goto(`/library?collection=${s.collectionId}`);
   await expect(page.getByTestId('game-card')).toHaveCount(3);
-  await dragOnto(page, card(page, s.title('A')), card(page, s.title('B')));
+  await quickDragOnto(page, card(page, s.title('A')), card(page, s.title('B')));
 
   await expect.poll(() => membershipOf(s.collectionId)).toEqual([s.b.gameId, s.a.gameId, s.c.gameId]);
   await expect(page.getByTestId('set-drop-dialog')).toHaveCount(0);
