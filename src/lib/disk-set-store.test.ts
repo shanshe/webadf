@@ -48,10 +48,6 @@ const fakeDb = {
 };
 vi.mock('@/db', () => ({ getDb: () => fakeDb }));
 
-const read = vi.fn<(sha: string) => Promise<Uint8Array>>(async () => new Uint8Array(4));
-vi.mock('@/lib/storage', () => ({ diskStore: { read: (s: string) => read(s) } }));
-const readVolume = vi.fn();
-vi.mock('@/lib/adffs', () => ({ readVolume: (b: Uint8Array) => readVolume(b) }));
 
 const { addDisksToSet, reorderSet, moveDiskOut, undoMove, NotFound } = await import('./disk-set-store');
 const { PlanError } = await import('./disk-set');
@@ -65,7 +61,6 @@ const idx = (b: { sql: string }[], re: RegExp) => b.findIndex((s) => re.test(s.s
 
 beforeEach(() => {
   byTable = new Map(); selects = []; batches = [];
-  read.mockClear(); readVolume.mockReset();
 });
 
 const game = (id: string, over: Record<string, unknown> = {}) => ({
@@ -437,11 +432,13 @@ describe('moveDiskOut', () => {
     expect(idx(b, /^delete/)).toBe(-1);
   });
 
-  it('never reads the image (the volume name is not used)', async () => {
-    outScenario();
+  it('strips only a disk image extension from the name', async () => {
+    answer(disks, [{ id: 'a', gameId: 'G', diskNo: 1, sha256: 'sha-a', tosecName: null }], [{ id: 'b', gameId: 'G', diskNo: 2 }]);
+    answer(games, [{ id: 'G' }]);
+    answer(entitlements, [{ sourceFilename: 'Game v1.2' }]);
+    answer(devices, []);
     await moveDiskOut('org-1', 'a');
-    expect(read).not.toHaveBeenCalled();
-    expect(readVolume).not.toHaveBeenCalled();
+    expect(only()[0].params).toContain('Game v1.2');
   });
 
   it('the file name wins over the TOSEC name', async () => {
