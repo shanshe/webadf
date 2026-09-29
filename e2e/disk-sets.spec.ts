@@ -6,7 +6,7 @@ import { games, disks } from '@/db/schema/catalog';
 import { devices } from '@/db/schema/devices';
 import { collectionGames } from '@/db/schema/collections';
 import { syntheticVolume } from '@/lib/adffs/synthetic';
-import { ARM_DELAY_MS } from '@/lib/set-dwell';
+import { ARM_DELAY_MS } from '@/lib/set-folder';
 import { signUpFresh, runTag } from './helpers';
 import { pairDevice, seedDisk, addDisk, authHeader, cleanupSeeded } from './device-helpers';
 
