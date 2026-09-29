@@ -1880,10 +1880,12 @@ static void held_swap_waits(void) {
     CHECK(strcmp(c.mounted_sha256, SHA_A) == 0, "held: A stays");
     CHECK_EQ_INT(c.preload.slot, pre_slot);
     CHECK(strcmp(c.preload.sha256, SHA_B) == 0, "and the B record is kept for later");
+    CHECK(c.held, "the step says it was held, so main.c paces the next poll");
 
     dc_set_hold(&c, hold_false, NULL);
     push_poll_next(6, SHA_B, SHA_C, false);
     CHECK_EQ_INT(dc_step(&c), DC_IDLE_POLL);
+    CHECK(!c.held, "released: not held");
     CHECK_EQ_INT(fake_request_count(), before + 2);   // still no image fetch
     CHECK_EQ_INT(psram_active_slot(), pre_slot);
     CHECK(strcmp(c.mounted_sha256, SHA_B) == 0, "hold lifted: B swapped in from the preload");

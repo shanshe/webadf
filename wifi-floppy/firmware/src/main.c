@@ -47,6 +47,7 @@
 #include "mfm.h"
 #include "write_back.h"
 #include "reinsert.h"
+#include "swap_gate.h"
 #include "uploader.h"
 #include "fw_rom.h"
 #include "fw_state.h"
@@ -732,6 +733,8 @@ static void nfc_core0_step(nfc_armed_t *armed, bool short_pass) {
  *  is what a Next-disk tap's "Saving, then disk N" follows instead.
  *  up_has_work() first: it runs up_refresh(), which unparks on a mount change,
  *  before `parked` is read. */
+static bool swap_holds(void *up);   // below, after g_motor_on
+
 static bool writes_outstanding(uploader_t *up) {
     const bool work = up_has_work(up);
     return work || up_pending(up) || up->parked ||
@@ -740,8 +743,9 @@ static bool writes_outstanding(uploader_t *up) {
 
 /** core1: the multi-disk preload gate (dc_set_preload_gate). The idle slot is
  *  used only when nothing else could want it or the network: no outstanding
- *  writes (above), no held swap (up_holds -- the very fn dc_set_hold was
- *  given), and no firmware update between being offered and applied (QUEUED,
+ *  writes (above), no held swap (up_holds -- the writes half of dc_set_hold's
+ *  swap_holds; a preload never touches the disk the Amiga is using, so the
+ *  Amiga-idle half does not apply), and no firmware update between being offered and applied (QUEUED,
  *  DOWNLOADING, STAGED, APPLYING, REBOOTING; FAILED is terminal and IDLE is
  *  nothing). Asked by dc_preload_step, between requests, on core1 only. */
 typedef struct {
@@ -792,14 +796,14 @@ static void nfc_core1_event(device_client_t *c, uploader_t *up) {
         } else if (ev.kind == NFC_EV_TAG_NEXT) {
             // Multi-disk: the Next-disk card. The swap it asks for waits
             // behind unsent writes exactly while the hold says so
-            // (dc_set_hold's up_holds), and the glass says "Saving" on that
+            // (dc_set_hold's swap_holds), and the glass says "Saving" on that
             // same predicate -- not the preload gate's wider one, which also
             // counts a parked session whose tracks the swap will not wait for.
             uint32_t no = 0, count = 0;
             static char title[DC_TITLE_MAX + 1];    // static: core1's stack is measured tight
             const dc_tap_outcome_t o = online ? dc_tap_next(c, &no, &count, title, sizeof title)
                                               : DC_TAP_FAILED;
-            const bool saving = up_holds(up);
+            const bool saving = swap_holds(up);
             show = nfc_ui_next_line(o, no, count, saving, line, sizeof line);
             wf_logf(WF_INFO, "nfc: next -> %s", show);
         } else {
@@ -1097,8 +1101,36 @@ static bool fwu_save(void *ctx, const fw_state_t *st) { (void)ctx; return fw_sta
 static void fwu_reboot(void *ctx, uint32_t off) { (void)ctx; fw_rom_request_reboot(off); }
 
 // Published by core0 every loop turn. core1 reads it for the update's idle
-// gate only (D6); dskchg.c's own state stays core0's.
+// gate (D6) and the swap hold (swap_holds); dskchg.c's own state stays core0's.
 static volatile bool g_motor_on;
+
+/** core1: dc_set_hold's fn -- may the mounted disk be released (swap, Next
+ *  tap, eject)? Not while the server lacks a write the board captured
+ *  (up_holds), and not while the Amiga has not finished with the disk
+ *  (swap_gate.h): AmigaDOS writes a file's header and directory blocks after
+ *  its data, and a swap in between lost Locale's block 597 on 2026-09-29.
+ *  The inputs are reinsert's: the later of an applied write and a WGATE
+ *  edge, the motor latch, and WGATE now. */
+static bool swap_holds(void *up) {
+    static bool forced_logged;
+    if (up_holds(up)) { forced_logged = false; return true; }
+    uint32_t last_activity_ms = g_write_last_ms;
+    const uint32_t wgate_ms = g_wgate_last_ms;
+    if ((int32_t)(wgate_ms - last_activity_ms) > 0) last_activity_ms = wgate_ms;
+    bool forced;
+    if (!swap_gate_idle(clock_ms(), g_motor_on, !gpio_get(PIN_WGATE), last_activity_ms, &forced)) {
+        forced_logged = false;
+        return true;
+    }
+    if (forced && (g_motor_on || !gpio_get(PIN_WGATE)) && !forced_logged) {
+        forced_logged = true;
+        // Ordinary for a trackloader game (motor on all session, never
+        // writes) as well as for a powered-off Amiga.
+        wf_logf(WF_INFO, "hold: released with the motor on or WGATE asserted -- "
+                         "no write activity for %u ms", (unsigned)SWAP_FORCE_MS);
+    }
+    return false;
+}
 
 static void core1_main(void) {
     if (cyw43_arch_init()) {
@@ -1416,7 +1448,7 @@ static void core1_main(void) {
                  (unsigned long)get_rand_32(), (unsigned long)get_rand_32());
         static uploader_t up;
         up_init(&up, &c, session, wb_write_gen, wb_last_write_ms);
-        dc_set_hold(&c, up_holds, &up);
+        dc_set_hold(&c, swap_holds, &up);
         // A waiting tap cuts a held poll short (spec §4.2 amendment). Set on
         // every entry: dc_init above zeroes `c`, and nfc_ack with it -- a
         // re-paired board is a new device row whose cursor starts over.
@@ -1638,6 +1670,11 @@ static void core1_main(void) {
             // sleep would hold the tap up to 60 s. No state handling at all:
             // round to the top, send the tap, poll again.
             if (polled && c.poll_interrupted) continue;
+            // The poll asked for a disk change the hold refused (swap_holds):
+            // `since` did not advance, so the next poll would be answered at
+            // once. Pace it -- the Amiga going idle is seconds away, and a
+            // release is then at most this much later.
+            if (polled && c.held) sleep_ms(500);
 
 #if WF_FW_DEBUG
             // Fix round 3, bench-only: a minimal USB-serial command that
