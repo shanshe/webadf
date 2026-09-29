@@ -21,7 +21,7 @@ export function GameGrid({ games, fob = null }: {
   /** The fob button's boards and multi-disk lists; null (no reader in the org) draws no button. */
   fob?: FobContext;
 }) {
-  const { gameIds, filteredCollectionId, centreGameId, previewGameId, armedGameId } = useCollectionsContext();
+  const { gameIds, filteredCollectionId, previewGameId, armedGameId } = useCollectionsContext();
 
   if (games.length === 0) {
     return (
@@ -56,8 +56,7 @@ export function GameGrid({ games, fob = null }: {
     <div className="mx-4 grid grid-cols-2 gap-4 sm:mx-7 sm:grid-cols-3 md:grid-cols-5" data-testid="game-grid">
       {ordered.map((g) =>
         filteredCollectionId
-          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob}
-                          centre={centreGameId === g.id} armed={armedGameId === g.id} />
+          ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob} armed={armedGameId === g.id} />
           : <DraggableCard key={g.id} game={g} fob={fob} />,
       )}
     </div>
@@ -427,12 +426,11 @@ function DraggableCard({ game: g, fob }: { game: GameListItem; fob: FobContext }
 
 /**
  * Filtered-to-a-collection view: sortable against siblings (reorders the
- * collection), plus a remove control. `centre`: the pointer is in this card's
- * centre. `armed`: it has rested there long enough that a drop makes a disk
- * set (src/lib/set-folder.ts).
+ * collection), plus a remove control. `armed`: the pointer has rested in this
+ * card's centre long enough that a drop makes a disk set (src/lib/set-folder.ts).
  */
-function SortableCard({ game: g, collectionId, fob, centre, armed }: {
-  game: GameListItem; collectionId: string; fob: FobContext; centre: boolean; armed: boolean;
+function SortableCard({ game: g, collectionId, fob, armed }: {
+  game: GameListItem; collectionId: string; fob: FobContext; armed: boolean;
 }) {
   // See DraggableCard on why `role` is discarded rather than spread.
   const { attributes: dragAttributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -440,10 +438,12 @@ function SortableCard({ game: g, collectionId, fob, centre, armed }: {
     data: { type: 'game', id: g.id, title: g.title, diskCount: g.diskCount } satisfies GameDragData,
   });
   const attributes = { ...dragAttributes, role: undefined };
-  // No transition while the pointer is in this card's centre: if a rested
-  // edge had nudged it aside, it snaps straight back under the pointer
-  // instead of gliding there while the pointer is already on its centre.
-  const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition: centre ? undefined : transition };
+  // The same 200 ms glide for every card, the target included. A card slid
+  // aside by a preview can no longer be entered through its centre while the
+  // preview shows (its whole slot is edge until the pointer leaves), so the
+  // instant snap that once covered that case is not needed, and a jump
+  // amid gliding neighbours read as a glitch.
+  const style = { ...dragStyle(CSS.Translate.toString(transform), isDragging), transition };
 
   return (
     <Link

@@ -61,7 +61,7 @@ import {
  *
  * The droppable the pointer is in also gets the ZONE of that droppable the
  * pointer is in (src/lib/set-folder.ts), on its collision's `data.zone`, and
- * the pointer itself on `data.pointer`.
+ * the pointer itself on `data.pointer`, and the slot's middle on `data.middle`.
  * Computed here and nowhere else because this is the one place where the
  * pointer and the droppable rects are guaranteed to be the same frame, and
  * those rects are dnd-kit's transform-agnostic measurements: a card the
@@ -77,7 +77,8 @@ export const collectionCollisionDetection: CollisionDetection = (args) => {
   if (!first || !rect) return hits;
   const zone: Zone = zoneOf(args.pointerCoordinates, rect);
   const pointer: Point = { x: args.pointerCoordinates.x, y: args.pointerCoordinates.y };
-  return [{ ...first, data: { ...first.data, zone, pointer } }, ...rest];
+  const middle: Point = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  return [{ ...first, data: { ...first.data, zone, pointer, middle } }, ...rest];
 };
 
 /**
@@ -93,7 +94,10 @@ function folderInput(active: Active, collisions: Collision[] | null): { hit: Hit
   const activeData = active.data.current as CollectionsDragData | undefined;
   const overData = first.data?.droppableContainer?.data?.current as CollectionsDragData | undefined;
   const isCard = first.id !== active.id && activeData?.type === 'game' && overData?.type === 'game';
-  return { hit: isCard ? { id: String(first.id), zone: first.data?.zone as Zone } : null, pointer };
+  const hit: Hit | null = isCard
+    ? { id: String(first.id), zone: first.data?.zone as Zone, middle: first.data?.middle as Point | undefined }
+    : null;
+  return { hit, pointer };
 }
 
 /** What a draggable card in the library grid declares about itself. */
@@ -152,12 +156,6 @@ interface CollectionsContextValue {
   /** Titles in no collection at all, counted the same way and at the same
    *  moment as every collection's own count. */
   uncategorizedCount: number;
-  /**
-   * Inside a collection view: the card whose CENTRE the pointer is in
-   * (src/lib/set-folder.ts). It stands in its own slot, under the pointer.
-   * Null otherwise.
-   */
-  centreGameId: string | null;
   /**
    * Inside a collection view: the card whose EDGE the pointer has rested in,
    * so the grid shows the reorder preview. While it is null no card moves.
@@ -496,7 +494,7 @@ export function CollectionsProvider({
   }
 
   return (
-    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, centreGameId: folder.targetId, previewGameId: previewId(folder), armedGameId: armedId(folder) }}>
+    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, previewGameId: previewId(folder), armedGameId: armedId(folder) }}>
       {/*
         `id` is not decoration. dnd-kit derives the hidden drag description's
         element id from a MODULE-LEVEL counter (useUniqueId in

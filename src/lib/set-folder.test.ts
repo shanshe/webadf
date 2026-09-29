@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  ARM_DELAY_MS, CENTRE_HEIGHT_FRACTION, CENTRE_WIDTH_FRACTION, EDGE_REST_MS, EDGE_REST_RADIUS_PX, IDLE_FOLDER,
+  ARM_DELAY_MS, CENTRE_HEIGHT_FRACTION, CENTRE_WIDTH_FRACTION, EDGE_INWARD_PX, EDGE_REST_MS, EDGE_REST_RADIUS_PX, IDLE_FOLDER,
   armedId, dropOutcome, folderMove, folderTick, nextDue, previewId, zoneOf, type FolderState,
 } from './set-folder';
 
@@ -8,9 +8,9 @@ const P = { x: 0, y: 0 };
 /** The pointer is in `id`'s centre (null: in no card at all). */
 const folderOver = (s: FolderState, id: string | null, now: number) =>
   folderMove(s, id === null ? null : { id, zone: 'centre' }, P, now);
-/** The pointer is at `p` in `id`'s edge. */
-const edge = (s: FolderState, id: string, p: { x: number; y: number }, now: number) =>
-  folderMove(s, { id, zone: 'edge' }, p, now);
+/** The pointer is at `p` in `id`'s edge (a card whose middle is `middle`, if given). */
+const edge = (s: FolderState, id: string, p: { x: number; y: number }, now: number, middle?: { x: number; y: number }) =>
+  folderMove(s, { id, zone: 'edge', middle }, p, now);
 
 // A card-sized slot: 200 wide, 100 tall, so the centre is x 150..250, y 70..130.
 const r = { left: 100, top: 50, width: 200, height: 100 };
@@ -139,9 +139,44 @@ describe('the edge preview waits for the pointer to rest', () => {
     expect(previewId(s)).toBe('b');
   });
 
-  it('leaving the edge -- to the centre, a gap or another card -- drops the preview', () => {
+  it('a very slow creep inward (1 px every 30 ms) through the edge never rests', () => {
+    expect(EDGE_INWARD_PX).toBe(2);
+    const middle = { x: 100, y: 50 };
+    let s = edge(IDLE_FOLDER, 'b', { x: 0, y: 50 }, 0, middle);
+    for (let i = 1; i <= 50; i++) {
+      s = edge(s, 'b', { x: i, y: 50 }, 30 * i, middle);
+      s = folderTick(s, 30 * i + 29);
+      expect(previewId(s), `step ${i}`).toBeNull();
+    }
+  });
+
+  it('the same slow speed ALONG the edge (not inward) is a rest', () => {
+    const middle = { x: 100, y: 50 };
+    let s = edge(IDLE_FOLDER, 'b', { x: 10, y: 50 }, 0, middle);
+    for (let i = 1; i <= 7; i++) s = edge(s, 'b', { x: 10, y: 50 + i }, 30 * i, middle);
+    expect(previewId(folderTick(s, EDGE_REST_MS))).toBe('b');
+  });
+
+  it('while its preview shows, a card\'s centre counts as edge: no arm, the preview stays, a drop reorders', () => {
+    let s = folderTick(edge(IDLE_FOLDER, 'b', { x: 10, y: 10 }, 0), EDGE_REST_MS);
+    s = folderOver(s, 'b', 300);
+    expect(previewId(s)).toBe('b');
+    expect(s.targetId).toBeNull();
+    s = folderTick(s, 300 + ARM_DELAY_MS * 3);
+    expect(armedId(s)).toBeNull();
+    expect(dropOutcome(s, { overId: 'b', zone: 'centre' })).toBe('reorder');
+  });
+
+  it('leaving the slot and coming back into the centre starts a fresh arm', () => {
+    let s = folderTick(edge(IDLE_FOLDER, 'b', { x: 10, y: 10 }, 0), EDGE_REST_MS);
+    s = folderMove(s, null, P, 300);
+    expect(previewId(s)).toBeNull();
+    s = folderOver(s, 'b', 400);
+    expect(armedId(folderTick(s, 400 + ARM_DELAY_MS))).toBe('b');
+  });
+
+  it('leaving the slot -- to a gap or another card -- drops the preview', () => {
     const showing = folderTick(edge(IDLE_FOLDER, 'b', { x: 10, y: 10 }, 0), EDGE_REST_MS);
-    expect(previewId(folderOver(showing, 'b', 300))).toBeNull();
     expect(previewId(folderMove(showing, null, P, 300))).toBeNull();
     const other = edge(showing, 'c', { x: 10, y: 10 }, 300);
     expect(previewId(other)).toBeNull();
@@ -173,8 +208,12 @@ describe('dropOutcome', () => {
     expect(dropOutcome(armedOnB, { overId: 'c', zone: 'centre' })).toBe('none');
   });
 
-  it('an edge reorders, armed or not', () => {
+  it('an edge reorders', () => {
     expect(dropOutcome(IDLE_FOLDER, { overId: 'b', zone: 'edge' })).toBe('reorder');
-    expect(dropOutcome(armedOnB, { overId: 'b', zone: 'edge' })).toBe('reorder');
+    expect(dropOutcome(armedOnB, { overId: 'c', zone: 'edge' })).toBe('reorder');
+  });
+
+  it('the armed state is trusted over a last frame that drifted into the edge', () => {
+    expect(dropOutcome(armedOnB, { overId: 'b', zone: 'edge' })).toBe('set');
   });
 });

@@ -24,6 +24,20 @@
 // the centre -- the "slides out from under the pointer" failure, moved to the
 // approach. A pointer passing through does not rest; one choosing a gap does.
 //
+// "Rest" has two conditions: the pointer stays within EDGE_REST_RADIUS_PX,
+// and it is not creeping INWARD (closer to the card's middle by more than
+// EDGE_INWARD_PX). Radius alone let a very slow hand (under ~40 px/s) count
+// as resting while it crept through the edge towards the centre. A pure
+// speed threshold low enough to catch that (a few px/s) would also demand a
+// near-motionless finger on glass before any reorder preview showed.
+// Direction tells "on its way to the middle" from "stopped here" at any
+// speed, and still lets a hand jitter or slide along the edge.
+//
+// Once a card's preview shows, its WHOLE slot counts as edge until the
+// pointer leaves the slot: the preview slid the card aside, its slot is now
+// the landing gap, and a person aims at the gap's middle -- which is the
+// card's centre zone. To make a set with it after all, leave and come back.
+//
 // Pure: time is passed in, so the rules are testable without timers. The
 // provider (collection-provider.tsx) feeds it the zone its collision
 // detection computed and one timer tick per target.
@@ -40,6 +54,8 @@ export const CENTRE_HEIGHT_FRACTION = 0.6;
 export const EDGE_REST_MS: number = 200;
 /** "Resting" allows this much drift -- a hand is never perfectly still. */
 export const EDGE_REST_RADIUS_PX = 8;
+/** ...but creeping this much closer to the card's middle is approaching, not resting. */
+export const EDGE_INWARD_PX = 2;
 
 export type Zone = 'centre' | 'edge';
 
@@ -61,7 +77,12 @@ export function zoneOf(p: Point, rect: Rect): Zone {
 }
 
 /** The card under the pointer and which part of it, or null (a gap, the dragged card's own slot, a rail row). */
-export interface Hit { readonly id: string; readonly zone: Zone }
+export interface Hit {
+  readonly id: string;
+  readonly zone: Zone;
+  /** The middle of the card's slot, to tell an inward creep from a rest. */
+  readonly middle?: Point;
+}
 
 export interface FolderState {
   /** The card whose CENTRE the pointer is in, or null. */
@@ -94,8 +115,10 @@ export const IDLE_FOLDER: FolderState = {
  * stays until the pointer leaves that card's edge.
  */
 export function folderMove(s: FolderState, hit: Hit | null, p: Point, now: number): FolderState {
-  const centreId = hit?.zone === 'centre' ? hit.id : null;
-  const edgeId = hit?.zone === 'edge' ? hit.id : null;
+  // A card showing its preview is all edge until the pointer leaves its slot.
+  const zone = hit && s.previewing && hit.id === s.edgeId ? 'edge' : hit?.zone;
+  const centreId = hit && zone === 'centre' ? hit.id : null;
+  const edgeId = hit && zone === 'edge' ? hit.id : null;
   let next = s;
 
   if (centreId === null) {
@@ -108,11 +131,19 @@ export function folderMove(s: FolderState, hit: Hit | null, p: Point, now: numbe
     if (s.edgeId !== null) next = { ...next, edgeId: null, restAt: null, restSince: 0, previewing: false };
   } else if (edgeId !== s.edgeId) {
     next = { ...next, edgeId, restAt: p, restSince: now, previewing: EDGE_REST_MS === 0 };
-  } else if (!s.previewing && s.restAt && Math.hypot(p.x - s.restAt.x, p.y - s.restAt.y) > EDGE_REST_RADIUS_PX) {
+  } else if (!s.previewing && s.restAt && !restsSince(s.restAt, p, hit?.middle)) {
     next = { ...next, restAt: p, restSince: now };
   }
 
   return folderTick(next, now);
+}
+
+/** Whether a pointer that began resting at `from` is still resting at `p`. */
+function restsSince(from: Point, p: Point, middle: Point | undefined): boolean {
+  if (Math.hypot(p.x - from.x, p.y - from.y) > EDGE_REST_RADIUS_PX) return false;
+  if (!middle) return true;
+  const closer = Math.hypot(from.x - middle.x, from.y - middle.y) - Math.hypot(p.x - middle.x, p.y - middle.y);
+  return closer <= EDGE_INWARD_PX;
 }
 
 /** Time has passed with the pointer where it was: arm a centre, or show an edge's preview, once due. */
@@ -145,11 +176,15 @@ export type DropOutcome = 'set' | 'reorder' | 'none';
 /**
  * What a card-on-card drop inside a collection means. `drop` is the card the
  * pointer was released over and the zone it was in there.
- *   - centre of the armed card -> 'set' (open the dialog)
- *   - centre, not armed        -> 'none' (neither reorder nor dialog)
- *   - edge                     -> 'reorder'
+ *   - the armed card            -> 'set' (open the dialog). The state is
+ *     trusted over the zone: a last frame that drifted into the edge on
+ *     release does not undo an arm the person saw.
+ *   - the card showing a preview -> 'reorder', wherever in its slot
+ *   - edge                       -> 'reorder'
+ *   - centre, not armed          -> 'none' (neither reorder nor dialog)
  */
 export function dropOutcome(s: FolderState, drop: { overId: string; zone: Zone }): DropOutcome {
-  if (drop.zone === 'edge') return 'reorder';
-  return armedId(s) === drop.overId ? 'set' : 'none';
+  if (armedId(s) === drop.overId) return 'set';
+  if (previewId(s) === drop.overId || drop.zone === 'edge') return 'reorder';
+  return 'none';
 }
