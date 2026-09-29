@@ -4549,21 +4549,27 @@ fixed by the same rule.)
 **Fix:** `src/swap_gate.[ch]` (pure, `test/test_swap_gate.c`): a disk is released (swap, Next tap, eject -- anything
 `dc_held` guards) only when the Amiga is idle: motor off (the drive light; AmigaDOS switches it off after flushing),
 WGATE clear, and no write activity (applied or merely attempted, the later of `g_write_last_ms`/`g_wgate_last_ms`) for
-`SWAP_IDLE_MS` = 3 s. Starvation: no write activity at all for `SWAP_FORCE_MS` = 20 s releases regardless -- a
-powered-off Amiga leaves WGATE asserted forever, and a trackloader game keeps the motor on all session but never
-writes; a copy that keeps writing is never forced. `main.c`'s `swap_holds` = `up_holds || !swap_gate_idle(...)` is now
+`SWAP_IDLE_MS` = 3 s. Starvation: no activity for `SWAP_FORCE_MS` = 20 s releases regardless -- a powered-off
+Amiga leaves WGATE asserted forever, and a trackloader game keeps the motor on all session but never writes; a copy
+that keeps writing is never forced. "Activity" is the write path AND the motor switching on
+(`swap_gate_last_activity`, core0 publishes `g_motor_on_ms`): review I1 found that measured from writes alone, a save
+started 20 s+ after the previous one was unprotected during its read-before-write phase. `main.c`'s `swap_holds` = `up_holds || !swap_gate_idle(...)` is now
 dc_set_hold's fn and what the OLED's "Saving, then disk N" follows. The preload gate keeps plain `up_holds` (a preload
-never touches the disk in use). `device_client` gained `held` (this step's poll was refused by the hold): main.c sleeps
-500 ms after such a poll, since `since` did not advance and the next poll is answered at once; the "hold:" log line is
-now printed only when a hold begins.
+never touches the disk in use). `device_client` gained `held` (this step's poll was refused by the hold; an interrupted poll keeps the previous
+value): main.c sleeps 1 s after such a poll, since `since` did not advance and the next poll is answered at once; the "hold:" log line is
+now printed only when a hold begins. The panel's "Saving" query uses `swap_hold_check(up, false)`, which never logs.
+Review (independent, opus): no Critical; I1 fixed as above; M2-M4 fixed. **Accepted:** WGATE is not per-drive, so a
+real DF1 being written also holds the swap (fails safe); the panel says "Saving, then disk N" whenever the light is
+on, even with nothing to upload (wording only).
 
 **Bench retest (operator), after 1.6.1 installs:**
 1. On a writable disk of a set, start copying a directory of several files (e.g. `copy Locale:Languages to Locale:x all`)
    and tap the Next-disk card while it runs. The OLED shows "Saving, then disk N" and the swap happens only after the
    drive light goes out and ~3 s pass.
-2. Tap back to the disk; `dir` the copy and run a full read of it (e.g. `list x all` or DiskDoctor-free: just `copy x to
-   nil: all`). No checksum error. Also check the new version in the disk's History.
+2. Tap back to the disk; `dir` the copy and run a full read of it (e.g. `copy x to nil: all`). No checksum error. Also check the new version in the disk's History.
 3. Trackloader game with the motor on constantly (Turrican): a Next tap/web mount still swaps, within ~20 s at most.
+4. (Review M5) Amiga powered OFF with a disk mounted: an eject or mount from the web still happens within ~20 s. If
+   it never does, WGATE is floating/chattering with the Amiga off and keeps stamping activity.
 
 ### 3aq. Disk sets -- 2026-09-29 (spec/plan 2026-09-28-disk-sets)
 

@@ -1414,6 +1414,7 @@ dc_state_t dc_step(device_client_t *c) {
         // DC_BACKOFF, and is NOT a result. The caller checks poll_interrupted
         // first and skips its backoff sleep (device_client.h).
         c->poll_interrupted = true;
+        c->held = c->_was_held;   // decided nothing: the hold is as it was
         return c->state;
     }
 

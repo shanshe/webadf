@@ -51,6 +51,26 @@ static void a_busy_copy_is_never_forced(void) {
     }
 }
 
+// Review I1: measured from the write path alone, the deadline would pass the
+// moment a fresh save starts -- AmigaDOS reads root, directory and bitmap
+// with the motor on before its first write. The motor coming on counts as
+// activity; a trackloader's motor, on for minutes, does not keep counting.
+static void a_motor_just_switched_on_counts_as_activity(void) {
+    CHECK_EQ_INT(swap_gate_last_activity(1000, 500, true, 60000), 60000);
+    CHECK(!swap_gate_idle(62000, true, false, swap_gate_last_activity(1000, 500, true, 60000), NULL),
+          "a save starting 60 s after the last write: hold");
+    CHECK(swap_gate_idle(60000 + SWAP_FORCE_MS, true, false,
+                         swap_gate_last_activity(1000, 500, true, 60000), NULL),
+          "the motor on for SWAP_FORCE_MS with no write: release (trackloader)");
+}
+
+static void last_activity_is_the_latest_of_its_inputs(void) {
+    CHECK_EQ_INT(swap_gate_last_activity(7000, 5000, false, 9000), 7000);   // motor off: its time is ignored
+    CHECK_EQ_INT(swap_gate_last_activity(5000, 7000, false, 0), 7000);      // an attempted write
+    CHECK_EQ_INT(swap_gate_last_activity(5000, 3000, true, 4000), 5000);    // motor on before the write
+    CHECK_EQ_INT(swap_gate_last_activity(0xFFFFFF00u, 0x10u, false, 0), 0x10u);  // across the wrap
+}
+
 static void wraparound_is_not_a_special_case(void) {
     const uint32_t last = 0xFFFFF000u;
     CHECK(!swap_gate_idle(last + 1000, false, false, last, NULL), "1 s across the wrap: hold");
@@ -64,6 +84,8 @@ int main(void) {
     RUN(within_the_quiet_window_holds);
     RUN(no_write_activity_past_the_deadline_releases_forced);
     RUN(a_busy_copy_is_never_forced);
+    RUN(a_motor_just_switched_on_counts_as_activity);
+    RUN(last_activity_is_the_latest_of_its_inputs);
     RUN(wraparound_is_not_a_special_case);
     return REPORT();
 }

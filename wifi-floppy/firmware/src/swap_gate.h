@@ -20,10 +20,16 @@
 // reinsert_may_announce.
 //
 // Starvation: a powered-off Amiga leaves WGATE reading asserted and the motor
-// latch where it was, forever. Measured from the last write-path activity, not
-// from the request: a copy keeps writing and so is never forced, while silence
-// for SWAP_FORCE_MS means nobody is writing, and the disk is released
-// regardless (`*forced_out`).
+// latch where it was, forever. Measured from the last activity, not from the
+// request: a copy keeps writing and so is never forced, while silence for
+// SWAP_FORCE_MS means nobody is using the disk, and it is released regardless
+// (`*forced_out`). Activity is the write path (swap_gate_last_activity) AND
+// the motor switching on: a save starting long after the previous one reads
+// root, directory and bitmap before its first write, and must hold (review
+// I1). A trackloader's motor, on all session, stops counting after the edge.
+//
+// Known and accepted: WGATE is not per-drive, so a real DF1 being written
+// (writes_other_drive) also holds the swap. It fails safe.
 //
 // Pure, host-tested; wraparound handled as ((int32_t)(now - x) >= 0).
 // ---------------------------------------------------------------------------
@@ -35,4 +41,9 @@
 
 bool swap_gate_idle(uint32_t now, bool motor_on, bool wgate_asserted,
                     uint32_t last_activity_ms, bool *forced_out);
+
+/** The latest of an applied write, a WGATE edge, and -- while the motor is on
+ *  -- the moment it came on. Wraparound-safe. */
+uint32_t swap_gate_last_activity(uint32_t write_ms, uint32_t wgate_ms,
+                                 bool motor_on, uint32_t motor_on_ms);
 #endif

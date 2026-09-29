@@ -104,3 +104,4 @@ void dskchg_poll(void) {
 
 bool dskchg_image_in(void) { return st.image_in; }
 bool dskchg_motor_on(void) { return st.motor_on; }
+uint32_t dskchg_motor_on_ms(void) { return to_ms_since_boot(st.motor_on_t); }

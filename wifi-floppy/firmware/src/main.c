@@ -733,7 +733,7 @@ static void nfc_core0_step(nfc_armed_t *armed, bool short_pass) {
  *  is what a Next-disk tap's "Saving, then disk N" follows instead.
  *  up_has_work() first: it runs up_refresh(), which unparks on a mount change,
  *  before `parked` is read. */
-static bool swap_holds(void *up);   // below, after g_motor_on
+static bool swap_hold_check(void *up, bool decide);   // below, after g_motor_on
 
 static bool writes_outstanding(uploader_t *up) {
     const bool work = up_has_work(up);
@@ -803,7 +803,7 @@ static void nfc_core1_event(device_client_t *c, uploader_t *up) {
             static char title[DC_TITLE_MAX + 1];    // static: core1's stack is measured tight
             const dc_tap_outcome_t o = online ? dc_tap_next(c, &no, &count, title, sizeof title)
                                               : DC_TAP_FAILED;
-            const bool saving = swap_holds(up);
+            const bool saving = swap_hold_check(up, false);
             show = nfc_ui_next_line(o, no, count, saving, line, sizeof line);
             wf_logf(WF_INFO, "nfc: next -> %s", show);
         } else {
@@ -1103,34 +1103,40 @@ static void fwu_reboot(void *ctx, uint32_t off) { (void)ctx; fw_rom_request_rebo
 // Published by core0 every loop turn. core1 reads it for the update's idle
 // gate (D6) and the swap hold (swap_holds); dskchg.c's own state stays core0's.
 static volatile bool g_motor_on;
+// When the motor last came on (dskchg_motor_on_ms), published with g_motor_on:
+// swap_holds counts it as activity (swap_gate.h, review I1).
+static volatile uint32_t g_motor_on_ms;
 
 /** core1: dc_set_hold's fn -- may the mounted disk be released (swap, Next
  *  tap, eject)? Not while the server lacks a write the board captured
  *  (up_holds), and not while the Amiga has not finished with the disk
  *  (swap_gate.h): AmigaDOS writes a file's header and directory blocks after
  *  its data, and a swap in between lost Locale's block 597 on 2026-09-29.
- *  The inputs are reinsert's: the later of an applied write and a WGATE
- *  edge, the motor latch, and WGATE now. */
-static bool swap_holds(void *up) {
+ *  The inputs are reinsert's (an applied write, a WGATE edge, the motor
+ *  latch, WGATE now) plus when the motor came on. `decide` is false for a
+ *  query that releases nothing (the panel's "Saving" line): no log. */
+static bool swap_hold_check(void *up, bool decide) {
     static bool forced_logged;
-    if (up_holds(up)) { forced_logged = false; return true; }
-    uint32_t last_activity_ms = g_write_last_ms;
-    const uint32_t wgate_ms = g_wgate_last_ms;
-    if ((int32_t)(wgate_ms - last_activity_ms) > 0) last_activity_ms = wgate_ms;
+    if (up_holds(up)) { if (decide) forced_logged = false; return true; }
+    const bool motor_on = g_motor_on;
+    const bool wgate = !gpio_get(PIN_WGATE);
+    const uint32_t last_activity_ms =
+        swap_gate_last_activity(g_write_last_ms, g_wgate_last_ms, motor_on, g_motor_on_ms);
     bool forced;
-    if (!swap_gate_idle(clock_ms(), g_motor_on, !gpio_get(PIN_WGATE), last_activity_ms, &forced)) {
-        forced_logged = false;
+    if (!swap_gate_idle(clock_ms(), motor_on, wgate, last_activity_ms, &forced)) {
+        if (decide) forced_logged = false;
         return true;
     }
-    if (forced && (g_motor_on || !gpio_get(PIN_WGATE)) && !forced_logged) {
+    if (decide && forced && (motor_on || wgate) && !forced_logged) {
         forced_logged = true;
         // Ordinary for a trackloader game (motor on all session, never
         // writes) as well as for a powered-off Amiga.
         wf_logf(WF_INFO, "hold: released with the motor on or WGATE asserted -- "
-                         "no write activity for %u ms", (unsigned)SWAP_FORCE_MS);
+                         "no activity for %u ms", (unsigned)SWAP_FORCE_MS);
     }
     return false;
 }
+static bool swap_holds(void *up) { return swap_hold_check(up, true); }
 
 static void core1_main(void) {
     if (cyw43_arch_init()) {
@@ -1674,7 +1680,7 @@ static void core1_main(void) {
             // `since` did not advance, so the next poll would be answered at
             // once. Pace it -- the Amiga going idle is seconds away, and a
             // release is then at most this much later.
-            if (polled && c.held) sleep_ms(500);
+            if (polled && c.held) sleep_ms(1000);
 
 #if WF_FW_DEBUG
             // Fix round 3, bench-only: a minimal USB-serial command that
@@ -2408,6 +2414,7 @@ int main(void) {
     while (true) {
         fw_rom_service();
         dskchg_poll();
+        g_motor_on_ms = dskchg_motor_on_ms();   // before the flag: never a new flag with an old time
         g_motor_on = dskchg_motor_on();
 
         // A write-protect flip on the same disk (g_reinsert_req's comment).
