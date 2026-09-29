@@ -14,14 +14,14 @@ import { fromQuery } from '@/lib/trail';
 import { ejectMessage, isMountedReason, mountedReason } from '@/lib/mount-wording';
 import { Cover } from './cover';
 import type { GameListItem } from '@/lib/queries';
-import { useCollectionsContext, type GameDragData, type PendingSetDrop, SET_DROP_RETURN_MS } from '@/components/collections/collection-provider';
+import { useCollectionsContext, type GameDragData, type PendingHide, SET_DROP_RETURN_MS } from '@/components/collections/collection-provider';
 
 export function GameGrid({ games, fob = null }: {
   games: GameListItem[];
   /** The fob button's boards and multi-disk lists; null (no reader in the org) draws no button. */
   fob?: FobContext;
 }) {
-  const { gameIds, filteredCollectionId, previewGameId, armedGameId, pendingSetDrop } = useCollectionsContext();
+  const { gameIds, filteredCollectionId, previewGameId, armedGameId, pendingHide: hidden } = useCollectionsContext();
 
   if (games.length === 0) {
     return (
@@ -55,9 +55,9 @@ export function GameGrid({ games, fob = null }: {
     // The gutter shrinks with it: mx-7 spends 56 of 390px on nothing.
     <div className="mx-4 grid grid-cols-2 gap-4 sm:mx-7 sm:grid-cols-3 md:grid-cols-5" data-testid="game-grid">
       {ordered.map((g) => {
-        // Only the card actually named by pendingSetDrop hides -- every
+        // Only the card actually named by pendingHide hides -- every
         // other card, including the drop's TARGET, renders exactly as today.
-        const pendingHide = pendingSetDrop?.sourceId === g.id ? pendingSetDrop : null;
+        const pendingHide = hidden?.sourceId === g.id ? hidden : null;
         return filteredCollectionId
           ? <SortableCard key={g.id} game={g} collectionId={filteredCollectionId} fob={fob} armed={armedGameId === g.id} pendingHide={pendingHide} />
           : <DraggableCard key={g.id} game={g} fob={fob} pendingHide={pendingHide} />;
@@ -115,8 +115,9 @@ const RETURN_TRANSITION = `opacity ${SET_DROP_RETURN_MS}ms ease`;
 
 /**
  * Overrides `dragStyle`'s opacity while the card is the one named by
- * `pendingSetDrop` (collection-provider.tsx): the "Add to a disk set" dialog
- * is open for a drop THIS card was the source of.
+ * `pendingHide` (collection-provider.tsx): the "Add to a disk set" dialog
+ * is open for a drop THIS card was the source of, or it was dropped on a
+ * rail collection and that add has not resolved yet.
  *
  * `visibility`, not `display`, so the card's slot in the grid keeps its
  * space -- the sibling the drop landed on must not shift. It is set
@@ -131,11 +132,11 @@ const RETURN_TRANSITION = `opacity ${SET_DROP_RETURN_MS}ms ease`;
  * happening underneath the fade.
  *
  * Returning (Cancel, Escape, the backdrop, or an error that closed the
- * dialog): `visibility` flips back to `visible` in the same instant --
+ * dialog; a collection add that failed, or whose refresh has landed): `visibility` flips back to `visible` in the same instant --
  * invisible on its own, since opacity is still 0 -- and THAT change is what
  * carries the transition, fading the card back in instead of popping it.
  */
-function pendingHideStyle(pendingHide: PendingSetDrop | null): React.CSSProperties | undefined {
+function pendingHideStyle(pendingHide: PendingHide | null): React.CSSProperties | undefined {
   if (!pendingHide) return undefined;
   return pendingHide.returning
     ? { visibility: 'visible', opacity: 1, transition: RETURN_TRANSITION, pointerEvents: 'none' }
@@ -414,7 +415,7 @@ function SetDropHint() {
  * collection, and a drop target for another card (make a disk set) -- not
  * sortable against siblings.
  */
-function DraggableCard({ game: g, fob, pendingHide }: { game: GameListItem; fob: FobContext; pendingHide: PendingSetDrop | null }) {
+function DraggableCard({ game: g, fob, pendingHide }: { game: GameListItem; fob: FobContext; pendingHide: PendingHide | null }) {
   // `role` is pulled OUT of dnd-kit's attributes and thrown away: it is
   // "button", and this card is an <a href> that really does navigate. Spread
   // whole, it would have a screen reader announce every game in the library
@@ -466,7 +467,7 @@ function DraggableCard({ game: g, fob, pendingHide }: { game: GameListItem; fob:
  * card's centre long enough that a drop makes a disk set (src/lib/set-folder.ts).
  */
 function SortableCard({ game: g, collectionId, fob, armed, pendingHide }: {
-  game: GameListItem; collectionId: string; fob: FobContext; armed: boolean; pendingHide: PendingSetDrop | null;
+  game: GameListItem; collectionId: string; fob: FobContext; armed: boolean; pendingHide: PendingHide | null;
 }) {
   // See DraggableCard on why `role` is discarded rather than spread.
   const { attributes: dragAttributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({

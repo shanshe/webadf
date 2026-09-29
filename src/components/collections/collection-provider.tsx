@@ -240,22 +240,30 @@ interface CollectionsContextValue {
    */
   armedGameId: string | null;
   /**
-   * The card that was DRAGGED into a "make a disk set" drop, while its
-   * dialog is open or fading back after a close without success. Cards in
-   * game-grid.tsx hide themselves (opacity/visibility, not display, so the
-   * grid does not reflow) instead of letting dnd-kit's own drop animation fly
-   * them back to their slot underneath the dialog. Null the rest of the time.
+   * The card that was DRAGGED into a drop that is still being resolved, and
+   * so is hidden rather than flown back to its slot. Cards in game-grid.tsx
+   * hide themselves (opacity/visibility, not display, so the grid does not
+   * reflow). Null the rest of the time. Two reasons:
+   *
+   *  - 'set': a "make a disk set" drop, while its dialog is open or fading
+   *    back after a close without success.
+   *  - 'collection': a card dropped on a rail collection (operator,
+   *    2026-09-29), while the add is saving and until the refresh after it
+   *    lands; then it fades back in if the refreshed view still has it
+   *    (Uncategorized no longer does), and at once on a failure.
    */
-  pendingSetDrop: PendingSetDrop | null;
+  pendingHide: PendingHide | null;
 }
 
-/** See `pendingSetDrop` above. */
-export interface PendingSetDrop {
-  /** The id of the card that was dragged (the dialog's `source`). */
+/** See `pendingHide` above. */
+export interface PendingHide {
+  /** The id of the card that was dragged. */
   sourceId: string;
-  /** True once the dialog has closed WITHOUT success and this card is fading
-   *  back into view; false while it is simply hidden (dialog open, or a
-   *  successful add awaiting router.refresh()). */
+  reason: 'set' | 'collection';
+  /** 'collection' only: the add succeeded and router.refresh() is on its way. */
+  saved?: boolean;
+  /** True while this card is fading back into view; false while it is simply
+   *  hidden (dialog open, add saving, or a success awaiting router.refresh()). */
   returning: boolean;
 }
 
@@ -331,18 +339,19 @@ export function CollectionsProvider({
     updateFolder(IDLE_FOLDER);
   }
 
-  /** See PendingSetDrop above. */
-  const [pendingSetDrop, setPendingSetDrop] = useState<PendingSetDrop | null>(null);
-  const returnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  function resetPendingSetDrop() {
-    if (returnTimer.current !== null) clearTimeout(returnTimer.current);
-    returnTimer.current = null;
-    setPendingSetDrop(null);
-  }
+  /** See PendingHide above. */
+  const [pendingHide, setPendingHide] = useState<PendingHide | null>(null);
+  // A card fading back stops being pending once its fade has run. Keyed on
+  // the pending object itself, so a newer drop (or a reset) cancels the
+  // timer of the one it replaced.
+  useEffect(() => {
+    if (!pendingHide?.returning) return;
+    const t = setTimeout(() => setPendingHide((p) => (p === pendingHide ? null : p)), SET_DROP_RETURN_MS);
+    return () => clearTimeout(t);
+  }, [pendingHide]);
 
   useEffect(() => () => {
     if (armTimer.current !== null) clearTimeout(armTimer.current);
-    if (returnTimer.current !== null) clearTimeout(returnTimer.current);
   }, []);
 
   // router.refresh() re-runs the server component tree and hands this
@@ -376,12 +385,20 @@ export function CollectionsProvider({
     // show a title that may have gone, but leaves the dialog OPEN. `games`
     // (library/page.tsx) is rebuilt into a new array on every server render
     // regardless of whether anything in it changed, so this branch runs on
-    // that refresh too -- and clearing pendingSetDrop then would pop the
+    // that refresh too -- and clearing pendingHide then would pop the
     // hidden card back to full visibility right underneath the still-open
     // dialog. `closeSetDrop` (Cancel, Escape, the backdrop, or the dialog's
     // own success close) is what resolves a pending hide while the dialog is
     // up; this is only the cleanup for after it has closed.
-    if (setDrop === null) resetPendingSetDrop();
+    //
+    // A 'collection' hide is resolved by the refresh after its add SUCCEEDED
+    // (saved): it fades back in -- a card the refreshed view no longer has
+    // (Uncategorized, once filed) is simply not drawn. Before that, a refresh
+    // leaves it hidden; a failure has already started its fade.
+    if (setDrop === null && pendingHide) {
+      if (pendingHide.reason === 'set') setPendingHide(null);
+      else if (pendingHide.saved && !pendingHide.returning) setPendingHide({ ...pendingHide, returning: true });
+    }
   }
 
   /**
@@ -449,6 +466,12 @@ export function CollectionsProvider({
   async function addGameToCollection(collectionId: string, gameId: string) {
     setCollections((prev) => prev.map((c) =>
       c.id === collectionId ? { ...c, gameCount: c.gameCount + 1 } : c));
+    // Hidden the instant it is dropped, not flown back to its slot (see
+    // PendingHide). Only THIS drop's hide is ever advanced below: a newer
+    // drop or drag has replaced it otherwise.
+    const mine: PendingHide = { sourceId: gameId, reason: 'collection', returning: false };
+    setPendingHide(mine);
+    const fadeBack = () => setPendingHide((p) => (p === mine ? { ...mine, returning: true } : p));
     try {
       let res: Response;
       try {
@@ -459,6 +482,7 @@ export function CollectionsProvider({
         });
       } catch {
         toast.error('Could not reach the server', { description: 'The title was not added to the collection.' });
+        fadeBack();
         return;
       }
       if (!res.ok) {
@@ -466,8 +490,10 @@ export function CollectionsProvider({
         toast.error('Could not add the title to the collection', {
           description: typeof body.error === 'string' ? body.error : undefined,
         });
+        fadeBack();
         return;
       }
+      setPendingHide((p) => (p === mine ? { ...mine, saved: true } : p));
     } finally {
       router.refresh();
     }
@@ -533,7 +559,7 @@ export function CollectionsProvider({
     // start a drag while it is open, but a Cancel's fade-back is still
     // running its timer when this fires, and that timer must not go on to
     // hide the card the person just picked back up again).
-    resetPendingSetDrop();
+    setPendingHide(null);
   }
 
   /**
@@ -605,8 +631,7 @@ export function CollectionsProvider({
         // Hidden the instant the dialog opens, not animated back to its slot
         // by dnd-kit's own drop animation underneath it. `returning: false`:
         // this is the drop, not a close, so it is not fading back yet.
-        if (returnTimer.current !== null) { clearTimeout(returnTimer.current); returnTimer.current = null; }
-        setPendingSetDrop({ sourceId: activeData.id, returning: false });
+        setPendingHide({ sourceId: activeData.id, reason: 'set', returning: false });
         setSetDrop({
           target: { id: overData.id, title: overData.title ?? '', diskCount: overData.diskCount ?? 0 },
           source: { id: activeData.id, title: activeData.title ?? '', diskCount: activeData.diskCount ?? 0 },
@@ -639,16 +664,11 @@ export function CollectionsProvider({
   function closeSetDrop(success?: boolean) {
     setSetDrop(null);
     if (success) return;
-    setPendingSetDrop((p) => (p ? { ...p, returning: true } : p));
-    if (returnTimer.current !== null) clearTimeout(returnTimer.current);
-    returnTimer.current = setTimeout(() => {
-      returnTimer.current = null;
-      setPendingSetDrop(null);
-    }, SET_DROP_RETURN_MS);
+    setPendingHide((p) => (p ? { ...p, returning: true } : p));
   }
 
   return (
-    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, previewGameId: previewId(folder), armedGameId: armedId(folder), pendingSetDrop }}>
+    <CollectionsContext.Provider value={{ collections, gameIds, filteredCollectionId, view, uncategorizedCount, previewGameId: previewId(folder), armedGameId: armedId(folder), pendingHide }}>
       {/*
         `id` is not decoration. dnd-kit derives the hidden drag description's
         element id from a MODULE-LEVEL counter (useUniqueId in
