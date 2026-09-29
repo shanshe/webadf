@@ -13,8 +13,14 @@
 //   - Let go anywhere on a card -- edge, or a centre that has not armed yet --
 //     and the dragged card takes that card's position: a reorder. Dragging a
 //     card onto another and letting go is how a person reorders.
-//   - Only a centre the pointer has HELD still in for ARM_DELAY_MS arms
-//     ("Add to disk set"), and a drop there opens the set dialog.
+//   - Only a centre the pointer has RESTED in for ARM_DELAY_MS arms ("Add to
+//     disk set"), and a drop there opens the set dialog. Resting is the
+//     edge's radius rule: the arm clock restarts whenever the pointer drifts
+//     more than EDGE_REST_RADIUS_PX from where its rest began. Time in the
+//     centre is not enough -- at a hand's pace (~250 px/s) a drag aimed at a
+//     card's middle spends well over ARM_DELAY_MS in its centre, and counting
+//     that armed the very reorder the operator was trying to make. A pointer
+//     passing through a centre on its way elsewhere never arms it.
 //   - A drop in the gap between cards counts as a drop on the nearest card
 //     (the provider's collision detection resolves it; see
 //     collection-provider.tsx). Outside the grid, nothing happens.
@@ -52,7 +58,7 @@
 // provider (collection-provider.tsx) feeds it the zone its collision
 // detection computed and one timer tick per target.
 
-/** How long the pointer must rest in a card's centre before a drop there means "make a set". */
+/** How long the pointer must rest (within EDGE_REST_RADIUS_PX) in a card's centre before a drop there means "make a set". */
 export const ARM_DELAY_MS = 300;
 
 /** The centre is the middle half of a card's width... */
@@ -97,8 +103,10 @@ export interface Hit {
 export interface FolderState {
   /** The card whose CENTRE the pointer is in, or null. */
   readonly targetId: string | null;
-  /** When the pointer entered `targetId`'s centre (ms, any monotonic clock). */
+  /** When the pointer's current rest in `targetId`'s centre began (ms, any monotonic clock). */
   readonly since: number;
+  /** Where that rest began; a drift past EDGE_REST_RADIUS_PX restarts it. */
+  readonly centreRestAt: Point | null;
   /** Whether the pointer has rested in that centre for ARM_DELAY_MS. */
   readonly armed: boolean;
   /** The card whose EDGE the pointer is in, or null. */
@@ -111,15 +119,17 @@ export interface FolderState {
 }
 
 export const IDLE_FOLDER: FolderState = {
-  targetId: null, since: 0, armed: false, edgeId: null, restAt: null, restSince: 0, previewing: false,
+  targetId: null, since: 0, centreRestAt: null, armed: false, edgeId: null, restAt: null, restSince: 0, previewing: false,
 };
 
 /**
  * The pointer moved to `p`, over `hit`. Returns the SAME object when nothing
  * a caller renders or times has changed, so it can skip a re-render.
  *
- * Centre: staying in the same centre keeps its clock; any change --
- * including leaving and coming back -- starts a fresh, unarmed wait.
+ * Centre: resting in the same centre (within EDGE_REST_RADIUS_PX of where the
+ * rest began) keeps its clock; drifting further restarts it, and any change
+ * of card -- including leaving and coming back -- starts a fresh, unarmed
+ * wait. Once armed, moving about inside the same centre keeps the arm.
  * Edge: the rest clock restarts whenever the pointer drifts more than
  * EDGE_REST_RADIUS_PX from where the rest began; once the preview shows it
  * stays until the pointer leaves that card's edge.
@@ -132,9 +142,11 @@ export function folderMove(s: FolderState, hit: Hit | null, p: Point, now: numbe
   let next = s;
 
   if (centreId === null) {
-    if (s.targetId !== null) next = { ...next, targetId: null, since: 0, armed: false };
+    if (s.targetId !== null) next = { ...next, targetId: null, since: 0, centreRestAt: null, armed: false };
   } else if (centreId !== s.targetId) {
-    next = { ...next, targetId: centreId, since: now, armed: false };
+    next = { ...next, targetId: centreId, since: now, centreRestAt: p, armed: false };
+  } else if (!s.armed && s.centreRestAt && !restsSince(s.centreRestAt, p, undefined)) {
+    next = { ...next, since: now, centreRestAt: p };
   }
 
   if (edgeId === null) {
