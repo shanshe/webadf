@@ -16,8 +16,9 @@ import { pairDevice, seedDisk, addDisk, authHeader, cleanupSeeded } from './devi
  * run in a real browser against the real database.
  *
  * Every test signs up its own org. Disks that need a real image (the upload
- * suggestion reads volume names; move-out names the new title after one) go
- * through the REAL ingest flow and are purged with the org; the rest are
+ * suggestion reads volume names) or a real uploaded file name (move-out names
+ * the new title after it) go through the REAL ingest flow and are purged with
+ * the org; the rest are
  * seeded rows, tracked by device-helpers. cleanupSeeded removes both.
  */
 test.afterAll(cleanupSeeded);
@@ -320,7 +321,7 @@ test('reorder: Move up renumbers, and in reorder mode a drag and the ▲▼ butt
   await expect(page.getByTestId(`disk-${a}`)).toContainText('Disk 3');
 });
 
-test('move out stays on the set and its toast opens a lone title named after the volume; Add to a disk set… and Undo from its toast put it back', async ({ page }) => {
+test('move out stays on the set and its toast opens a lone title named after the file; Add to a disk set… and Undo from its toast put it back', async ({ page }) => {
   test.setTimeout(90_000);
   const { orgId } = await signUpFresh(page);
   const tag = runTag();
@@ -350,10 +351,12 @@ test('move out stays on the set and its toast opens a lone title named after the
   // The set renumbered: old disk 3 is now disk 2.
   expect((await diskNos([d[2].id]))[d[2].id]).toEqual({ gameId: setId, diskNo: 2 });
 
-  // The toast's Open goes to the new title, named after disk 2's volume.
+  // The toast's Open goes to the new title, named after disk 2's file name
+  // without its extension -- not its volume name (operator, 2026-09-29).
+  const outName = `${title} (Disk 2 of 3)`;
   await moved.getByRole('button', { name: 'Open' }).click();
   await expect(page).not.toHaveURL(new RegExp(`/games/${setId}$`));
-  await expect(page.getByRole('heading', { level: 1, name: vols[1] }).first()).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: outName }).first()).toBeVisible();
   const outId = page.url().split('/games/')[1].split(/[?#]/)[0];
   expect((await diskNos([d[1].id]))[d[1].id]).toEqual({ gameId: outId, diskNo: 1 });
 
@@ -381,7 +384,7 @@ test('move out stays on the set and its toast opens a lone title named after the
 
   // Undo recreates the lone title (a new id) and goes there.
   await expect(page).not.toHaveURL(new RegExp(`/games/${setId}$`));
-  await expect(page.getByRole('heading', { level: 1, name: vols[1] }).first()).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: outName }).first()).toBeVisible();
   const restoredId = page.url().split('/games/')[1].split(/[?#]/)[0];
   await expect(page.getByTestId(`disk-${d[1].id}`)).toBeVisible();
   const n = await diskNos(d.map((x) => x.id));

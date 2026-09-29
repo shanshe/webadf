@@ -413,20 +413,19 @@ describe('reorderSet', () => {
 });
 
 describe('moveDiskOut', () => {
-  function outScenario(remaining = [{ id: 'b', gameId: 'G', diskNo: 3 }]) {
-    answer(disks, [{ id: 'a', gameId: 'G', diskNo: 1, sha256: 'sha-a', imageFormat: 'adf' }], remaining);
+  function outScenario(remaining = [{ id: 'b', gameId: 'G', diskNo: 3 }], tosecName: string | null = null) {
+    answer(disks, [{ id: 'a', gameId: 'G', diskNo: 1, sha256: 'sha-a', tosecName }], remaining);
     answer(games, [{ id: 'G' }]);
-    answer(entitlements, [{ sourceFilename: 'Lemmings (Disk 2).adf' }]);
+    answer(entitlements, [{ sourceFilename: 'amiga-wb31_extras.adf' }]);
     answer(devices, [{ id: 'dev', desiredDiskId: 'b', mountedDiskId: 'a' }]);
   }
 
-  it('names the new title after the volume and moves the disk there as disk 1', async () => {
+  it('names the new title after the file name without its extension and moves the disk there as disk 1', async () => {
     outScenario();
-    readVolume.mockReturnValue({ ok: true, volume: { name: 'LEMMINGS2' } });
     const { gameId } = await moveDiskOut('org-1', 'a');
     const b = only();
     expect(b[0].sql).toMatch(/^insert into "games"/);
-    expect(b[0].params).toEqual(expect.arrayContaining([gameId, 'org-1', 'LEMMINGS2', 'lemmings2', 'human']));
+    expect(b[0].params).toEqual(expect.arrayContaining([gameId, 'org-1', 'amiga-wb31_extras', 'human']));
     const moves = b.filter((s) => /^update "disks"/.test(s.sql)).map((s) => s.params);
     expect(moves).toEqual([[gameId, 1, 'a', 'org-1', 'G'], ['G', 1, 'b', 'org-1', 'G']]);
     const dev = b.filter((s) => /^update "devices"/.test(s.sql));
@@ -438,38 +437,44 @@ describe('moveDiskOut', () => {
     expect(idx(b, /^delete/)).toBe(-1);
   });
 
-  it('falls back to the source filename without its extension', async () => {
+  it('never reads the image (the volume name is not used)', async () => {
     outScenario();
-    readVolume.mockReturnValue({ ok: false, reason: 'no-filesystem' });
     await moveDiskOut('org-1', 'a');
-    expect(only()[0].params).toContain('Lemmings (Disk 2)');
+    expect(read).not.toHaveBeenCalled();
+    expect(readVolume).not.toHaveBeenCalled();
   });
 
-  it('falls back when reading the image throws', async () => {
-    outScenario();
-    read.mockRejectedValueOnce(new Error('store down'));
+  it('the file name wins over the TOSEC name', async () => {
+    outScenario(undefined, 'Workbench v3.1 (1993)(Commodore)(Disk 2 of 6)(Extras).adf');
     await moveDiskOut('org-1', 'a');
-    expect(only()[0].params).toContain('Lemmings (Disk 2)');
+    expect(only()[0].params).toContain('amiga-wb31_extras');
   });
 
-  it('falls back to "Disk" with no volume and no entitlement', async () => {
-    answer(disks, [{ id: 'a', gameId: 'G', diskNo: 1, sha256: 'sha-a', imageFormat: 'adf' }], [{ id: 'b', gameId: 'G', diskNo: 2 }]);
+  it('falls back to the TOSEC name without its extension when there is no entitlement', async () => {
+    answer(disks, [{ id: 'a', gameId: 'G', diskNo: 1, sha256: 'sha-a', tosecName: 'Lemmings (1991)(Psygnosis)(Disk 2 of 2).adf' }],
+      [{ id: 'b', gameId: 'G', diskNo: 2 }]);
     answer(games, [{ id: 'G' }]);
     answer(entitlements, []);
     answer(devices, []);
-    readVolume.mockReturnValue({ ok: false, reason: 'not-adf' });
+    await moveDiskOut('org-1', 'a');
+    expect(only()[0].params).toContain('Lemmings (1991)(Psygnosis)(Disk 2 of 2)');
+  });
+
+  it('falls back to "Disk" with no entitlement and no TOSEC name', async () => {
+    answer(disks, [{ id: 'a', gameId: 'G', diskNo: 1, sha256: 'sha-a', tosecName: null }], [{ id: 'b', gameId: 'G', diskNo: 2 }]);
+    answer(games, [{ id: 'G' }]);
+    answer(entitlements, []);
+    answer(devices, []);
     await moveDiskOut('org-1', 'a');
     expect(only()[0].params).toContain('Disk');
   });
 
-  it('refuses a lone disk (not_in_a_set) before reading its image, and writes nothing', async () => {
+  it('refuses a lone disk (not_in_a_set) before reading its name, and writes nothing', async () => {
     outScenario([]);
-    readVolume.mockReturnValue({ ok: true, volume: { name: 'X' } });
     const err = await moveDiskOut('org-1', 'a').catch((e) => e);
     expect(err).toBeInstanceOf(PlanError);
     expect(err.code).toBe('not_in_a_set');
-    expect(read).not.toHaveBeenCalled();
-    expect(readVolume).not.toHaveBeenCalled();
+    expect(selects.some((q) => q.table === entitlements)).toBe(false);
     expect(batches).toHaveLength(0);
   });
 
