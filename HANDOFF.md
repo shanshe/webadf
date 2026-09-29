@@ -4526,6 +4526,28 @@ Demozoo API (the bulk export makes per-lookup load on a non-profit unnecessary).
   allowlist checks only the first URL (the raster content-type allowlist and `nosniff` still apply).
 - **Cron drift:** the daily 01:30 cron against a 7-day gate can drift a refetch to 8 days.
 
+### 3as. Disk-set polish, and one "Find on Demozoo or TOSEC" search -- 2026-09-29
+
+**STATUS: merged to master together with 3ar (integration branch `integrate/polish-identify`), full e2e green.**
+
+**Disk-set polish (`feat/set-polish`, operator's three reports):**
+- "Move out of set" stays on the set's page; the toast offers Open (the moved-out disk's new title).
+- A moved-out disk's new title is named after its uploaded file name without a disk-image extension
+  (`.adf/.adz/.dms/.hfe/.ipf` only -- "Game v1.2" keeps its ".2"), else the TOSEC name, else "Disk"; never the Amiga
+  volume name (operator's call).
+- A card dropped on a rail collection hides until the add resolves, and fades back if it fails.
+
+**Identify search (`feat/identify-search`, operator chose option A):** the title page's "Find on Demozoo" box searches
+Demozoo and TOSEC together (`GET /api/identify/search`, `src/lib/tosec-search.ts`); game titles get a TOSEC-only box.
+A TOSEC result is one release (disks grouped by the name up to the `(Disk N[ of M])` clause, `[flags]` dropped, per
+year and publisher); "Use these details" PATCHes title, year and publisher -- `null` for what TOSEC does not know, so the
+identity is replaced as a whole -- and is recorded as a human edit. Review (whole-branch, then the fixes re-reviewed):
+fixed sub-labels such as `(Install)` splitting a release into rows, an e2e that could not see that, stale year/publisher
+surviving an apply, a misleading "nothing found" for a 1-character query, a11y (live status line, per-row labels),
+overlapping applies. **Accepted (Minor):** grouping by the name before the disk clause also merges differently sized
+distributions of one release (e.g. a 2-disk Quarterback archive and the 4-disk original of Alien Breed II AGA) -- the
+row shows the larger disk count; what is applied is identical. Add "of M" to the key if it ever matters.
+
 ### 3ar. A disk is released only when the Amiga has finished with it -- firmware 1.6.1 (2026-09-29)
 
 **STATUS: on `fix/swap-waits-for-idle`; host tests green; built. Publish + bench retest below.**
